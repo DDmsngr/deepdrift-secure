@@ -1,28 +1,62 @@
-name: Flutter CI
+name: Build Flutter App
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+  workflow_dispatch:  # ← Позволяет запускать вручную из веба
+  # push:
+  #   branches: [main]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      # Устанавливаем Flutter SDK
-      - uses: subosito/flutter-action@v2
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.16.0'   # или latest стабильную
+          flutter-version: '3.22.0'  # или 'stable' — стабильная версия
+          channel: 'stable'
 
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Analyze
-        run: flutter analyze
+      - name: Analyze code
+        run: flutter analyze --no-details
 
       - name: Run tests
         run: flutter test
+
+      - name: Build APK (release)
+        run: flutter build apk --release
+
+      - name: Upload APK (без артефактов — чтобы избежать лимита)
+        # Вместо upload-artifact → используем GitHub Release + gh CLI
+        # Это обходит лимит storage, т.к. файлы хранятся в Releases, а не в Artifacts
+        id: upload-apk
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          files: build/app-release.apk
+          name: DeepDrift Secure v0.1.0
+          tag_name: v0.1.0
+          body: |
+            📱 Release of DeepDrift Secure (Flutter)
+            - Built on ${{ github.sha }}
+            - Target: Android (release)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Опционально: если хочешь собрать web — раскомментируй:
+      # - name: Build Web
+      #   run: flutter build web --release
+      #
+      # - name: Deploy to GitHub Pages (опционально)
+      #   uses: peaceiris/actions-gh-pages@v3
+      #   if: success()
+      #   with:
+      #     github_token: ${{ secrets.GITHUB_TOKEN }}
+      #     publish_dir: ./build/web
