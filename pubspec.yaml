@@ -36,7 +36,7 @@ dependencies:
 
   # Медиа
   image_picker: ^1.0.7
-  record: ^5.0.4
+  record: ^5.2.0
   audioplayers: ^5.2.1
   
   # Разрешения
