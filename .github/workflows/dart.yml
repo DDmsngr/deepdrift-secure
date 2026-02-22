@@ -17,13 +17,14 @@ jobs:
           flutter-version: '3.22.0'
           channel: 'stable'
 
-      - name: Install dependencies
-        run: flutter pub get
+      - name: Clean and install dependencies
+        run: |
+          flutter clean
+          flutter pub cache clean --force
+          flutter pub get
 
       - name: Run static analysis
         run: flutter analyze
-        # NOTE: --no-details flag does NOT exist in Flutter 3.22.
-        # Just use "flutter analyze" without flags.
 
       - name: Run tests
         run: flutter test
