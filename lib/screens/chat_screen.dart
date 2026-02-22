@@ -72,7 +72,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 padding: EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: messages[i]['isMe'] ? Color(0xFF1A1F3C) : Colors.black,
-                  border: Border.all(color: Color(0xFF00F0FF).withOpacity(0.5)),
+                  border: Border.all(color: Color(0xFF00F0FF).withValues(alpha: 0.5)),
                   borderRadius: BorderRadius.circular(12)
                 ),
                 child: Text(messages[i]['text'], style: TextStyle(color: Colors.white)),
