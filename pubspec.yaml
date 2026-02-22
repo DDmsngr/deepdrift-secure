@@ -14,9 +14,10 @@ dependencies:
   hive: ^2.2.3
   hive_flutter: ^1.1.0
 
-  # Криптография (ECDH + Ed25519 + ChaCha20-Poly1305)
+  # Криптография
   cryptography: ^2.5.0
   crypto: ^3.0.3
+  argon2_flutter: ^1.0.0   # ✅ ДОБАВЛЕНО
 
   # Сеть
   web_socket_channel: ^2.4.0
@@ -34,19 +35,15 @@ dependencies:
   # UI
   google_fonts: ^6.1.0
 
-  # === НОВЫЕ ЗАВИСИМОСТИ ===
-  
-  # Работа с изображениями
+  # Медиа
   image_picker: ^1.0.7
-  
-  # Аудио запись и воспроизведение
   record: ^5.0.4
   audioplayers: ^5.2.1
   
   # Разрешения
   permission_handler: ^11.2.0
   
-  # Работа с файлами
+  # Файлы
   file_picker: ^8.0.0
   path_provider: ^2.1.0
 
