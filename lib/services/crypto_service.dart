@@ -1,35 +1,38 @@
 import 'dart:convert';
 import 'dart:math';
-import 'package:cryptography/cryptography.dart';
-import 'package:crypto/crypto.dart';
+
+// 👇 алиасы решают конфликт
+import 'package:cryptography/cryptography.dart' as crypto_lib;
+import 'package:crypto/crypto.dart' as hash_lib;
 
 class CryptoService {
-  final _algo = Chacha20.poly1305Aead();
-  final _kdf = Pbkdf2(
-    macAlgorithm: Hmac.sha256(),
+  final _algo = crypto_lib.Chacha20.poly1305Aead();
+
+  final _kdf = crypto_lib.Pbkdf2(
+    macAlgorithm: crypto_lib.Hmac.sha256(),
     iterations: 100000,
     bits: 256,
   );
 
-  // 1. Генерация ключа через PBKDF2 (Web-safe)
-  Future<SecretKey> deriveKey(String password) async {
+  // 1. Генерация ключа
+  Future<crypto_lib.SecretKey> deriveKey(String password) async {
     final salt = utf8.encode("deepdrift_static_salt");
 
     final secretKey = await _kdf.deriveKey(
-      secretKey: SecretKey(utf8.encode(password)),
+      secretKey: crypto_lib.SecretKey(utf8.encode(password)),
       nonce: salt,
     );
 
     return secretKey;
   }
 
-  // 2. FHRG сигнатура (оставляем твою логику)
+  // 2. FHRG сигнатура
   String generateFHRGSignature(String text) {
     double z = 1.0;
     double lambda = 3.00001;
     double omega = (2 * pi) / log(lambda);
 
-    var h = sha256.convert(utf8.encode(text)).bytes;
+    var h = hash_lib.sha256.convert(utf8.encode(text)).bytes;
     double phi = (h[0] / 255) * 2 * pi;
 
     List<int> sig = [];
@@ -43,7 +46,7 @@ class CryptoService {
   }
 
   // 3. Шифрование
-  Future<String> encrypt(String text, SecretKey key) async {
+  Future<String> encrypt(String text, crypto_lib.SecretKey key) async {
     final secretBox = await _algo.encrypt(
       utf8.encode(text),
       secretKey: key,
@@ -53,9 +56,9 @@ class CryptoService {
   }
 
   // 4. Дешифровка
-  Future<String> decrypt(String b64Data, SecretKey key) async {
+  Future<String> decrypt(String b64Data, crypto_lib.SecretKey key) async {
     try {
-      final box = SecretBox.fromConcatenation(
+      final box = crypto_lib.SecretBox.fromConcatenation(
         base64Decode(b64Data),
         nonceLength: _algo.nonceLength,
         macLength: _algo.macAlgorithm.macLength,
