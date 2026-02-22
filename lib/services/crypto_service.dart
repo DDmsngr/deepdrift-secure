@@ -1,30 +1,29 @@
 import 'dart:convert';
 import 'dart:math';
 import 'package:cryptography/cryptography.dart';
-import 'package:argon2_flutter/argon2_flutter.dart';
 import 'package:crypto/crypto.dart';
 
 class CryptoService {
   final _algo = Chacha20.poly1305Aead();
+  final _kdf = Pbkdf2(
+    macAlgorithm: Hmac.sha256(),
+    iterations: 100000,
+    bits: 256,
+  );
 
-  // 1. Генерация ключа через Argon2id (Flutter-safe)
+  // 1. Генерация ключа через PBKDF2 (Web-safe)
   Future<SecretKey> deriveKey(String password) async {
-    const salt = "deepdrift_static_salt"; // ⚠️ лучше потом сделать уникальной
+    final salt = utf8.encode("deepdrift_static_salt");
 
-    final result = await Argon2.hashPasswordString(
-      password,
-      salt: salt,
-      iterations: 2,
-      memory: 32768,
-      parallelism: 4,
-      length: 32,
+    final secretKey = await _kdf.deriveKey(
+      secretKey: SecretKey(utf8.encode(password)),
+      nonce: salt,
     );
 
-    final keyBytes = utf8.encode(result.hash).sublist(0, 32);
-    return SecretKey(keyBytes);
+    return secretKey;
   }
 
-  // 2. FHRG сигнатура (твоя логика сохранена)
+  // 2. FHRG сигнатура (оставляем твою логику)
   String generateFHRGSignature(String text) {
     double z = 1.0;
     double lambda = 3.00001;
@@ -49,6 +48,7 @@ class CryptoService {
       utf8.encode(text),
       secretKey: key,
     );
+
     return base64Encode(secretBox.concatenation());
   }
 
@@ -63,7 +63,7 @@ class CryptoService {
 
       final clearText = await _algo.decrypt(box, secretKey: key);
       return utf8.decode(clearText);
-    } catch (e) {
+    } catch (_) {
       return "[DECRYPTION FAILED]";
     }
   }
