@@ -21,10 +21,10 @@ dependencies:
   # Сеть
   web_socket_channel: ^2.4.0
 
-  # Push уведомления
+  # Push уведомления - ОБНОВЛЕНО для SDK 35
   firebase_core: ^2.24.2
   firebase_messaging: ^14.7.9
-  flutter_local_notifications: ^16.3.0
+  flutter_local_notifications: ^17.2.4
 
   # Утилиты
   uuid: ^4.2.2
@@ -34,7 +34,7 @@ dependencies:
   # UI
   google_fonts: ^6.1.0
 
-  # Медиа - ИСПРАВЛЕНО: обновлена версия record до 6.x
+  # Медиа
   image_picker: ^1.0.7
   record: ^6.0.0
   audioplayers: ^5.2.1
