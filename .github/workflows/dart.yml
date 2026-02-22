@@ -1,6 +1,8 @@
-name: Build Flutter App
+name: Build Android APK
 
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -20,6 +22,8 @@ jobs:
 
       - name: Run static analysis
         run: flutter analyze
+        # NOTE: --no-details flag does NOT exist in Flutter 3.22.
+        # Just use "flutter analyze" without flags.
 
       - name: Run tests
         run: flutter test
@@ -27,11 +31,9 @@ jobs:
       - name: Build APK
         run: flutter build apk --release
 
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
-          files: build/app/outputs/flutter-apk/app-release.apk
-          name: DeepDrift Secure v0.1.0
-          tag_name: v0.1.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 3
