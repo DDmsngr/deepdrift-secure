@@ -31,7 +31,6 @@ class _HomeScreenState extends State<HomeScreen>
   final _idController = TextEditingController();
   final _serverController = TextEditingController(
       text: 'wss://deepdrift-backend.onrender.com/ws');
-  final _passwordController = TextEditingController();
 
   late AnimationController _animController;
   late Animation<double> _pulseAnimation;
