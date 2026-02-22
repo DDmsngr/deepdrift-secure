@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "998387745469",
+    "project_id": "deepdrift",
+    "storage_bucket": "deepdrift.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:998387745469:android:9558a657cca1b2939cedd4",
+        "android_client_info": {
+          "package_name": "com.deepdrift.secure"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBSFsd2oNxeg9y-QdEeMScmVwBMvnOfiCU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

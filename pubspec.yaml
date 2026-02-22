@@ -1,0 +1,59 @@
+name: ddchat
+description: DDChat - Secure End-to-End Encrypted Messenger (Enhanced)
+publish_to: 'none'
+version: 3.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # База данных
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+
+  # Криптография (ECDH + Ed25519 + ChaCha20-Poly1305)
+  cryptography: ^2.5.0
+  crypto: ^3.0.3
+
+  # Сеть
+  web_socket_channel: ^2.4.0
+
+  # Push уведомления
+  firebase_core: ^2.24.2
+  firebase_messaging: ^14.7.9
+  flutter_local_notifications: ^16.3.0
+
+  # Утилиты
+  uuid: ^4.2.2
+  intl: ^0.18.1
+  shared_preferences: ^2.2.2
+
+  # UI
+  google_fonts: ^6.1.0
+
+  # === НОВЫЕ ЗАВИСИМОСТИ ===
+  
+  # Работа с изображениями
+  image_picker: ^1.0.7
+  
+  # Аудио запись и воспроизведение
+  record: ^5.0.4
+  audioplayers: ^5.2.1
+  
+  # Разрешения
+  permission_handler: ^11.2.0
+  
+  # Работа с файлами
+  file_picker: ^8.0.0
+  path_provider: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
