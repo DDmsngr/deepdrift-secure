@@ -1119,7 +1119,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                   boxShadow: [
                     BoxShadow(
-                      color:      Colors.black.withOpacity(0.2),
+                      color:      Colors.black.withValues(alpha: 0.2),
                       blurRadius: 4,
                       offset:     const Offset(0, 2),
                     ),
@@ -1134,7 +1134,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         padding: const EdgeInsets.all(8),
                         margin:  const EdgeInsets.only(bottom: 6),
                         decoration: BoxDecoration(
-                          color:  Colors.black.withOpacity(0.25),
+                          color:  Colors.black.withValues(alpha: 0.25),
                           borderRadius: BorderRadius.circular(8),
                           border: const Border(
                             left: BorderSide(color: Colors.cyanAccent, width: 3),
@@ -1143,7 +1143,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         child: Text(
                           msg['replyTo'],
                           style: TextStyle(
-                            color:     Colors.white.withOpacity(0.65),
+                            color:     Colors.white.withValues(alpha: 0.65),
                             fontSize:  12,
                             fontStyle: FontStyle.italic,
                           ),
@@ -1177,7 +1177,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         Text(
                           _formatTime(msg['time']),
                           style: TextStyle(
-                            color:    Colors.white.withOpacity(0.5),
+                            color:    Colors.white.withValues(alpha: 0.5),
                             fontSize: 11,
                           ),
                         ),
@@ -1208,7 +1208,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                   color: const Color(0xFF1A1F3C),
                                   borderRadius: BorderRadius.circular(12),
                                   border: Border.all(
-                                      color: Colors.cyan.withOpacity(0.4)),
+                                      color: Colors.cyan.withValues(alpha: 0.4)),
                                 ),
                                 child: Text(emoji,
                                     style: const TextStyle(fontSize: 14)),
@@ -1330,10 +1330,10 @@ class _ChatScreenState extends State<ChatScreen> {
         constraints: const BoxConstraints(minWidth: 180),
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
-          color:        Colors.black.withOpacity(0.2),
+          color:        Colors.black.withValues(alpha: 0.2),
           borderRadius: BorderRadius.circular(10),
           border:       Border.all(
-              color: (isMe ? Colors.white : Colors.cyan).withOpacity(0.3)),
+              color: (isMe ? Colors.white : Colors.cyan).withValues(alpha: 0.3)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1342,7 +1342,7 @@ class _ChatScreenState extends State<ChatScreen> {
               width:  44,
               height: 44,
               decoration: BoxDecoration(
-                color:        Colors.cyan.withOpacity(0.15),
+                color:        Colors.cyan.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Icon(
@@ -1587,7 +1587,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildRecordingBanner() => Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        color:   Colors.red.withOpacity(0.15),
+        color:   Colors.red.withValues(alpha: 0.15),
         child: Row(
           children: [
             const Icon(Icons.mic, color: Colors.red),
