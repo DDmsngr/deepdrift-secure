@@ -626,7 +626,6 @@ class _HomeScreenState extends State<HomeScreen>
                 leading: const Icon(Icons.download, color: Colors.green),
                 title: const Text('Export all chats'),
                 onTap: () async {
-                  final exported = _storage.exportAllChats();
                   // В реальном приложении здесь должно быть сохранение в файл
                   _showError('Export feature coming soon!');
                   Navigator.pop(context);
