@@ -160,7 +160,6 @@ class SocketService {
       
       if (msgType == 'server_ack') {
         final messageId = data['id'];
-        // print("✅ Server ACK for message: $messageId");
         _pendingMessages[messageId]?.complete(data['delivered_online'] ?? false);
         _pendingMessages.remove(messageId);
         return;
@@ -205,7 +204,6 @@ class SocketService {
         return;
       }
       
-      // Пробрасываем все остальные события в stream
       _messageStream.add(data);
       
     } catch (e) {
@@ -217,7 +215,6 @@ class SocketService {
     try {
       final fcmToken = await FirebaseMessaging.instance.getToken();
       if (fcmToken != null) {
-        // print("📲 Got FCM token: ${fcmToken.substring(0, 20)}...");
         send({
           "type": "register_fcm_token",
           "fcm_token": fcmToken
@@ -299,7 +296,6 @@ class SocketService {
   void _sendRaw(Map<String, dynamic> data) {
     try {
       final json = jsonEncode(data);
-      // print("📤 Sending: ${data['type']}"); // Раскомментируйте для дебага
       _channel?.sink.add(json);
     } catch (e) {
       print("❌ Failed to send raw message: $e");
@@ -308,7 +304,6 @@ class SocketService {
 
   void send(Map<String, dynamic> data) {
     if (!_isConnected) {
-      // print("⚠️ Cannot send message - not connected");
       return;
     }
     _sendRaw(data);
@@ -367,27 +362,26 @@ class SocketService {
     });
   }
 
-  // ==================== ДОБАВЛЕННЫЙ МЕТОД ====================
-
-  /// Запрос оффлайн сообщений (для решения ПРОБЛЕМЫ №1)
-  void requestOfflineMessages(String targetUid) {
+  // ==================== ЗАПРОС ОФФЛАЙН СООБЩЕНИЙ ====================
+  // (Обновлен под ваш запрос: использует from_uid)
+  
+  void requestOfflineMessages(String fromUid) {
     if (!_isConnected) {
       print("⚠️ Cannot request offline messages - not connected");
       return;
     }
     
-    print("📨 Requesting offline messages from $targetUid...");
+    print("📨 Requesting offline messages from $fromUid...");
     
-    // Используем 'request_offline_messages' как тип события
+    // Используем 'from_uid' чтобы сервер знал чьи сообщения вернуть
     send({
       "type": "request_offline_messages",
-      "target_uid": targetUid,
+      "from_uid": fromUid, 
     });
   }
 
   // ==================== ДРУГИЕ МЕТОДЫ ====================
 
-  /// 1. Удаление сообщения
   void sendDeleteMessage(String targetUid, String messageId) {
     print("🗑️ Deleting message: $messageId");
     send({
@@ -397,7 +391,6 @@ class SocketService {
     });
   }
 
-  /// 2. Редактирование сообщения
   void sendEditMessage(
     String targetUid,
     String messageId,
@@ -414,12 +407,11 @@ class SocketService {
     });
   }
 
-  /// 3. Реакция на сообщение
   void sendReaction(
     String targetUid,
     String messageId,
     String emoji,
-    String action, // 'add' or 'remove'
+    String action, 
   ) {
     send({
       "type": "message_reaction",
@@ -430,7 +422,6 @@ class SocketService {
     });
   }
 
-  /// 4. Пересылка сообщения
   void sendForwardMessage(
     String targetUid,
     String originalMessageId,
@@ -451,7 +442,6 @@ class SocketService {
     });
   }
 
-  /// 5. Read Receipt (подтверждение прочтения)
   void sendReadReceipt(String targetUid, String messageId) {
     send({
       "type": "read_receipt",
@@ -460,7 +450,6 @@ class SocketService {
     });
   }
 
-  /// 6. Delivery Receipt (подтверждение доставки)
   void sendDeliveryReceipt(String targetUid, String messageId) {
     send({
       "type": "delivery_receipt",
@@ -492,8 +481,6 @@ class SocketService {
       "encrypted_payload": encryptedPayload,
       "signature": signature
     });
-
-    // print("⏳ Waiting for ACK for message: $messageId");
 
     Timer(const Duration(seconds: 3), () {
       if (!completer.isCompleted) {
