@@ -124,13 +124,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _reactions = _storage.loadReactions(widget.targetUid);
 
     // ✅ ИСПРАВЛЕНИЕ 1: Запрос оффлайн сообщений
-    // Ждем немного, чтобы сокет успел инициализироваться, если экран только открыт
     Future.delayed(const Duration(milliseconds: 500), () {
       try {
-        // Убедитесь, что метод requestOfflineMessages существует в SocketService
         _socket.requestOfflineMessages(widget.targetUid);
       } catch (e) {
-        debugPrint("Note: requestOfflineMessages might not be implemented in SocketService yet.");
+        debugPrint("Note: requestOfflineMessages error: $e");
       }
     });
   }
@@ -625,39 +623,59 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // ─── Отправка фото ────────────────────────────────────────────────────────
+  // ─── Отправка фото (Мульти-выбор) ──────────────────────────────────────────
   Future<void> _sendPhoto({ImageSource source = ImageSource.gallery}) async {
     try {
-      final XFile? image = await _imagePicker.pickImage(
-        source:       source,
-        maxWidth:     1920,
-        maxHeight:    1920,
-        imageQuality: 85,
-      );
-      if (image == null) return;
+      List<XFile> images = [];
 
-      final bytes      = await image.readAsBytes();
-      final base64Img  = base64Encode(bytes);
-      final fileName   = image.name;
-      final fileSize   = bytes.length;
+      if (source == ImageSource.gallery) {
+        // Выбор нескольких фото
+        images = await _imagePicker.pickMultiImage(
+          maxWidth: 1920,
+          maxHeight: 1920,
+          imageQuality: 85,
+        );
+      } else {
+        // Камера снимает только одно фото
+        final XFile? image = await _imagePicker.pickImage(
+          source: source,
+          maxWidth: 1920,
+          maxHeight: 1920,
+          imageQuality: 85,
+        );
+        if (image != null) images.add(image);
+      }
 
-      final localPath = await _saveMediaToDisk(
-        base64Data: base64Img,
-        msgType:    MsgType.image,
-        fileName:   fileName,
-      );
+      if (images.isEmpty) return;
 
-      await _sendMessage(
-        text:        '📷 Photo',
-        messageType: 'image',
-        mediaData:   base64Img,
-        filePath:    localPath,
-        fileName:    fileName,
-        fileSize:    fileSize,
-        mimeType:    'image/jpeg',
-      );
+      // Отправляем по очереди с небольшой задержкой (чтобы не забить буфер)
+      for (final image in images) {
+        final bytes = await image.readAsBytes();
+        final base64Img = base64Encode(bytes);
+        final fileName = image.name;
+        final fileSize = bytes.length;
+
+        final localPath = await _saveMediaToDisk(
+          base64Data: base64Img,
+          msgType: MsgType.image,
+          fileName: fileName,
+        );
+
+        await _sendMessage(
+          text: '📷 Photo',
+          messageType: 'image',
+          mediaData: base64Img,
+          filePath: localPath,
+          fileName: fileName,
+          fileSize: fileSize,
+          mimeType: 'image/jpeg',
+        );
+
+        // Пауза между отправками, чтобы UI обновился и сокет продышался
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
     } catch (e) {
-      _showError('Failed to send photo: $e');
+      _showError('Failed to send photos: $e');
     }
   }
 
