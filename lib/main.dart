@@ -139,7 +139,7 @@ class _DeepDriftAppState extends State<DeepDriftApp> with WidgetsBindingObserver
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'DeepDrift Secure',
+      title: 'DDChat',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
