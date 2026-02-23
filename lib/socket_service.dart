@@ -7,12 +7,13 @@ import 'crypto_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 
 /// Сервис для управления WebSocket подключением
+/// РАСШИРЕНО: Добавлены методы для удаления, редактирования, реакций, пересылки
 class SocketService {
   static final SocketService _instance = SocketService._internal();
   factory SocketService() => _instance;
   SocketService._internal();
 
-  static const String PROTOCOL_VERSION = "3.0";
+  static const String PROTOCOL_VERSION = "3.0"; // Обновили версию протокола
   static const int MAX_RECONNECT_ATTEMPTS = 10;
   static const Duration RECONNECT_BASE_DELAY = Duration(seconds: 2);
   static const Duration PING_INTERVAL = Duration(seconds: 30);
@@ -21,6 +22,7 @@ class SocketService {
   WebSocketChannel? _channel;
   final _messageStream = StreamController<Map<String, dynamic>>.broadcast();
   
+  // Публичный геттер для stream (вместо прямого доступа к _uiStream)
   Stream<Map<String, dynamic>> get messages => _messageStream.stream;
 
   late SecureCipher _cipher;
@@ -124,7 +126,7 @@ class SocketService {
       final data = jsonDecode(raw);
       final msgType = data['type'];
       
-      // print("📥 Received: $msgType"); // Раскомментируйте для дебага
+      print("📥 Received: $msgType");
       
       if (msgType == 'uid_assigned') {
         _connectionTimeoutTimer?.cancel();
@@ -160,6 +162,7 @@ class SocketService {
       
       if (msgType == 'server_ack') {
         final messageId = data['id'];
+        print("✅ Server ACK for message: $messageId");
         _pendingMessages[messageId]?.complete(data['delivered_online'] ?? false);
         _pendingMessages.remove(messageId);
         return;
@@ -189,6 +192,12 @@ class SocketService {
         
         if (targetUid != null && x25519Key != null && !data.containsKey('error')) {
           try {
+            // Сохраняем ключи в локальный кеш
+            if (ed25519Key != null) {
+              await _storage.cachePublicKeys(targetUid, x25519Key, ed25519Key);
+            }
+            
+            // Устанавливаем shared secret
             await _cipher.establishSharedSecret(
               targetUid,
               x25519Key,
@@ -204,6 +213,7 @@ class SocketService {
         return;
       }
       
+      // Пробрасываем все остальные события в stream
       _messageStream.add(data);
       
     } catch (e) {
@@ -215,11 +225,16 @@ class SocketService {
     try {
       final fcmToken = await FirebaseMessaging.instance.getToken();
       if (fcmToken != null) {
+        print("📲 Got FCM token: ${fcmToken.substring(0, 20)}...");
+        
         send({
           "type": "register_fcm_token",
           "fcm_token": fcmToken
         });
+        
         await _storage.saveSetting('fcm_token', fcmToken);
+      } else {
+        print("⚠️ Failed to get FCM token");
       }
     } catch (e) {
       print("❌ Error getting FCM token: $e");
@@ -237,6 +252,8 @@ class SocketService {
     
     if (!_isInBackground) {
       _scheduleReconnect();
+    } else {
+      print("📵 App in background, skipping auto-reconnect");
     }
   }
 
@@ -288,6 +305,7 @@ class SocketService {
             return;
           }
         }
+        
         send({"type": "ping"});
       }
     });
@@ -296,6 +314,7 @@ class SocketService {
   void _sendRaw(Map<String, dynamic> data) {
     try {
       final json = jsonEncode(data);
+      print("📤 Sending: ${data['type']}");
       _channel?.sink.add(json);
     } catch (e) {
       print("❌ Failed to send raw message: $e");
@@ -304,6 +323,7 @@ class SocketService {
 
   void send(Map<String, dynamic> data) {
     if (!_isConnected) {
+      print("⚠️ Cannot send message - not connected");
       return;
     }
     _sendRaw(data);
@@ -313,11 +333,14 @@ class SocketService {
 
   void registerPublicKeys(String x25519Key, String ed25519Key) {
     print("🔑 [CLIENT] Registering public keys on server...");
+    
     send({
       "type": "register_public_key",
       "x25519_key": x25519Key,
       "ed25519_key": ed25519Key,
     });
+    
+    print("✅ [CLIENT] Public key registration message sent");
   }
 
   void requestPublicKey(String targetUid) {
@@ -362,26 +385,9 @@ class SocketService {
     });
   }
 
-  // ==================== ЗАПРОС ОФФЛАЙН СООБЩЕНИЙ ====================
-  // (Обновлен под ваш запрос: использует from_uid)
-  
-  void requestOfflineMessages(String fromUid) {
-    if (!_isConnected) {
-      print("⚠️ Cannot request offline messages - not connected");
-      return;
-    }
-    
-    print("📨 Requesting offline messages from $fromUid...");
-    
-    // Используем 'from_uid' чтобы сервер знал чьи сообщения вернуть
-    send({
-      "type": "request_offline_messages",
-      "from_uid": fromUid, 
-    });
-  }
+  // ==================== НОВЫЕ МЕТОДЫ ====================
 
-  // ==================== ДРУГИЕ МЕТОДЫ ====================
-
+  /// 1. Удаление сообщения
   void sendDeleteMessage(String targetUid, String messageId) {
     print("🗑️ Deleting message: $messageId");
     send({
@@ -391,6 +397,7 @@ class SocketService {
     });
   }
 
+  /// 2. Редактирование сообщения
   void sendEditMessage(
     String targetUid,
     String messageId,
@@ -407,12 +414,14 @@ class SocketService {
     });
   }
 
+  /// 3. Реакция на сообщение
   void sendReaction(
     String targetUid,
     String messageId,
     String emoji,
-    String action, 
+    String action, // 'add' or 'remove'
   ) {
+    print("$emoji Reaction: $emoji on $messageId ($action)");
     send({
       "type": "message_reaction",
       "target_uid": targetUid,
@@ -422,6 +431,7 @@ class SocketService {
     });
   }
 
+  /// 4. Пересылка сообщения
   void sendForwardMessage(
     String targetUid,
     String originalMessageId,
@@ -442,7 +452,9 @@ class SocketService {
     });
   }
 
+  /// 5. Read Receipt (подтверждение прочтения)
   void sendReadReceipt(String targetUid, String messageId) {
+    print("✓✓ Sending read receipt for: $messageId");
     send({
       "type": "read_receipt",
       "target_uid": targetUid,
@@ -450,7 +462,9 @@ class SocketService {
     });
   }
 
+  /// 6. Delivery Receipt (подтверждение доставки)
   void sendDeliveryReceipt(String targetUid, String messageId) {
+    print("✓ Sending delivery receipt for: $messageId");
     send({
       "type": "delivery_receipt",
       "target_uid": targetUid,
@@ -482,6 +496,8 @@ class SocketService {
       "signature": signature
     });
 
+    print("⏳ Waiting for ACK for message: $messageId");
+
     Timer(const Duration(seconds: 3), () {
       if (!completer.isCompleted) {
         print("⚠️ ACK timeout for message: $messageId");
@@ -491,6 +507,10 @@ class SocketService {
     });
 
     return completer.future;
+  }
+
+  void markAsRead(String fromUid, String messageId) {
+    sendReadReceipt(fromUid, messageId);
   }
 
   bool get isConnected => _isConnected;
