@@ -217,6 +217,34 @@ class SecureCipher {
     return _sharedSecrets.containsKey(targetUid);
   }
 
+  /// Загружает кешированные ключи и устанавливает shared secret
+  /// Возвращает true если ключи были загружены из кеша
+  Future<bool> tryLoadCachedKeys(String targetUid, StorageService storage) async {
+    if (hasSharedSecret(targetUid)) {
+      return true; // Уже есть shared secret
+    }
+
+    final x25519Key = storage.getCachedX25519Key(targetUid);
+    final ed25519Key = storage.getCachedEd25519Key(targetUid);
+
+    if (x25519Key != null && ed25519Key != null) {
+      try {
+        await establishSharedSecret(
+          targetUid,
+          x25519Key,
+          theirSignKeyB64: ed25519Key,
+        );
+        print('✅ [Crypto] Loaded keys from cache for $targetUid');
+        return true;
+      } catch (e) {
+        print('❌ [Crypto] Failed to load cached keys for $targetUid: $e');
+        return false;
+      }
+    }
+
+    return false;
+  }
+
   /// Генерирует код безопасности для верификации (Safety Number)
   /// Сравнивая этот код, пользователи убеждаются в отсутствии MITM атаки.
   String getSecurityCode(String targetUid) {
