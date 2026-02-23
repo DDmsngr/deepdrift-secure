@@ -1044,7 +1044,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     return PopScope(
   canPop: !_isSearching,
-  onPopInvoked: (didPop) {
+  onPopInvokedWithResult: (didPop, result) {
     if (!didPop && _isSearching) {
       setState(() {
         _isSearching = false;
