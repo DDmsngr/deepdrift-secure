@@ -7,13 +7,12 @@ import 'crypto_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 
 /// Сервис для управления WebSocket подключением
-/// РАСШИРЕНО: Добавлены методы для удаления, редактирования, реакций, пересылки
 class SocketService {
   static final SocketService _instance = SocketService._internal();
   factory SocketService() => _instance;
   SocketService._internal();
 
-  static const String PROTOCOL_VERSION = "3.0"; // Обновили версию протокола
+  static const String PROTOCOL_VERSION = "3.0";
   static const int MAX_RECONNECT_ATTEMPTS = 10;
   static const Duration RECONNECT_BASE_DELAY = Duration(seconds: 2);
   static const Duration PING_INTERVAL = Duration(seconds: 30);
@@ -22,7 +21,6 @@ class SocketService {
   WebSocketChannel? _channel;
   final _messageStream = StreamController<Map<String, dynamic>>.broadcast();
   
-  // Публичный геттер для stream (вместо прямого доступа к _uiStream)
   Stream<Map<String, dynamic>> get messages => _messageStream.stream;
 
   late SecureCipher _cipher;
@@ -126,7 +124,7 @@ class SocketService {
       final data = jsonDecode(raw);
       final msgType = data['type'];
       
-      print("📥 Received: $msgType");
+      // print("📥 Received: $msgType"); // Раскомментируйте для дебага
       
       if (msgType == 'uid_assigned') {
         _connectionTimeoutTimer?.cancel();
@@ -162,7 +160,7 @@ class SocketService {
       
       if (msgType == 'server_ack') {
         final messageId = data['id'];
-        print("✅ Server ACK for message: $messageId");
+        // print("✅ Server ACK for message: $messageId");
         _pendingMessages[messageId]?.complete(data['delivered_online'] ?? false);
         _pendingMessages.remove(messageId);
         return;
@@ -219,16 +217,12 @@ class SocketService {
     try {
       final fcmToken = await FirebaseMessaging.instance.getToken();
       if (fcmToken != null) {
-        print("📲 Got FCM token: ${fcmToken.substring(0, 20)}...");
-        
+        // print("📲 Got FCM token: ${fcmToken.substring(0, 20)}...");
         send({
           "type": "register_fcm_token",
           "fcm_token": fcmToken
         });
-        
         await _storage.saveSetting('fcm_token', fcmToken);
-      } else {
-        print("⚠️ Failed to get FCM token");
       }
     } catch (e) {
       print("❌ Error getting FCM token: $e");
@@ -246,8 +240,6 @@ class SocketService {
     
     if (!_isInBackground) {
       _scheduleReconnect();
-    } else {
-      print("📵 App in background, skipping auto-reconnect");
     }
   }
 
@@ -299,7 +291,6 @@ class SocketService {
             return;
           }
         }
-        
         send({"type": "ping"});
       }
     });
@@ -308,7 +299,7 @@ class SocketService {
   void _sendRaw(Map<String, dynamic> data) {
     try {
       final json = jsonEncode(data);
-      print("📤 Sending: ${data['type']}");
+      // print("📤 Sending: ${data['type']}"); // Раскомментируйте для дебага
       _channel?.sink.add(json);
     } catch (e) {
       print("❌ Failed to send raw message: $e");
@@ -317,7 +308,7 @@ class SocketService {
 
   void send(Map<String, dynamic> data) {
     if (!_isConnected) {
-      print("⚠️ Cannot send message - not connected");
+      // print("⚠️ Cannot send message - not connected");
       return;
     }
     _sendRaw(data);
@@ -327,14 +318,11 @@ class SocketService {
 
   void registerPublicKeys(String x25519Key, String ed25519Key) {
     print("🔑 [CLIENT] Registering public keys on server...");
-    
     send({
       "type": "register_public_key",
       "x25519_key": x25519Key,
       "ed25519_key": ed25519Key,
     });
-    
-    print("✅ [CLIENT] Public key registration message sent");
   }
 
   void requestPublicKey(String targetUid) {
@@ -379,7 +367,25 @@ class SocketService {
     });
   }
 
-  // ==================== НОВЫЕ МЕТОДЫ ====================
+  // ==================== ДОБАВЛЕННЫЙ МЕТОД ====================
+
+  /// Запрос оффлайн сообщений (для решения ПРОБЛЕМЫ №1)
+  void requestOfflineMessages(String targetUid) {
+    if (!_isConnected) {
+      print("⚠️ Cannot request offline messages - not connected");
+      return;
+    }
+    
+    print("📨 Requesting offline messages from $targetUid...");
+    
+    // Используем 'request_offline_messages' как тип события
+    send({
+      "type": "request_offline_messages",
+      "target_uid": targetUid,
+    });
+  }
+
+  // ==================== ДРУГИЕ МЕТОДЫ ====================
 
   /// 1. Удаление сообщения
   void sendDeleteMessage(String targetUid, String messageId) {
@@ -415,7 +421,6 @@ class SocketService {
     String emoji,
     String action, // 'add' or 'remove'
   ) {
-    print("$emoji Reaction: $emoji on $messageId ($action)");
     send({
       "type": "message_reaction",
       "target_uid": targetUid,
@@ -448,7 +453,6 @@ class SocketService {
 
   /// 5. Read Receipt (подтверждение прочтения)
   void sendReadReceipt(String targetUid, String messageId) {
-    print("✓✓ Sending read receipt for: $messageId");
     send({
       "type": "read_receipt",
       "target_uid": targetUid,
@@ -458,7 +462,6 @@ class SocketService {
 
   /// 6. Delivery Receipt (подтверждение доставки)
   void sendDeliveryReceipt(String targetUid, String messageId) {
-    print("✓ Sending delivery receipt for: $messageId");
     send({
       "type": "delivery_receipt",
       "target_uid": targetUid,
@@ -490,7 +493,7 @@ class SocketService {
       "signature": signature
     });
 
-    print("⏳ Waiting for ACK for message: $messageId");
+    // print("⏳ Waiting for ACK for message: $messageId");
 
     Timer(const Duration(seconds: 3), () {
       if (!completer.isCompleted) {
@@ -501,10 +504,6 @@ class SocketService {
     });
 
     return completer.future;
-  }
-
-  void markAsRead(String fromUid, String messageId) {
-    sendReadReceipt(fromUid, messageId);
   }
 
   bool get isConnected => _isConnected;
