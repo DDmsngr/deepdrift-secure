@@ -63,6 +63,14 @@ void main() async {
   // Инициализируем Firebase
   await Firebase.initializeApp();
   
+  // Запрос разрешений на уведомления (для Android 13+ и iOS)
+  FirebaseMessaging messaging = FirebaseMessaging.instance;
+  await messaging.requestPermission(
+    alert: true,
+    badge: true,
+    sound: true,
+  );
+  
   // ВАЖНО: Регистрируем фоновый обработчик ДО runApp
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
   
@@ -139,7 +147,7 @@ class _DeepDriftAppState extends State<DeepDriftApp> with WidgetsBindingObserver
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'DDChat',
+      title: 'DeepDrift Secure',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
