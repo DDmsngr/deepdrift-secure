@@ -39,6 +39,12 @@ class _HomeScreenState extends State<HomeScreen>
   final _searchController = TextEditingController();
   List<Map<String, dynamic>> _searchResults = [];
 
+  // НОВЫЕ ПЕРЕМЕННЫЕ для улучшений
+  final _quickIdController = TextEditingController();
+  bool _hasUpdate = false;
+  String _currentVersion = '3.0.0';
+  String _latestVersion = '3.0.1';
+
   @override
   void initState() {
     super.initState();
@@ -49,6 +55,7 @@ class _HomeScreenState extends State<HomeScreen>
     _pulseAnimation =
         Tween<double>(begin: 0.8, end: 1.0).animate(_animController);
     _setup();
+    _checkForUpdatesInBackground();
   }
 
   @override
@@ -57,6 +64,7 @@ class _HomeScreenState extends State<HomeScreen>
     _animController.dispose();
     _socketSub?.cancel();
     _searchController.dispose();
+    _quickIdController.dispose();
     super.dispose();
   }
 
@@ -109,11 +117,6 @@ class _HomeScreenState extends State<HomeScreen>
       final savedX25519Key = _storage.getSetting('encrypted_x25519_key');
       final savedEd25519Key = _storage.getSetting('encrypted_ed25519_key');
 
-      print('🔑 Password: ${savedPassword != null ? "✓" : "✗"}');
-      print('🔑 Salt: ${savedSalt != null ? "✓" : "✗"}');
-      print('🔑 X25519 key: ${savedX25519Key != null ? "✓" : "✗"}');
-      print('🔑 Ed25519 key: ${savedEd25519Key != null ? "✓" : "✗"}');
-
       if (savedPassword == null || savedSalt == null) {
         // Первый запуск - нужно создать пароль
         print('📝 Password not set, showing setup dialog');
@@ -123,7 +126,6 @@ class _HomeScreenState extends State<HomeScreen>
 
       print('🔐 Initializing cipher...');
       // Инициализируем шифр с сохраненными данными
-      // Если есть сохранённые ключи - восстанавливаем их
       await _cipher.init(
         savedPassword, 
         savedSalt,
@@ -155,7 +157,6 @@ class _HomeScreenState extends State<HomeScreen>
             _connectionStatus = 'ONLINE';
           });
           
-          // ✅ FIX: Register public keys on server immediately after connection
           _registerPublicKeysOnServer();
         }
 
@@ -293,16 +294,10 @@ class _HomeScreenState extends State<HomeScreen>
                 return;
               }
 
-              // Генерируем уникальную соль для пользователя
               final salt = SecureCipher.generateSalt();
-
-              // Инициализируем cipher с новыми ключами
               await _cipher.init(password, salt);
-              
-              // Экспортируем и сохраняем ключи
               final exportedKeys = await _cipher.exportBothKeys(password);
               
-              // Сохраняем всё
               await _storage.saveSetting('user_password', password);
               await _storage.saveSetting('user_salt', salt);
               await _storage.saveSetting('encrypted_x25519_key', exportedKeys['x25519']!);
@@ -600,6 +595,53 @@ class _HomeScreenState extends State<HomeScreen>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // НОВЫЙ пункт - проверка обновлений
+              ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  Icons.system_update,
+                  color: _hasUpdate ? Colors.red : Colors.green,
+                ),
+                title: const Text('Check for updates'),
+                subtitle: _hasUpdate 
+                    ? Text(
+                        'New version available: v$_latestVersion',
+                        style: const TextStyle(color: Colors.red, fontSize: 11),
+                      )
+                    : const Text(
+                        'You\'re up to date',
+                        style: TextStyle(color: Colors.green, fontSize: 11),
+                      ),
+                trailing: _hasUpdate 
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.red.withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.red, width: 1),
+                        ),
+                        child: const Text(
+                          'NEW',
+                          style: TextStyle(
+                            color: Colors.red,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      )
+                    : null,
+                onTap: () {
+                  Navigator.pop(context);
+                  _showUpdateDialog();
+                },
+              ),
+              const Divider(color: Colors.white12),
+              
+              // Остальные пункты меню
               ListTile(
                 dense: true,
                 contentPadding: EdgeInsets.zero,
@@ -626,7 +668,6 @@ class _HomeScreenState extends State<HomeScreen>
                 leading: const Icon(Icons.download, color: Colors.green),
                 title: const Text('Export all chats'),
                 onTap: () async {
-                  // В реальном приложении здесь должно быть сохранение в файл
                   _showError('Export feature coming soon!');
                   Navigator.pop(context);
                 },
@@ -637,7 +678,7 @@ class _HomeScreenState extends State<HomeScreen>
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.info_outline, color: Colors.white54),
                 title: const Text('About'),
-                subtitle: const Text('DeepDrift Secure v2.0'),
+                subtitle: const Text('DDchat v3.0.0'),
               ),
             ],
           ),
@@ -706,19 +747,14 @@ class _HomeScreenState extends State<HomeScreen>
                 return;
               }
 
-              // Генерируем новую соль
               final newSalt = SecureCipher.generateSalt();
-              
-              // Экспортируем существующие ключи с новым паролем
               final exportedKeys = await _cipher.exportBothKeys(newPwd);
               
-              // Сохраняем новый пароль, соль и перешифрованные ключи
               await _storage.saveSetting('user_password', newPwd);
               await _storage.saveSetting('user_salt', newSalt);
               await _storage.saveSetting('encrypted_x25519_key', exportedKeys['x25519']!);
               await _storage.saveSetting('encrypted_ed25519_key', exportedKeys['ed25519']!);
 
-              // Переинициализируем cipher с новым паролем (ключи остаются теми же)
               await _cipher.init(
                 newPwd, 
                 newSalt,
@@ -814,7 +850,6 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Widget _buildChatList() {
-    // Показываем загрузку пока не инициализировались
     if (!_isReady) {
       return Center(
         child: Column(
@@ -1007,103 +1042,430 @@ class _HomeScreenState extends State<HomeScreen>
   Widget build(BuildContext context) {
     final totalUnread = _storage.getTotalUnreadCount();
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF0A0E27),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF1A1F3C),
-        title: _isSearching
-            ? TextField(
-                controller: _searchController,
-                autofocus: true,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  hintText: 'Search messages...',
-                  hintStyle: TextStyle(color: Colors.white38),
-                  border: InputBorder.none,
-                ),
-                onChanged: _performSearch,
-              )
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        "DDChat",
-                        style: GoogleFonts.orbitron(fontSize: 16),
-                      ),
-                      if (totalUnread > 0) ...[
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 6, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.cyan,
-                            borderRadius: BorderRadius.circular(10),
+    return WillPopScope(
+      onWillPop: () async {
+        if (_isSearching) {
+          setState(() {
+            _isSearching = false;
+            _searchController.clear();
+            _searchResults.clear();
+          });
+          return false;
+        }
+        return true;
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0A0E27),
+        appBar: AppBar(
+          backgroundColor: const Color(0xFF1A1F3C),
+          title: _isSearching
+              ? TextField(
+                  controller: _searchController,
+                  autofocus: true,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    hintText: 'Search messages...',
+                    hintStyle: TextStyle(color: Colors.white38),
+                    border: InputBorder.none,
+                  ),
+                  onChanged: _performSearch,
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          "DDchat",
+                          style: GoogleFonts.orbitron(fontSize: 18),
+                        ),
+                        if (totalUnread > 0) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.cyan,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              totalUnread > 99 ? '99+' : '$totalUnread',
+                              style: const TextStyle(
+                                color: Colors.black,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
                           ),
-                          child: Text(
-                            totalUnread > 99 ? '99+' : '$totalUnread',
-                            style: const TextStyle(
-                              color: Colors.black,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
+                        ],
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        Text(
+                          "ID: ${_myUid ?? '...'}",
+                          style: const TextStyle(
+                              fontSize: 10, color: Colors.white54),
+                        ),
+                        const SizedBox(width: 8),
+                        const Text("|",
+                            style:
+                                TextStyle(fontSize: 10, color: Colors.white24)),
+                        const SizedBox(width: 8),
+                        _buildConnectionIndicator(),
+                      ],
+                    ),
+                  ],
+                ),
+          actions: [
+            if (_isSearching)
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () {
+                  setState(() {
+                    _isSearching = false;
+                    _searchController.clear();
+                    _searchResults.clear();
+                  });
+                },
+              )
+            else ...[
+              IconButton(
+                icon: const Icon(Icons.search),
+                onPressed: () {
+                  setState(() => _isSearching = true);
+                },
+              ),
+              IconButton(
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    const Icon(Icons.settings),
+                    if (_hasUpdate)
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        child: Container(
+                          padding: const EdgeInsets.all(2),
+                          decoration: const BoxDecoration(
+                            color: Colors.red,
+                            shape: BoxShape.circle,
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 10,
+                            minHeight: 10,
+                          ),
+                          child: const Center(
+                            child: Text(
+                              '!',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 8,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                           ),
                         ),
-                      ],
-                    ],
-                  ),
-                  Row(
-                    children: [
-                      Text(
-                        "ID: ${_myUid ?? '...'}",
-                        style: const TextStyle(
-                            fontSize: 10, color: Colors.white54),
                       ),
-                      const SizedBox(width: 8),
-                      const Text("|",
-                          style:
-                              TextStyle(fontSize: 10, color: Colors.white24)),
-                      const SizedBox(width: 8),
-                      _buildConnectionIndicator(),
-                    ],
+                  ],
+                ),
+                onPressed: _showSettings,
+              ),
+            ],
+          ],
+        ),
+        body: _isSearching ? _buildSearchResults() : _buildChatList(),
+        
+        bottomNavigationBar: _isSearching 
+          ? null 
+          : Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1A1F3C),
+                border: Border(
+                  top: BorderSide(color: Color(0xFF00D9FF), width: 0.5),
+                ),
+              ),
+              child: SafeArea(
+                child: Row(
+                  children: [
+                    const Icon(Icons.flash_on, color: Color(0xFF00D9FF), size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _quickIdController,
+                        style: const TextStyle(color: Colors.white, fontSize: 14),
+                        decoration: InputDecoration(
+                          hintText: 'Enter ID for quick chat...',
+                          hintStyle: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 13,
+                          ),
+                          filled: true,
+                          fillColor: const Color(0xFF0A0E27),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(20),
+                            borderSide: BorderSide.none,
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 10,
+                          ),
+                        ),
+                        onChanged: (_) => setState(() {}),
+                        onSubmitted: (value) {
+                          if (value.isNotEmpty) {
+                            _addContactWithId(value);
+                            _quickIdController.clear();
+                          }
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF00D9FF),
+                        shape: BoxShape.circle,
+                      ),
+                      child: IconButton(
+                        icon: const Icon(Icons.arrow_forward, color: Colors.black),
+                        iconSize: 20,
+                        onPressed: () {
+                          if (_quickIdController.text.isNotEmpty) {
+                            _addContactWithId(_quickIdController.text);
+                            setState(() => _quickIdController.clear());
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
+        floatingActionButton: _isSearching
+            ? null
+            : FloatingActionButton(
+                onPressed: _addContact,
+                backgroundColor: const Color(0xFF00D9FF),
+                child: const Icon(Icons.add, color: Colors.black),
+              ),
+      ),
+    );
+  }
+
+  // ==========================================
+  // НОВЫЕ ФУНКЦИИ
+  // ==========================================
+
+  void _addContactWithId(String contactId) {
+    if (!_isReady) {
+      _showError('Please wait for connection');
+      return;
+    }
+
+    contactId = contactId.trim();
+    
+    if (contactId.isEmpty) {
+      _showError('Please enter a valid ID');
+      return;
+    }
+
+    if (contactId == _myUid) {
+      _showError('Cannot add yourself as a contact');
+      return;
+    }
+
+    if (_chats.contains(contactId)) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (c) => ChatScreen(
+            myUid: _myUid!,
+            targetUid: contactId,
+            cipher: _cipher,
+          ),
+        ),
+      ).then((_) {
+        setState(() => _chats = _storage.getContactsSortedByActivity());
+      });
+      return;
+    }
+
+    _storage.addContact(contactId, displayName: contactId);
+    setState(() => _chats = _storage.getContactsSortedByActivity());
+    
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (c) => ChatScreen(
+          myUid: _myUid!,
+          targetUid: contactId,
+          cipher: _cipher,
+        ),
+      ),
+    ).then((_) {
+      setState(() => _chats = _storage.getContactsSortedByActivity());
+    });
+  }
+
+  Future<void> _checkForUpdatesInBackground() async {
+    await Future.delayed(const Duration(seconds: 5));
+    
+    try {
+      final hasUpdate = _compareVersions(_currentVersion, _latestVersion) < 0;
+      
+      if (mounted && hasUpdate) {
+        setState(() => _hasUpdate = true);
+      }
+    } catch (e) {
+      print('Error checking for updates: $e');
+    }
+  }
+
+  int _compareVersions(String current, String latest) {
+    final currentParts = current.split('.').map(int.parse).toList();
+    final latestParts = latest.split('.').map(int.parse).toList();
+    
+    for (int i = 0; i < 3; i++) {
+      if (latestParts[i] > currentParts[i]) return -1;
+      if (latestParts[i] < currentParts[i]) return 1;
+    }
+    return 0;
+  }
+
+  void _showUpdateDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1F3C),
+        title: Row(
+          children: [
+            const Icon(Icons.system_update, color: Color(0xFF00D9FF)),
+            const SizedBox(width: 12),
+            const Text('Updates'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Current version:'),
+                Text(
+                  'v$_currentVersion',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+            if (_hasUpdate) ...[
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Latest version:'),
+                  Text(
+                    'v$_latestVersion',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF00D9FF),
+                    ),
                   ),
                 ],
               ),
-        actions: [
-          if (_isSearching)
-            IconButton(
-              icon: const Icon(Icons.close),
-              onPressed: () {
-                setState(() {
-                  _isSearching = false;
-                  _searchController.clear();
-                  _searchResults.clear();
-                });
-              },
-            )
-          else ...[
-            IconButton(
-              icon: const Icon(Icons.search),
-              onPressed: () {
-                setState(() => _isSearching = true);
-              },
-            ),
-            IconButton(
-              icon: const Icon(Icons.settings),
-              onPressed: _showSettings,
-            ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF00D9FF).withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: const Color(0xFF00D9FF).withValues(alpha: 0.3),
+                  ),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'What\'s new:',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF00D9FF),
+                      ),
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      '• Quick ID input field\n'
+                      '• Auto-scroll in chats\n'
+                      '• Voice recording improvements\n'
+                      '• Bug fixes and performance',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              InkWell(
+                onTap: () {
+                  Navigator.pop(context);
+                  _showError('Visit: github.com/yourrepo/releases/latest');
+                },
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00D9FF),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.download, color: Colors.black),
+                      SizedBox(width: 8),
+                      Text(
+                        'Download Update',
+                        style: TextStyle(
+                          color: Colors.black,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ] else ...[
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.green.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.check_circle, color: Colors.green),
+                    SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'You\'re using the latest version!',
+                        style: TextStyle(color: Colors.green),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('CLOSE'),
+          ),
         ],
       ),
-      body: _isSearching ? _buildSearchResults() : _buildChatList(),
-      floatingActionButton: _isSearching
-          ? null
-          : FloatingActionButton(
-              onPressed: _addContact,
-              backgroundColor: const Color(0xFF00D9FF),
-              child: const Icon(Icons.add, color: Colors.black),
-            ),
     );
   }
 }
