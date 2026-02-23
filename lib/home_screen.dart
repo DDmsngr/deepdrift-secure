@@ -1042,19 +1042,18 @@ class _HomeScreenState extends State<HomeScreen>
   Widget build(BuildContext context) {
     final totalUnread = _storage.getTotalUnreadCount();
 
-    return WillPopScope(
-      onWillPop: () async {
-        if (_isSearching) {
-          setState(() {
-            _isSearching = false;
-            _searchController.clear();
-            _searchResults.clear();
-          });
-          return false;
-        }
-        return true;
-      },
-      child: Scaffold(
+    return PopScope(
+  canPop: !_isSearching,
+  onPopInvoked: (didPop) {
+    if (!didPop && _isSearching) {
+      setState(() {
+        _isSearching = false;
+        _searchController.clear();
+        _searchResults.clear();
+      });
+    }
+  },
+  child: Scaffold(
         backgroundColor: const Color(0xFF0A0E27),
         appBar: AppBar(
           backgroundColor: const Color(0xFF1A1F3C),
