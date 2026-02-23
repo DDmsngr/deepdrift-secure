@@ -312,6 +312,46 @@ class StorageService {
   }
 
   // ============================================================
+  // КЕШИРОВАНИЕ ПУБЛИЧНЫХ КЛЮЧЕЙ
+  // ============================================================
+
+  /// Сохраняет публичные ключи контакта в кеш
+  Future<void> cachePublicKeys(
+    String uid, 
+    String x25519Key, 
+    String ed25519Key,
+  ) async {
+    await saveSetting('cached_x25519_$uid', x25519Key);
+    await saveSetting('cached_ed25519_$uid', ed25519Key);
+    await saveSetting('cached_keys_time_$uid', DateTime.now().toIso8601String());
+    print('💾 [Storage] Cached public keys for $uid');
+  }
+
+  /// Получает X25519 ключ из кеша
+  String? getCachedX25519Key(String uid) {
+    return getSetting('cached_x25519_$uid');
+  }
+
+  /// Получает Ed25519 ключ из кеша
+  String? getCachedEd25519Key(String uid) {
+    return getSetting('cached_ed25519_$uid');
+  }
+
+  /// Проверяет есть ли кешированные ключи для пользователя
+  bool hasCachedKeys(String uid) {
+    return getCachedX25519Key(uid) != null && 
+           getCachedEd25519Key(uid) != null;
+  }
+
+  /// Удаляет кешированные ключи (например, при смене ключей)
+  Future<void> clearCachedKeys(String uid) async {
+    await deleteSetting('cached_x25519_$uid');
+    await deleteSetting('cached_ed25519_$uid');
+    await deleteSetting('cached_keys_time_$uid');
+    print('🗑️ [Storage] Cleared cached keys for $uid');
+  }
+
+  // ============================================================
   // ПОИСК
   // ============================================================
 
