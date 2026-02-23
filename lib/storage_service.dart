@@ -42,6 +42,12 @@ class StorageService {
     await _updateChatMetadata(chatWith, msg);
   }
 
+  // ✅ НОВЫЙ МЕТОД: Проверка наличия сообщения по ID
+  bool hasMessage(String chatWith, String messageId) {
+    final history = getHistory(chatWith);
+    return history.any((m) => m is Map && m['id'] == messageId);
+  }
+
   List getHistory(String chatWith) {
     final data = Hive.box(_msgBox).get(chatWith, defaultValue: []);
     return (data is List) ? data : [];
@@ -103,7 +109,6 @@ class StorageService {
   // РЕАКЦИИ (персистентность)
   // ============================================================
 
-  /// Загружает реакции для чата: messageId -> Set<emoji>
   Map<String, Set<String>> loadReactions(String chatWith) {
     final box = Hive.box(_reactionsBox);
     final raw = box.get(chatWith);
@@ -120,7 +125,6 @@ class StorageService {
     }
   }
 
-  /// Сохраняет все реакции чата
   Future<void> saveReactions(
       String chatWith, Map<String, Set<String>> reactions) async {
     final box = Hive.box(_reactionsBox);
@@ -130,7 +134,6 @@ class StorageService {
     await box.put(chatWith, serializable);
   }
 
-  /// Добавляет одну реакцию и сохраняет
   Future<void> addReaction(
       String chatWith, String messageId, String emoji) async {
     final reactions = loadReactions(chatWith);
@@ -139,7 +142,6 @@ class StorageService {
     await saveReactions(chatWith, reactions);
   }
 
-  /// Удаляет одну реакцию и сохраняет
   Future<void> removeReaction(
       String chatWith, String messageId, String emoji) async {
     final reactions = loadReactions(chatWith);
@@ -263,7 +265,6 @@ class StorageService {
 
     if (lastMessage != null) {
       metadata['lastMessageText'] = lastMessage['text'];
-      // Нормализуем время: и int (ms), и ISO-строка → ISO-строка
       final rawTime = lastMessage['time'];
       if (rawTime is int) {
         metadata['lastMessageTime'] =
@@ -355,146 +356,9 @@ class StorageService {
   }
 
   // ============================================================
-  // ЭКСПОРТ
-  // ============================================================
-
-  String exportChat(String chatWith) {
-    List history = getHistory(chatWith);
-    StringBuffer sb = StringBuffer();
-    final displayName = getContactDisplayName(chatWith);
-    sb.writeln("=== Chat with $displayName ($chatWith) ===");
-    sb.writeln("Exported: ${DateTime.now().toIso8601String()}");
-    sb.writeln("Total messages: ${history.length}");
-    sb.writeln("");
-
-    for (var msg in history) {
-      if (msg is Map) {
-        String sender = msg['isMe'] == true ? 'Me' : displayName;
-        String text   = msg['text'] ?? '';
-
-        final dt = _parseTime(msg['time']);
-        final time =
-            "${dt.day}/${dt.month}/${dt.year} ${dt.hour}:${dt.minute.toString().padLeft(2, '0')}";
-
-        sb.write("[$time] $sender: $text");
-        if (msg['isMe'] == true && (msg['status'] ?? '').isNotEmpty) {
-          sb.write(" (${msg['status']})");
-        }
-        sb.writeln();
-      }
-    }
-
-    return sb.toString();
-  }
-
-  /// Экспортирует все чаты в текстовый формат
-  String exportAllChats() {
-    StringBuffer sb = StringBuffer();
-    sb.writeln("=== DeepDrift Messenger - Full Export ===");
-    sb.writeln("Exported: ${DateTime.now().toIso8601String()}");
-    sb.writeln("");
-
-    for (final contact in getContacts()) {
-      sb.writeln(exportChat(contact));
-      sb.writeln("");
-      sb.writeln("=" * 80);
-      sb.writeln("");
-    }
-
-    return sb.toString();
-  }
-
-  String exportChatAsJson(String chatWith) {
-    final history = getHistory(chatWith);
-    final displayName = getContactDisplayName(chatWith);
-    final export = {
-      'chatWith':     chatWith,
-      'displayName':  displayName,
-      'exportedAt':   DateTime.now().toIso8601String(),
-      'messageCount': history.length,
-      'messages':     history,
-    };
-    return jsonEncode(export);
-  }
-
-  // ============================================================
-  // СТАТИСТИКА
-  // ============================================================
-
-  Map<String, dynamic> getChatStats(String chatWith) {
-    final history = getHistory(chatWith);
-    int myMessages    = 0;
-    int theirMessages = 0;
-    int totalChars    = 0;
-    DateTime? firstMessageTime;
-    DateTime? lastMessageTime;
-
-    for (var msg in history) {
-      if (msg is Map) {
-        if (msg['isMe'] == true) {
-          myMessages++;
-        } else {
-          theirMessages++;
-        }
-        if (msg['text'] != null) {
-          totalChars += msg['text'].toString().length;
-        }
-        final t = _parseTime(msg['time']);
-        if (t.year > 2000) {
-          firstMessageTime ??= t;
-          lastMessageTime = t;
-        }
-      }
-    }
-
-    return {
-      'totalMessages':         history.length,
-      'myMessages':            myMessages,
-      'theirMessages':         theirMessages,
-      'averageMessageLength':  history.isNotEmpty ? totalChars ~/ history.length : 0,
-      'firstMessageTime':      firstMessageTime?.toIso8601String(),
-      'lastMessageTime':       lastMessageTime?.toIso8601String(),
-    };
-  }
-
-  // ============================================================
-  // ОЧИСТКА
-  // ============================================================
-
-  Future<void> clearAllData() async {
-    await Hive.box(_msgBox).clear();
-    await Hive.box(_contactsBox).clear();
-    await Hive.box(_settingsBox).clear();
-    await Hive.box(_metadataBox).clear();
-    await Hive.box(_reactionsBox).clear();
-  }
-
-  Future<void> deleteOldMessages(int olderThanDays) async {
-    final cutoffDate = DateTime.now().subtract(Duration(days: olderThanDays));
-    var box = Hive.box(_msgBox);
-
-    for (var chatWith in box.keys) {
-      List history =
-          getHistory(chatWith.toString()).whereType<Map>().toList();
-
-      history.removeWhere((msg) {
-        final t = _parseTime(msg['time']);
-        return t.isBefore(cutoffDate);
-      });
-
-      if (history.isEmpty) {
-        await box.delete(chatWith);
-      } else {
-        await box.put(chatWith, history);
-      }
-    }
-  }
-
-  // ============================================================
   // ВНУТРЕННИЕ УТИЛИТЫ
   // ============================================================
 
-  /// Парсит время из int (ms) или ISO-строки в DateTime.
   DateTime _parseTime(dynamic raw) {
     if (raw == null) return DateTime(2000);
     if (raw is int) return DateTime.fromMillisecondsSinceEpoch(raw);
