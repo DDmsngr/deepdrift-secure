@@ -16,7 +16,7 @@
     <uses-permission android:name="com.google.android.c2dm.permission.RECEIVE"/>
     
     <application
-        android:label="DeepDrift Secure"
+        android:label="DDChat"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:enableOnBackInvokedCallback="true">
