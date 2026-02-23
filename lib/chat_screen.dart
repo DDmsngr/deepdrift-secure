@@ -12,7 +12,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
 
-
 import 'crypto_service.dart';
 import 'socket_service.dart';
 import 'storage_service.dart';
@@ -86,6 +85,8 @@ class _ChatScreenState extends State<ChatScreen> {
   // Voice recording
   bool    _isRecording   = false;
   String? _voiceTempPath;
+  Timer?  _recordingTimer;
+  int     _recordingDuration = 0;
 
   // Edit
   String? _editingMessageId;
@@ -112,8 +113,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _messageController.addListener(_onTextChanged);
     _scrollController.addListener(_onScroll);
     _initializeSecureChat();
-    // ✅ FIX #8: _markAllAsRead вызывается ПОСЛЕ загрузки истории
-    _loadRecentHistory().then((_) => _markAllAsRead());
+    // Загрузка истории и скролл вниз
+    _loadRecentHistory().then((_) {
+      _markAllAsRead();
+      _scrollToBottom(animated: false);
+    });
     _listenToMessages();
     _reactions = _storage.loadReactions(widget.targetUid);
   }
@@ -123,18 +127,22 @@ class _ChatScreenState extends State<ChatScreen> {
     _socketSub?.cancel();
     _typingTimer?.cancel();
     _keyExchangeTimeout?.cancel();
+    _recordingTimer?.cancel(); // Отменяем таймер записи
+    
     _messageController.removeListener(_onTextChanged);
     _scrollController.removeListener(_onScroll);
+    
     _messageController.dispose();
     _searchController.dispose();
     _scrollController.dispose();
+    
     _audioRecorder.dispose();
     _audioPlayer.dispose();
 
     if (_isTyping) {
       _socket.sendTypingIndicator(widget.targetUid, false);
     }
-    // ✅ FIX #10: очищаем временный голосовой файл если есть
+    
     _cleanTempVoiceFile();
 
     super.dispose();
@@ -187,7 +195,8 @@ class _ChatScreenState extends State<ChatScreen> {
           }
           _hasMoreMessages = history.length == MESSAGES_PER_PAGE;
         });
-        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+        // Скроллим вниз после рендера
+        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom(animated: false));
       }
     } catch (e) {
       debugPrint("Load history error: $e");
@@ -285,7 +294,6 @@ class _ChatScreenState extends State<ChatScreen> {
       final msg = {
         'id':         msgId,
         'text':       decrypted,
-        // ✅ FIX #1: isMe = false для входящих
         'isMe':       false,
         'time':       rawTime ?? DateTime.now().millisecondsSinceEpoch,
         'from':       senderUid,
@@ -294,7 +302,6 @@ class _ChatScreenState extends State<ChatScreen> {
         'replyTo':    data['replyTo'],
         'replyToId':  data['replyToId'],
         'type':       data['messageType'] ?? 'text',
-        // Сохраняем путь к файлу, а не base64
         'filePath':   localPath,
         'fileName':   data['fileName'],
         'fileSize':   data['fileSize'],
@@ -321,6 +328,9 @@ class _ChatScreenState extends State<ChatScreen> {
   void _handleTypingIndicator(Map<String, dynamic> data) {
     if (data['from_uid'] == widget.targetUid && mounted) {
       setState(() => _targetIsTyping = data['typing'] == true);
+      if (_targetIsTyping) {
+        _scrollToBottom();
+      }
     }
   }
 
@@ -407,7 +417,6 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     });
 
-    // Сохраняем реакции в хранилище
     _storage.saveReactions(widget.targetUid, _reactions);
   }
 
@@ -415,7 +424,6 @@ class _ChatScreenState extends State<ChatScreen> {
   // Read receipt & typing
   // ──────────────────────────────────────────────────────────────────────────
 
-  // ✅ FIX #8: вызывается после загрузки истории
   Future<void> _markAllAsRead() async {
     final unreadIds = _messages
         .where((m) => m['from'] == widget.targetUid && m['status'] != 'read')
@@ -450,7 +458,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _onScroll() {
-    if (_scrollController.position.pixels <= 100) {
+    if (_scrollController.hasClients && _scrollController.position.pixels <= 100) {
       _loadMoreMessages();
     }
   }
@@ -459,7 +467,6 @@ class _ChatScreenState extends State<ChatScreen> {
   // Media helpers
   // ──────────────────────────────────────────────────────────────────────────
 
-  /// Сохраняет медиа-данные (base64) на диск и возвращает локальный путь.
   Future<String?> _saveMediaToDisk({
     required String base64Data,
     required MsgType msgType,
@@ -468,7 +475,9 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/deepdrift_media');
-      await mediaDir.create(recursive: true);
+      if (!await mediaDir.exists()) {
+        await mediaDir.create(recursive: true);
+      }
 
       final ext = _extensionForType(msgType, fileName);
       final name = fileName ?? 'media_${DateTime.now().millisecondsSinceEpoch}$ext';
@@ -534,7 +543,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final msgId = _uuid.v4();
     final now   = DateTime.now().millisecondsSinceEpoch;
 
-    // ✅ FIX #2: сохраняем replyToId ДО setState, иначе он уже null
     final replyId   = _replyToId;
     final replyText = _replyToText;
 
@@ -548,7 +556,6 @@ class _ChatScreenState extends State<ChatScreen> {
       final myMsg = {
         'id':         msgId,
         'text':       messageText,
-        // ✅ FIX #1: isMe = true для исходящих
         'isMe':       true,
         'time':       now,
         'from':       widget.myUid,
@@ -569,7 +576,6 @@ class _ChatScreenState extends State<ChatScreen> {
           _messages.add(myMsg);
           _messageIds.add(msgId);
           _messageController.clear();
-          // Очищаем reply только в setState, после того как сохранили значения выше
           _replyToText = null;
           _replyToId   = null;
         });
@@ -581,7 +587,7 @@ class _ChatScreenState extends State<ChatScreen> {
         encrypted,
         signature,
         msgId,
-        replyToId:   replyId,   // используем сохранённое значение
+        replyToId:   replyId,
         messageType: messageType,
         mediaData:   mediaData,
         fileName:    fileName,
@@ -625,7 +631,6 @@ class _ChatScreenState extends State<ChatScreen> {
       final fileName   = image.name;
       final fileSize   = bytes.length;
 
-      // Сохраняем локально
       final localPath = await _saveMediaToDisk(
         base64Data: base64Img,
         msgType:    MsgType.image,
@@ -651,7 +656,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final result = await FilePicker.platform.pickFiles(
         type:         FileType.any,
-        withData:     false, // не загружаем весь файл в память сразу
+        withData:     false,
         withReadStream: false,
       );
       if (result == null || result.files.isEmpty) return;
@@ -663,7 +668,6 @@ class _ChatScreenState extends State<ChatScreen> {
       final file     = File(filePath);
       final fileSize = await file.length();
 
-      // Ограничение 20 МБ
       if (fileSize > 20 * 1024 * 1024) {
         _showError('File too large. Maximum size is 20 MB.');
         return;
@@ -676,7 +680,6 @@ class _ChatScreenState extends State<ChatScreen> {
       final fileName  = picked.name;
       final mimeType  = _mimeTypeFromExtension(fileName);
 
-      // Копируем в app documents для локального просмотра
       final localPath = await _saveMediaToDisk(
         base64Data: base64Data,
         msgType:    MsgType.file,
@@ -699,20 +702,76 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // ─── Голосовые сообщения ──────────────────────────────────────────────────
-  Future<void> _toggleVoiceRecording() async {
-    if (_isRecording) {
+  // ─── Голосовые сообщения (УЛУЧШЕННЫЕ) ──────────────────────────────────────
+  
+  // Старт записи с таймером
+  Future<void> _startRecording() async {
+    if (await _audioRecorder.hasPermission()) {
+      final tempDir  = await getTemporaryDirectory();
+      final path =
+          '${tempDir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+
+      await _audioRecorder.start(
+        const RecordConfig(encoder: AudioEncoder.aacLc),
+        path: path,
+      );
+      
+      setState(() {
+        _isRecording   = true;
+        _voiceTempPath = path;
+        _recordingDuration = 0;
+      });
+      
+      _recordingTimer?.cancel();
+      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (mounted) {
+          setState(() => _recordingDuration++);
+        }
+      });
+    } else {
+      _showError('Microphone permission denied');
+    }
+  }
+  
+  // Отмена записи (без отправки)
+  Future<void> _cancelRecording() async {
+    try {
+      await _audioRecorder.stop();
+      _recordingTimer?.cancel();
+      _cleanTempVoiceFile();
+      
+      if (mounted) {
+        setState(() {
+          _isRecording = false;
+          _recordingDuration = 0;
+        });
+      }
+    } catch (e) {
+      print('Error cancelling recording: $e');
+    }
+  }
+
+  // Остановка и отправка
+  Future<void> _stopRecordingAndSend() async {
+    try {
       final path = await _audioRecorder.stop();
+      _recordingTimer?.cancel();
       setState(() => _isRecording = false);
 
       if (path != null) {
         _voiceTempPath = path;
         final file     = File(path);
+        
+        // Проверка: не отправлять слишком короткие записи
+        if (_recordingDuration < 1) {
+           _cleanTempVoiceFile();
+           return;
+        }
+        
         final bytes    = await file.readAsBytes();
         final base64Audio = base64Encode(bytes);
         final fileName = 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
 
-        // Копируем в постоянное хранилище
         final localPath = await _saveMediaToDisk(
           base64Data: base64Audio,
           msgType:    MsgType.voice,
@@ -729,45 +788,27 @@ class _ChatScreenState extends State<ChatScreen> {
           mimeType:    'audio/m4a',
         );
 
-        // ✅ FIX #10: удаляем временный файл после отправки
         _cleanTempVoiceFile();
       }
-    } else {
-      if (await _audioRecorder.hasPermission()) {
-        final tempDir  = await getTemporaryDirectory();
-        final path =
-            '${tempDir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
-
-        await _audioRecorder.start(
-          const RecordConfig(encoder: AudioEncoder.aacLc),
-          path: path,
-        );
-        setState(() {
-          _isRecording   = true;
-          _voiceTempPath = path;
-        });
-      } else {
-        _showError('Microphone permission denied');
-      }
+    } catch (e) {
+      _showError('Error sending voice: $e');
+      _cancelRecording();
     }
   }
 
   Future<void> _playVoiceMessage(Map<String, dynamic> msg) async {
     final msgId = msg['id']?.toString();
     try {
-      // Если уже играем этот — останавливаем
       if (_playingMessageId == msgId) {
         await _audioPlayer.stop();
         setState(() => _playingMessageId = null);
         return;
       }
 
-      // Если есть локальный путь — используем его
       final localPath = msg['filePath'] as String?;
       if (localPath != null && File(localPath).existsSync()) {
         await _audioPlayer.play(DeviceFileSource(localPath));
       } else {
-        // Fallback: используем mediaData из памяти (только для новых сообщений)
         _showError('Voice file not available');
         return;
       }
@@ -866,14 +907,24 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _scrollToBottom() {
-    if (_scrollController.hasClients) {
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 200),
-        curve:    Curves.easeOut,
-      );
-    }
+  void _scrollToBottom({bool animated = true}) {
+    if (!_scrollController.hasClients) return;
+    
+    // Используем небольшую задержку, чтобы список успел обновиться
+    Future.delayed(const Duration(milliseconds: 50), () {
+      if (!_scrollController.hasClients) return;
+      
+      final position = _scrollController.position.maxScrollExtent;
+      if (animated) {
+        _scrollController.animateTo(
+          position,
+          duration: const Duration(milliseconds: 300),
+          curve:    Curves.easeOut,
+        );
+      } else {
+        _scrollController.jumpTo(position);
+      }
+    });
   }
 
   String _formatTime(dynamic timestamp) {
@@ -882,6 +933,12 @@ class _ChatScreenState extends State<ChatScreen> {
         ? DateTime.fromMillisecondsSinceEpoch(timestamp)
         : DateTime.tryParse(timestamp.toString()) ?? DateTime.now();
     return DateFormat.Hm().format(dt);
+  }
+  
+  String _formatRecordingTime(int seconds) {
+    final m = (seconds ~/ 60).toString().padLeft(2, '0');
+    final s = (seconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
   }
 
   void _setReplyTo(Map<String, dynamic> message) {
@@ -1425,7 +1482,6 @@ class _ChatScreenState extends State<ChatScreen> {
       _showError('File not available on this device');
       return;
     }
-    // Показываем путь — в реальном приложении используй open_file пакет
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Saved at: $filePath'),
@@ -1480,11 +1536,7 @@ class _ChatScreenState extends State<ChatScreen> {
           if (_editingMessageId != null)
             _buildEditBanner(),
 
-          // Recording banner
-          if (_isRecording)
-            _buildRecordingBanner(),
-
-          // Input area
+          // Input area (Standard OR Recording)
           _buildInputArea(),
         ],
       ),
@@ -1585,31 +1637,78 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
 
-  Widget _buildRecordingBanner() => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        color:   Colors.red.withValues(alpha: 0.15),
+  Widget _buildInputArea() {
+    // Вариант 1: Идет запись голоса
+    if (_isRecording) {
+      return Container(
+        padding: const EdgeInsets.all(8),
+        decoration: const BoxDecoration(
+          color: Color(0xFF1A1F3C),
+          border: Border(top: BorderSide(color: Colors.red, width: 0.5)),
+        ),
         child: Row(
           children: [
-            const Icon(Icons.mic, color: Colors.red),
-            const SizedBox(width: 8),
-            const Expanded(
-              child: Text('Recording...',
-                  style: TextStyle(color: Colors.red)),
+            Expanded(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(25),
+                  border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 10,
+                      height: 10,
+                      decoration: const BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Text(
+                      _formatRecordingTime(_recordingDuration),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const Spacer(),
+                    const Text(
+                      'Recording...',
+                      style: TextStyle(color: Colors.redAccent, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
             ),
-            ElevatedButton.icon(
-              onPressed: _toggleVoiceRecording,
-              style:     ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 6)),
-              icon:  const Icon(Icons.stop, size: 18),
-              label: const Text('Send'),
+            const SizedBox(width: 8),
+            // Cancel button
+            CircleAvatar(
+              backgroundColor: Colors.white10,
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.red),
+                onPressed: _cancelRecording,
+              ),
+            ),
+            const SizedBox(width: 8),
+            // Send button
+            CircleAvatar(
+              backgroundColor: const Color(0xFF00D9FF),
+              child: IconButton(
+                icon: const Icon(Icons.arrow_upward, color: Colors.black),
+                onPressed: _stopRecordingAndSend,
+              ),
             ),
           ],
         ),
       );
+    }
 
-  Widget _buildInputArea() => Container(
+    // Вариант 2: Обычный ввод текста
+    return Container(
         padding:   const EdgeInsets.all(8),
         decoration: const BoxDecoration(
           color:  Color(0xFF1A1F3C),
@@ -1643,14 +1742,11 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
 
-            // Voice record button
+            // Voice record button (Start)
             if (!_isSendingFile)
               IconButton(
-                icon: Icon(
-                  _isRecording ? Icons.stop : Icons.mic,
-                  color: _isRecording ? Colors.red : Colors.cyan,
-                ),
-                onPressed: _toggleVoiceRecording,
+                icon: const Icon(Icons.mic, color: Colors.cyan),
+                onPressed: _startRecording,
               ),
 
             // File upload indicator
@@ -1678,6 +1774,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   hintStyle: const TextStyle(color: Colors.white38),
                   border:    InputBorder.none,
                 ),
+                onTap: () {
+                   // Скролл при фокусе
+                   Future.delayed(const Duration(milliseconds: 300), _scrollToBottom);
+                },
               ),
             ),
 
@@ -1689,6 +1789,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
       );
+  }
 
   PopupMenuItem<String> _popupItem(
           String value, IconData icon, String label) =>
