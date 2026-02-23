@@ -1227,7 +1227,33 @@ class _ChatScreenState extends State<ChatScreen> {
       default: return const SizedBox.shrink();
     }
   }
+  void _showFullImageFromFile(String filePath) {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.black,
+        child: InteractiveViewer(
+          child: Image.file(File(filePath)),
+        ),
+      ),
+    );
+  }
 
+  Future<void> _openFile(String? filePath, String fileName) async {
+    if (filePath == null || !File(filePath).existsSync()) {
+      _showError('File not available on this device');
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Saved at: $filePath'),
+        action: SnackBarAction(
+          label: 'OK',
+          onPressed: () {},
+        ),
+      ),
+    );
+  }
   @override
   Widget build(BuildContext context) {
     final displayName = _storage.getContactDisplayName(widget.targetUid);
