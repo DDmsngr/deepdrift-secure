@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:hive_flutter/hive_flutter.dart';
 
 /// Сервис для локального хранения данных приложения
@@ -39,6 +40,12 @@ class StorageService {
 
     await box.put(chatWith, history);
     await _updateChatMetadata(chatWith, msg);
+  }
+
+  // Проверка наличия сообщения по ID
+  bool hasMessage(String chatWith, String messageId) {
+    final history = getHistory(chatWith);
+    return history.any((m) => m is Map && m['id'] == messageId);
   }
 
   List getHistory(String chatWith) {
@@ -96,29 +103,6 @@ class StorageService {
     List history = getHistory(chatWith);
     history.removeWhere((msg) => msg is Map && msg['id'] == messageId);
     await box.put(chatWith, history);
-  }
-
-  // Удаление сообщений старше указанного количества дней
-  Future<void> deleteOldMessages(int daysOld) async {
-    final cutoffTime = DateTime.now().subtract(Duration(days: daysOld));
-    final cutoffMillis = cutoffTime.millisecondsSinceEpoch;
-    var box = Hive.box(_msgBox);
-
-    for (var chatWith in box.keys) {
-      List history = getHistory(chatWith.toString());
-      final originalLength = history.length;
-
-      history.removeWhere((msg) {
-        if (msg is! Map) return false;
-        final msgTime = _parseTime(msg['time']);
-        return msgTime.millisecondsSinceEpoch < cutoffMillis;
-      });
-
-      if (history.length != originalLength) {
-        await box.put(chatWith, history);
-        await _updateChatMetadata(chatWith.toString(), null);
-      }
-    }
   }
 
   // ============================================================
@@ -309,29 +293,6 @@ class StorageService {
   Map<String, dynamic> getChatMetadata(String chatWith) {
     final data = Hive.box(_metadataBox).get('chat_$chatWith', defaultValue: {});
     return Map<String, dynamic>.from(data);
-  }
-
-  // Получение статистики чата
-  Map<String, int> getChatStats(String chatWith) {
-    final history = getHistory(chatWith);
-    int myMessages = 0;
-    int theirMessages = 0;
-
-    for (var msg in history) {
-      if (msg is Map) {
-        if (msg['isMe'] == true) {
-          myMessages++;
-        } else {
-          theirMessages++;
-        }
-      }
-    }
-
-    return {
-      'totalMessages': history.length,
-      'myMessages': myMessages,
-      'theirMessages': theirMessages,
-    };
   }
 
   // ============================================================
