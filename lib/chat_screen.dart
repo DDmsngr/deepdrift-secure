@@ -113,13 +113,26 @@ class _ChatScreenState extends State<ChatScreen> {
     _messageController.addListener(_onTextChanged);
     _scrollController.addListener(_onScroll);
     _initializeSecureChat();
+    
     // Загрузка истории и скролл вниз
     _loadRecentHistory().then((_) {
       _markAllAsRead();
       _scrollToBottom(animated: false);
     });
+    
     _listenToMessages();
     _reactions = _storage.loadReactions(widget.targetUid);
+
+    // ✅ ИСПРАВЛЕНИЕ 1: Запрос оффлайн сообщений
+    // Ждем немного, чтобы сокет успел инициализироваться, если экран только открыт
+    Future.delayed(const Duration(milliseconds: 500), () {
+      try {
+        // Убедитесь, что метод requestOfflineMessages существует в SocketService
+        _socket.requestOfflineMessages(widget.targetUid);
+      } catch (e) {
+        debugPrint("Note: requestOfflineMessages might not be implemented in SocketService yet.");
+      }
+    });
   }
 
   @override
@@ -127,7 +140,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _socketSub?.cancel();
     _typingTimer?.cancel();
     _keyExchangeTimeout?.cancel();
-    _recordingTimer?.cancel(); // Отменяем таймер записи
+    _recordingTimer?.cancel(); 
     
     _messageController.removeListener(_onTextChanged);
     _scrollController.removeListener(_onScroll);
@@ -195,7 +208,6 @@ class _ChatScreenState extends State<ChatScreen> {
           }
           _hasMoreMessages = history.length == MESSAGES_PER_PAGE;
         });
-        // Скроллим вниз после рендера
         WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom(animated: false));
       }
     } catch (e) {
@@ -271,7 +283,6 @@ class _ChatScreenState extends State<ChatScreen> {
     widget.cipher
         .decryptText(encrypted, fromUid: widget.targetUid)
         .then((decrypted) async {
-      // Проверяем подпись
       if (signature != null) {
         final valid = await widget.cipher.verifySignature(
           decrypted,
@@ -281,7 +292,6 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!valid) debugPrint("⚠️ Signature verification failed for $msgId");
       }
 
-      // Для файлов/картинок/голосовых сохраняем на диск
       String? localPath;
       if (msgTyp != MsgType.text && data['mediaData'] != null) {
         localPath = await _saveMediaToDisk(
@@ -702,9 +712,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // ─── Голосовые сообщения (УЛУЧШЕННЫЕ) ──────────────────────────────────────
-  
-  // Старт записи с таймером
+  // ─── Голосовые сообщения ──────────────────────────────────────────────────
   Future<void> _startRecording() async {
     if (await _audioRecorder.hasPermission()) {
       final tempDir  = await getTemporaryDirectory();
@@ -733,7 +741,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
   
-  // Отмена записи (без отправки)
   Future<void> _cancelRecording() async {
     try {
       await _audioRecorder.stop();
@@ -751,7 +758,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Остановка и отправка
   Future<void> _stopRecordingAndSend() async {
     try {
       final path = await _audioRecorder.stop();
@@ -762,7 +768,6 @@ class _ChatScreenState extends State<ChatScreen> {
         _voiceTempPath = path;
         final file     = File(path);
         
-        // Проверка: не отправлять слишком короткие записи
         if (_recordingDuration < 1) {
            _cleanTempVoiceFile();
            return;
@@ -909,11 +914,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _scrollToBottom({bool animated = true}) {
     if (!_scrollController.hasClients) return;
-    
-    // Используем небольшую задержку, чтобы список успел обновиться
     Future.delayed(const Duration(milliseconds: 50), () {
       if (!_scrollController.hasClients) return;
-      
       final position = _scrollController.position.maxScrollExtent;
       if (animated) {
         _scrollController.animateTo(
@@ -1637,6 +1639,7 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
 
+  // ✅ ИСПРАВЛЕНИЕ 2: Обернули контент в SafeArea
   Widget _buildInputArea() {
     // Вариант 1: Идет запись голоса
     if (_isRecording) {
@@ -1646,63 +1649,65 @@ class _ChatScreenState extends State<ChatScreen> {
           color: Color(0xFF1A1F3C),
           border: Border(top: BorderSide(color: Colors.red, width: 0.5)),
         ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                decoration: BoxDecoration(
-                  color: Colors.red.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(25),
-                  border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 10,
-                      height: 10,
-                      decoration: const BoxDecoration(
-                        color: Colors.red,
-                        shape: BoxShape.circle,
+        child: SafeArea(
+          child: Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(25),
+                    border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 10,
+                        height: 10,
+                        decoration: const BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      _formatRecordingTime(_recordingDuration),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
+                      const SizedBox(width: 12),
+                      Text(
+                        _formatRecordingTime(_recordingDuration),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
-                    const Spacer(),
-                    const Text(
-                      'Recording...',
-                      style: TextStyle(color: Colors.redAccent, fontSize: 12),
-                    ),
-                  ],
+                      const Spacer(),
+                      const Text(
+                        'Recording...',
+                        style: TextStyle(color: Colors.redAccent, fontSize: 12),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 8),
-            // Cancel button
-            CircleAvatar(
-              backgroundColor: Colors.white10,
-              child: IconButton(
-                icon: const Icon(Icons.close, color: Colors.red),
-                onPressed: _cancelRecording,
+              const SizedBox(width: 8),
+              // Cancel button
+              CircleAvatar(
+                backgroundColor: Colors.white10,
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.red),
+                  onPressed: _cancelRecording,
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            // Send button
-            CircleAvatar(
-              backgroundColor: const Color(0xFF00D9FF),
-              child: IconButton(
-                icon: const Icon(Icons.arrow_upward, color: Colors.black),
-                onPressed: _stopRecordingAndSend,
+              const SizedBox(width: 8),
+              // Send button
+              CircleAvatar(
+                backgroundColor: const Color(0xFF00D9FF),
+                child: IconButton(
+                  icon: const Icon(Icons.arrow_upward, color: Colors.black),
+                  onPressed: _stopRecordingAndSend,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       );
     }
@@ -1714,79 +1719,81 @@ class _ChatScreenState extends State<ChatScreen> {
           color:  Color(0xFF1A1F3C),
           border: Border(top: BorderSide(color: Colors.cyan, width: 0.5)),
         ),
-        child: Row(
-          children: [
-            // Attach menu
-            PopupMenuButton<String>(
-              color:      const Color(0xFF1A1F3C),
-              icon:       const Icon(Icons.add_circle_outline,
-                  color: Colors.cyan),
-              onSelected: (value) {
-                switch (value) {
-                  case 'photo_gallery':
-                    _sendPhoto(source: ImageSource.gallery);
-                    break;
-                  case 'photo_camera':
-                    _sendPhoto(source: ImageSource.camera);
-                    break;
-                  case 'file':
-                    _sendFile();
-                    break;
-                }
-              },
-              itemBuilder: (_) => [
-                _popupItem('photo_gallery', Icons.photo_library,
-                    'Photo from gallery'),
-                _popupItem('photo_camera', Icons.camera_alt, 'Take photo'),
-                _popupItem('file', Icons.attach_file, 'Send file'),
-              ],
-            ),
-
-            // Voice record button (Start)
-            if (!_isSendingFile)
-              IconButton(
-                icon: const Icon(Icons.mic, color: Colors.cyan),
-                onPressed: _startRecording,
-              ),
-
-            // File upload indicator
-            if (_isSendingFile)
-              const Padding(
-                padding: EdgeInsets.all(8),
-                child:   SizedBox(
-                  width:  20,
-                  height: 20,
-                  child:  CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.cyan),
-                ),
-              ),
-
-            // Text field
-            Expanded(
-              child: TextField(
-                controller: _messageController,
-                style:      const TextStyle(color: Colors.white),
-                maxLines:   null,
-                decoration: InputDecoration(
-                  hintText: _editingMessageId != null
-                      ? 'Edit message...'
-                      : 'Type a message...',
-                  hintStyle: const TextStyle(color: Colors.white38),
-                  border:    InputBorder.none,
-                ),
-                onTap: () {
-                   // Скролл при фокусе
-                   Future.delayed(const Duration(milliseconds: 300), _scrollToBottom);
+        child: SafeArea(
+          child: Row(
+            children: [
+              // Attach menu
+              PopupMenuButton<String>(
+                color:      const Color(0xFF1A1F3C),
+                icon:       const Icon(Icons.add_circle_outline,
+                    color: Colors.cyan),
+                onSelected: (value) {
+                  switch (value) {
+                    case 'photo_gallery':
+                      _sendPhoto(source: ImageSource.gallery);
+                      break;
+                    case 'photo_camera':
+                      _sendPhoto(source: ImageSource.camera);
+                      break;
+                    case 'file':
+                      _sendFile();
+                      break;
+                  }
                 },
+                itemBuilder: (_) => [
+                  _popupItem('photo_gallery', Icons.photo_library,
+                      'Photo from gallery'),
+                  _popupItem('photo_camera', Icons.camera_alt, 'Take photo'),
+                  _popupItem('file', Icons.attach_file, 'Send file'),
+                ],
               ),
-            ),
 
-            // Send button
-            IconButton(
-              icon:      const Icon(Icons.send, color: Colors.cyan),
-              onPressed: () => _sendMessage(),
-            ),
-          ],
+              // Voice record button (Start)
+              if (!_isSendingFile)
+                IconButton(
+                  icon: const Icon(Icons.mic, color: Colors.cyan),
+                  onPressed: _startRecording,
+                ),
+
+              // File upload indicator
+              if (_isSendingFile)
+                const Padding(
+                  padding: EdgeInsets.all(8),
+                  child:   SizedBox(
+                    width:  20,
+                    height: 20,
+                    child:  CircularProgressIndicator(
+                        strokeWidth: 2, color: Colors.cyan),
+                  ),
+                ),
+
+              // Text field
+              Expanded(
+                child: TextField(
+                  controller: _messageController,
+                  style:      const TextStyle(color: Colors.white),
+                  maxLines:   null,
+                  decoration: InputDecoration(
+                    hintText: _editingMessageId != null
+                        ? 'Edit message...'
+                        : 'Type a message...',
+                    hintStyle: const TextStyle(color: Colors.white38),
+                    border:    InputBorder.none,
+                  ),
+                  onTap: () {
+                     // Скролл при фокусе
+                     Future.delayed(const Duration(milliseconds: 300), _scrollToBottom);
+                  },
+                ),
+              ),
+
+              // Send button
+              IconButton(
+                icon:      const Icon(Icons.send, color: Colors.cyan),
+                onPressed: () => _sendMessage(),
+              ),
+            ],
+          ),
         ),
       );
   }
