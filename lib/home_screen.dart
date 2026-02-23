@@ -1029,7 +1029,7 @@ class _HomeScreenState extends State<HomeScreen>
                   Row(
                     children: [
                       Text(
-                        "DeepDrift Messenger",
+                        "DDChat",
                         style: GoogleFonts.orbitron(fontSize: 16),
                       ),
                       if (totalUnread > 0) ...[
