@@ -10,6 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.2.0
+  gal: ^2.3.0
   
   # База данных
   hive: ^2.2.3
