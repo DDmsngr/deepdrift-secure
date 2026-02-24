@@ -387,6 +387,19 @@ class SocketService {
 
   // ==================== НОВЫЕ МЕТОДЫ ====================
 
+  /// 0. Запрос оффлайн сообщений
+  void requestOfflineMessages(String fromUid) {
+    if (!_isConnected) {
+      print('⚠️ Cannot request offline messages: not connected');
+      return;
+    }
+    send({
+      'type': 'request_offline_messages',
+      'from_uid': fromUid,
+    });
+    print('📬 Requested offline messages from $fromUid');
+  }
+
   /// 1. Удаление сообщения
   void sendDeleteMessage(String targetUid, String messageId) {
     print("🗑️ Deleting message: $messageId");
