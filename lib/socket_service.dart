@@ -1,12 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:dio/dio.dart'; // <--- ВАЖНО
 import 'storage_service.dart';
 import 'crypto_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 
-/// Сервис для управления WebSocket подключением
 class SocketService {
   static final SocketService _instance = SocketService._internal();
   factory SocketService() => _instance;
@@ -17,14 +18,20 @@ class SocketService {
   static const Duration RECONNECT_BASE_DELAY = Duration(seconds: 2);
   static const Duration PING_INTERVAL = Duration(seconds: 30);
   static const Duration CONNECTION_TIMEOUT = Duration(seconds: 10);
+  static const String HTTP_UPLOAD_URL = 'https://deepdrift-backend.onrender.com/upload';
 
   WebSocketChannel? _channel;
   final _messageStream = StreamController<Map<String, dynamic>>.broadcast();
   
+  // Стрим прогресса загрузки
+  final _uploadProgressController = StreamController<double>.broadcast();
+  Stream<double> get uploadProgress => _uploadProgressController.stream;
+
   Stream<Map<String, dynamic>> get messages => _messageStream.stream;
 
   late SecureCipher _cipher;
   final _storage = StorageService();
+  final Dio _dio = Dio();
   
   bool _isConnected = false;
   bool _isConnecting = false;
@@ -40,7 +47,6 @@ class SocketService {
   DateTime? _lastPongTime;
   
   final _pendingMessages = <String, Completer<bool>>{};
-  
   bool _isInBackground = false;
 
   void init(SecureCipher cipher) {
@@ -48,17 +54,14 @@ class SocketService {
   }
 
   void onAppResumed() {
-    print("🔄 App resumed from background");
     _isInBackground = false;
     if (!_isConnected && _url != null && _myUid != null) {
-      print("🔌 Reconnecting after app resume...");
       _reconnectAttempts = 0;
       _attemptConnection();
     }
   }
 
   void onAppPaused() {
-    print("⏸️ App paused (going to background)");
     _isInBackground = true;
   }
 
@@ -68,6 +71,36 @@ class SocketService {
     _authToken = authToken;
     _attemptConnection();
   }
+
+  // --- ЛОГИКА ЗАГРУЗКИ ФАЙЛОВ ---
+  Future<String?> uploadFile(File file) async {
+    try {
+      String fileName = file.path.split('/').last;
+      FormData formData = FormData.fromMap({
+        "file": await MultipartFile.fromFile(file.path, filename: fileName),
+      });
+
+      _uploadProgressController.add(0.01); // Старт
+
+      var response = await _dio.post(
+        HTTP_UPLOAD_URL,
+        data: formData,
+        onSendProgress: (sent, total) {
+          _uploadProgressController.add(sent / total);
+        },
+      );
+
+      if (response.statusCode == 200 && response.data['status'] == 'success') {
+        _uploadProgressController.add(0.0); // Финиш
+        return response.data['file_id'];
+      }
+    } catch (e) {
+      print("Upload Error: $e");
+      _uploadProgressController.add(0.0);
+    }
+    return null;
+  }
+  // -----------------------------
 
   Duration _getReconnectDelay() {
     final baseSeconds = RECONNECT_BASE_DELAY.inSeconds;
@@ -83,7 +116,6 @@ class SocketService {
     
     _connectionTimeoutTimer = Timer(CONNECTION_TIMEOUT, () {
       if (!_isConnected && _isConnecting) {
-        print("⏱️ Connection timeout");
         _isConnecting = false;
         _channel?.sink.close();
         _scheduleReconnect();
@@ -92,7 +124,6 @@ class SocketService {
     
     try {
       _channel?.sink.close();
-      print("🔌 Connecting to $_url (attempt ${_reconnectAttempts + 1}/$MAX_RECONNECT_ATTEMPTS)");
       _channel = WebSocketChannel.connect(Uri.parse(_url!));
       
       _sendRaw({
@@ -108,7 +139,6 @@ class SocketService {
         onError: _handleError,
       );
     } catch (e) {
-      print("❌ Connection error: $e");
       _isConnecting = false;
       _scheduleReconnect();
     }
@@ -124,22 +154,10 @@ class SocketService {
         _isConnected = true;
         _isConnecting = false;
         _reconnectAttempts = 0;
-        print("✅ Connected successfully");
         await _registerFcmToken();
         _startHeartbeat();
         _messageStream.add({"type": "connection_status", "connected": true});
         _messageStream.add(data);
-        return;
-      }
-      
-      if (msgType == 'auth_token') {
-        _authToken = data['token'];
-        await _storage.saveSetting('auth_token', _authToken);
-        return;
-      }
-      
-      if (msgType == 'pong') {
-        _lastPongTime = DateTime.now();
         return;
       }
       
@@ -156,21 +174,13 @@ class SocketService {
         final ed25519Key = data['ed25519_key'];
         
         if (targetUid != null && x25519Key != null && !data.containsKey('error')) {
-          try {
-            await _cipher.establishSharedSecret(
-              targetUid,
-              x25519Key,
-              theirSignKeyB64: ed25519Key,
-            );
-          } catch (e) {
-            print("⚠️ Key exchange error: $e");
-          }
+          await _cipher.establishSharedSecret(targetUid, x25519Key, theirSignKeyB64: ed25519Key);
         }
       }
       
       _messageStream.add(data);
     } catch (e) {
-      print("❌ Socket error: $e");
+      print("Socket parse error: $e");
     }
   }
 
@@ -182,12 +192,11 @@ class SocketService {
         await _storage.saveSetting('fcm_token', fcmToken);
       }
     } catch (e) {
-      print("❌ FCM error: $e");
+      print("FCM error: $e");
     }
   }
 
   void _handleDisconnect() {
-    print("🔌 WebSocket closed");
     _isConnected = false;
     _isConnecting = false;
     _pingTimer?.cancel();
@@ -197,7 +206,6 @@ class SocketService {
   }
 
   void _handleError(error) {
-    print("❌ WebSocket error: $error");
     _isConnected = false;
     _isConnecting = false;
     _pingTimer?.cancel();
@@ -207,10 +215,7 @@ class SocketService {
 
   void _scheduleReconnect() {
     if (_reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      _messageStream.add({
-        "type": "connection_failed",
-        "message": "Connection failed after $MAX_RECONNECT_ATTEMPTS attempts"
-      });
+      _messageStream.add({"type": "connection_failed"});
       return;
     }
     _reconnectTimer?.cancel();
@@ -225,11 +230,6 @@ class SocketService {
     _lastPongTime = DateTime.now();
     _pingTimer = Timer.periodic(PING_INTERVAL, (_) {
       if (_isConnected) {
-        if (_lastPongTime != null && 
-            DateTime.now().difference(_lastPongTime!) > PING_INTERVAL * 2) {
-          _handleDisconnect();
-          return;
-        }
         send({"type": "ping"});
       }
     });
@@ -239,7 +239,7 @@ class SocketService {
     try {
       _channel?.sink.add(jsonEncode(data));
     } catch (e) {
-      print("❌ Send error: $e");
+      print("Send error: $e");
     }
   }
 
@@ -248,17 +248,11 @@ class SocketService {
     _sendRaw(data);
   }
 
-  // ✅ ВОТ ЭТОТ МЕТОД, КОТОРОГО НЕ ХВАТАЛО:
   void requestOfflineMessages(String fromUid) {
     if (!_isConnected) return;
-    send({
-      'type': 'request_offline_messages',
-      'from_uid': fromUid,
-    });
-    print('📬 Requested offline messages from $fromUid');
+    send({'type': 'request_offline_messages', 'from_uid': fromUid});
   }
 
-  // Остальные методы API
   void registerPublicKeys(String xKey, String eKey) {
     send({"type": "register_public_key", "x25519_key": xKey, "ed25519_key": eKey});
   }
