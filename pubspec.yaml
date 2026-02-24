@@ -9,8 +9,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.2.0
-  gal: ^2.3.0
+    http: ^1.2.0
+    gal: ^2.3.0
+    dio: ^5.4.0
   
   # База данных
   hive: ^2.2.3
