@@ -12,6 +12,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:gal/gal.dart';
+import 'package:dio/dio.dart';
 
 import 'crypto_service.dart';
 import 'socket_service.dart';
@@ -68,6 +70,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _imagePicker = ImagePicker();
   final _audioRecorder = AudioRecorder();
   final _audioPlayer = AudioPlayer();
+  final _dio = Dio(); // Клиент для загрузки с прогрессом
 
   StreamSubscription? _socketSub;
 
@@ -108,6 +111,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // File upload progress
   bool _isSendingFile = false;
+  double _uploadProgress = 0.0; // Прогресс от 0.0 до 1.0
 
   static const int MESSAGES_PER_PAGE = 50;
   static const Duration KEY_EXCHANGE_TIMEOUT = Duration(seconds: 5);
@@ -257,23 +261,37 @@ class _ChatScreenState extends State<ChatScreen> {
   // HTTP MEDIA HELPERS (НОВАЯ ЛОГИКА)
   // ──────────────────────────────────────────────────────────────────────────
 
-  /// Загружает файл на сервер по HTTP и возвращает ID
+  /// Загружает файл на сервер по HTTP и возвращает ID (с прогрессом)
   Future<String?> _uploadFileHttp(File file) async {
     try {
-      var request = http.MultipartRequest('POST', Uri.parse('$SERVER_HTTP_URL/upload'));
-      request.files.add(await http.MultipartFile.fromPath('file', file.path));
-      
-      var streamedResponse = await request.send();
-      var response = await http.Response.fromStream(streamedResponse);
-      
+      String fileName = file.path.split('/').last;
+      FormData formData = FormData.fromMap({
+        "file": await MultipartFile.fromFile(file.path, filename: fileName),
+      });
+
+      // Сбрасываем прогресс перед стартом
+      setState(() => _uploadProgress = 0.0);
+
+      var response = await _dio.post(
+        '$SERVER_HTTP_URL/upload',
+        data: formData,
+        onSendProgress: (int sent, int total) {
+          // Обновляем UI с процентами
+          if (mounted) {
+            setState(() {
+              _uploadProgress = sent / total;
+            });
+          }
+        },
+      );
+
       if (response.statusCode == 200) {
-        var json = jsonDecode(response.body);
-        if (json['status'] == 'success') {
-          return json['file_id'];
+        if (response.data['status'] == 'success') {
+          return response.data['file_id'];
         }
       }
     } catch (e) {
-      debugPrint("HTTP Upload error: $e");
+      debugPrint("Dio Upload error: $e");
     }
     return null;
   }
@@ -392,6 +410,43 @@ class _ChatScreenState extends State<ChatScreen> {
     final rawTime    = data['time'];
 
     widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
+      
+      // ✅ ПРОВЕРКА НА ОШИБКУ АУТЕНТИФИКАЦИИ
+      if (decrypted.contains('Authentication failed') || 
+          decrypted.contains('Wrong key')) {
+        
+        print('🔑 Authentication failed for $msgId - clearing cache and requesting new keys');
+        
+        // Очищаем shared secret
+        widget.cipher.clearSharedSecret(widget.targetUid);
+        
+        // Очищаем кешированные ключи
+        await _storage.clearCachedKeys(widget.targetUid);
+        
+        // Запрашиваем свежие ключи с сервера
+        _socket.requestPublicKey(widget.targetUid);
+        
+        // Показываем сообщение об ошибке
+        final errorMsg = {
+          'id': msgId,
+          'text': '⚠️ Key mismatch detected. Please ask sender to resend the message.',
+          'isMe': false,
+          'time': rawTime ?? DateTime.now().millisecondsSinceEpoch,
+          'status': 'error',
+          'type': 'text',
+        };
+        
+        if (mounted) {
+          setState(() {
+            _messages.add(errorMsg);
+            _messageIds.add(msgId);
+          });
+          _scrollToBottom();
+        }
+        
+        return; // Прерываем обработку
+      }
+      
       if (signature != null) {
         final valid = await widget.cipher.verifySignature(decrypted, signature, widget.targetUid);
         if (!valid) debugPrint("⚠️ Signature verification failed for $msgId");
@@ -1100,8 +1155,51 @@ class _ChatScreenState extends State<ChatScreen> {
       context: context,
       builder: (context) => Dialog(
         backgroundColor: Colors.black,
-        child: InteractiveViewer(
-          child: Image.file(File(filePath)),
+        insetPadding: EdgeInsets.zero,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            InteractiveViewer(
+              child: Image.file(File(filePath)),
+            ),
+            Positioned(
+              right: 20,
+              bottom: 20,
+              child: FloatingActionButton(
+                backgroundColor: Colors.white24,
+                child: const Icon(Icons.download, color: Colors.white),
+                onPressed: () async {
+                  try {
+                    // Запрос разрешений
+                    bool hasAccess = await Gal.hasAccess();
+                    if (!hasAccess) await Gal.requestAccess();
+                    
+                    // Сохранение
+                    await Gal.putImage(filePath);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('✅ Saved to Gallery!')),
+                      );
+                    }
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                      );
+                    }
+                  }
+                },
+              ),
+            ),
+            Positioned(
+              top: 40,
+              right: 20,
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1809,13 +1907,26 @@ class _ChatScreenState extends State<ChatScreen> {
                 onPressed: _startRecording,
               ),
             if (_isSendingFile)
-              const Padding(
-                padding: EdgeInsets.all(8),
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child:
-                      CircularProgressIndicator(strokeWidth: 2, color: Colors.cyan),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        value: _uploadProgress, // Показываем реальный прогресс
+                        strokeWidth: 3,
+                        backgroundColor: Colors.white10,
+                        color: Colors.cyan,
+                      ),
+                    ),
+                    Text(
+                      '${(_uploadProgress * 100).toInt()}%',
+                      style: const TextStyle(fontSize: 8, color: Colors.white),
+                    ),
+                  ],
                 ),
               ),
             Expanded(
