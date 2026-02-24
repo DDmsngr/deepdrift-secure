@@ -1,469 +1,537 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'package:cryptography/cryptography.dart';
-import 'package:crypto/crypto.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'storage_service.dart';
+import 'crypto_service.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 
-/// Сервис для E2E шифрования сообщений
-/// Использует X25519 для обмена ключами и ChaCha20-Poly1305 для шифрования
-/// 
-/// Реализация с индивидуальными ключами для каждой пары пользователей.
-class SecureCipher {
-  final _algo = Chacha20.poly1305Aead();
-  final _x25519 = X25519();
-  final _ed25519 = Ed25519();
-  
-  SimpleKeyPair? _myX25519KeyPair;      // Для ECDH (Шифрование)
-  SimpleKeyPair? _myEd25519KeyPair;     // Для подписей (Аутентичность)
-  
-  final Map<String, SecretKey> _sharedSecrets = {};           // uid -> shared secret
-  final Map<String, SimplePublicKey> _contactPublicKeys = {}; // uid -> их X25519 публичный ключ
-  final Map<String, SimplePublicKey> _contactSignKeys = {};   // uid -> их Ed25519 публичный ключ
-  
-  bool _isInitialized = false;
+/// Сервис для управления WebSocket подключением
+/// РАСШИРЕНО: Добавлены методы для удаления, редактирования, реакций, пересылки
+class SocketService {
+  static final SocketService _instance = SocketService._internal();
+  factory SocketService() => _instance;
+  SocketService._internal();
 
-  /// Генерирует случайную соль для пароля пользователя
-  /// Возвращает 32-байтную соль в виде base64 строки
-  static String generateSalt() {
-    final random = Random.secure();
-    final saltBytes = List<int>.generate(32, (_) => random.nextInt(256));
-    return base64Encode(saltBytes);
+  static const String PROTOCOL_VERSION = "3.0"; // Обновили версию протокола
+  static const int MAX_RECONNECT_ATTEMPTS = 10;
+  static const Duration RECONNECT_BASE_DELAY = Duration(seconds: 2);
+  static const Duration PING_INTERVAL = Duration(seconds: 30);
+  static const Duration CONNECTION_TIMEOUT = Duration(seconds: 10);
+
+  WebSocketChannel? _channel;
+  final _messageStream = StreamController<Map<String, dynamic>>.broadcast();
+  
+  // Публичный геттер для stream (вместо прямого доступа к _uiStream)
+  Stream<Map<String, dynamic>> get messages => _messageStream.stream;
+
+  late SecureCipher _cipher;
+  final _storage = StorageService();
+  
+  bool _isConnected = false;
+  bool _isConnecting = false;
+  String? _url;
+  String? _myUid;
+  String? _authToken;
+  
+  Timer? _reconnectTimer;
+  Timer? _pingTimer;
+  Timer? _connectionTimeoutTimer;
+  
+  int _reconnectAttempts = 0;
+  DateTime? _lastPongTime;
+  
+  final _pendingMessages = <String, Completer<bool>>{};
+  
+  bool _isInBackground = false;
+
+  void init(SecureCipher cipher) {
+    _cipher = cipher;
   }
 
-  /// Инициализирует cipher, генерируя пары ключей для пользователя
-  /// 
-  /// [password] - пароль используется для шифрования приватных ключей
-  /// [userSalt] - соль пользователя для Argon2
-  /// [encryptedX25519Key] - сохранённый зашифрованный X25519 ключ
-  /// [encryptedEd25519Key] - сохранённый зашифрованный Ed25519 ключ
-  Future<void> init(
-    String password, 
-    String userSalt, {
-    String? encryptedX25519Key,
-    String? encryptedEd25519Key,
-  }) async {
+  void onAppResumed() {
+    print("🔄 App resumed from background");
+    _isInBackground = false;
+    
+    if (!_isConnected && _url != null && _myUid != null) {
+      print("🔌 Reconnecting after app resume...");
+      _reconnectAttempts = 0;
+      _attemptConnection();
+    }
+  }
+
+  void onAppPaused() {
+    print("⏸️ App paused (going to background)");
+    _isInBackground = true;
+  }
+
+  void connect(String url, String myUid, {String? authToken}) {
+    _url = url;
+    _myUid = myUid;
+    _authToken = authToken;
+    _attemptConnection();
+  }
+
+  Duration _getReconnectDelay() {
+    final baseSeconds = RECONNECT_BASE_DELAY.inSeconds;
+    final exponential = min(baseSeconds * pow(2, _reconnectAttempts), 60.0);
+    final jitter = Random().nextDouble() * 0.3 * exponential;
+    return Duration(seconds: (exponential + jitter).toInt());
+  }
+
+  void _attemptConnection() {
+    if (_isConnected || _isConnecting) return;
+    
+    _isConnecting = true;
+    _connectionTimeoutTimer?.cancel();
+    
+    _connectionTimeoutTimer = Timer(CONNECTION_TIMEOUT, () {
+      if (!_isConnected && _isConnecting) {
+        print("⏱️ Connection timeout");
+        _isConnecting = false;
+        _channel?.sink.close();
+        _scheduleReconnect();
+      }
+    });
+    
     try {
-      // Если есть сохранённые ключи - восстанавливаем их из хранилища
-      if (encryptedX25519Key != null && encryptedEd25519Key != null) {
-        await _importBothKeys(encryptedX25519Key, encryptedEd25519Key, password);
-        print('✅ [Crypto] Cipher initialized with restored key pairs');
+      _channel?.sink.close();
+      
+      print("🔌 Connecting to $_url (attempt ${_reconnectAttempts + 1}/$MAX_RECONNECT_ATTEMPTS)");
+      
+      _channel = WebSocketChannel.connect(Uri.parse(_url!));
+      
+      _sendRaw({
+        "type": "init",
+        "my_uid": _myUid,
+        "protocol_version": PROTOCOL_VERSION,
+        "auth_token": _authToken,
+      });
+
+      _channel!.stream.listen(
+        _handleIncomingMessage,
+        onDone: _handleDisconnect,
+        onError: _handleError,
+      );
+
+    } catch (e) {
+      print("❌ Connection error: $e");
+      _isConnecting = false;
+      _scheduleReconnect();
+    }
+  }
+
+  void _handleIncomingMessage(dynamic raw) async {
+    try {
+      final data = jsonDecode(raw);
+      final msgType = data['type'];
+      
+      print("📥 Received: $msgType");
+      
+      if (msgType == 'uid_assigned') {
+        _connectionTimeoutTimer?.cancel();
+        _isConnected = true;
+        _isConnecting = false;
+        _reconnectAttempts = 0;
+        print("✅ Connected successfully");
+        
+        await _registerFcmToken();
+        _startHeartbeat();
+        
+        _messageStream.add({"type": "connection_status", "connected": true});
+        _messageStream.add(data);
+        return;
+      }
+      
+      if (msgType == 'auth_token') {
+        _authToken = data['token'];
+        await _storage.saveSetting('auth_token', _authToken);
+        print("🔑 New auth token received");
+        return;
+      }
+      
+      if (msgType == 'fcm_token_registered') {
+        print("📲 FCM token registered on server");
+        return;
+      }
+      
+      if (msgType == 'pong') {
+        _lastPongTime = DateTime.now();
+        return;
+      }
+      
+      if (msgType == 'server_ack') {
+        final messageId = data['id'];
+        print("✅ Server ACK for message: $messageId");
+        _pendingMessages[messageId]?.complete(data['delivered_online'] ?? false);
+        _pendingMessages.remove(messageId);
+        return;
+      }
+      
+      if (msgType == 'error') {
+        print("⚠️ Server error: ${data['message']}");
+        _messageStream.add({
+          "type": "server_error",
+          "message": data['message']
+        });
+        return;
+      }
+      
+      if (msgType == 'public_key_registered') {
+        print("✅ Public keys registered on server");
+        _messageStream.add(data);
+        return;
+      }
+      
+      if (msgType == 'public_key_response') {
+        final targetUid = data['target_uid'];
+        final x25519Key = data['x25519_key'];
+        final ed25519Key = data['ed25519_key'];
+        
+        print("📥 Received public key for $targetUid");
+        
+        if (targetUid != null && x25519Key != null && !data.containsKey('error')) {
+          try {
+            // КРИТИЧНО: Очищаем старый shared secret если есть
+            _cipher.clearSharedSecret(targetUid);
+            
+            // ВСЕГДА обновляем кеш (даже если ключи уже есть)
+            if (ed25519Key != null) {
+              await _storage.cachePublicKeys(targetUid, x25519Key, ed25519Key);
+              print('💾 [Socket] Updated cached keys for $targetUid');
+            }
+            
+            // Создаём новый shared secret
+            await _cipher.establishSharedSecret(
+              targetUid,
+              x25519Key,
+              theirSignKeyB64: ed25519Key,
+            );
+            print("✅ Auto-established shared secret with $targetUid");
+          } catch (e) {
+            print("⚠️ Failed to auto-establish shared secret with $targetUid: $e");
+          }
+        }
+        
+        _messageStream.add(data);
+        return;
+      }
+      
+      // Пробрасываем все остальные события в stream
+      _messageStream.add(data);
+      
+    } catch (e) {
+      print("❌ Failed to process message: $e");
+    }
+  }
+
+  Future<void> _registerFcmToken() async {
+    try {
+      final fcmToken = await FirebaseMessaging.instance.getToken();
+      if (fcmToken != null) {
+        print("📲 Got FCM token: ${fcmToken.substring(0, 20)}...");
+        
+        send({
+          "type": "register_fcm_token",
+          "fcm_token": fcmToken
+        });
+        
+        await _storage.saveSetting('fcm_token', fcmToken);
       } else {
-        // Генерируем абсолютно новые пары ключей (первый запуск)
-        _myX25519KeyPair = await _x25519.newKeyPair();
-        _myEd25519KeyPair = await _ed25519.newKeyPair();
-        _isInitialized = true;
-        print('✅ [Crypto] Cipher initialized with new key pairs');
+        print("⚠️ Failed to get FCM token");
       }
     } catch (e) {
-      print('❌ [Crypto] Initialization error: $e');
-      throw CryptoException('Failed to initialize cipher: $e');
+      print("❌ Error getting FCM token: $e");
     }
   }
 
-  /// Экспортирует оба приватных ключа (X25519 и Ed25519) зашифрованными паролем
-  /// Возвращает Map с двумя ключами: 'x25519' и 'ed25519'
-  Future<Map<String, String>> exportBothKeys(String password) async {
-    if (_myX25519KeyPair == null || _myEd25519KeyPair == null) {
-      throw StateError('Cipher not initialized');
+  void _handleDisconnect() {
+    print("🔌 WebSocket closed");
+    _isConnected = false;
+    _isConnecting = false;
+    _pingTimer?.cancel();
+    _connectionTimeoutTimer?.cancel();
+    
+    _messageStream.add({"type": "connection_status", "connected": false});
+    
+    if (!_isInBackground) {
+      _scheduleReconnect();
+    } else {
+      print("📵 App in background, skipping auto-reconnect");
+    }
+  }
+
+  void _handleError(error) {
+    print("❌ WebSocket error: $error");
+    _isConnected = false;
+    _isConnecting = false;
+    _pingTimer?.cancel();
+    
+    _messageStream.add({"type": "connection_status", "connected": false});
+    
+    if (!_isInBackground) {
+      _scheduleReconnect();
+    }
+  }
+
+  void _scheduleReconnect() {
+    if (_reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      print("❌ Max reconnection attempts reached");
+      _messageStream.add({
+        "type": "connection_failed",
+        "message": "Could not connect to server after $MAX_RECONNECT_ATTEMPTS attempts"
+      });
+      return;
     }
 
+    _reconnectTimer?.cancel();
+    
+    final delay = _getReconnectDelay();
+    print("🔄 Reconnecting in ${delay.inSeconds}s...");
+    
+    _reconnectTimer = Timer(delay, () {
+      _reconnectAttempts++;
+      _attemptConnection();
+    });
+  }
+
+  void _startHeartbeat() {
+    _pingTimer?.cancel();
+    _lastPongTime = DateTime.now();
+    
+    _pingTimer = Timer.periodic(PING_INTERVAL, (_) {
+      if (_isConnected) {
+        if (_lastPongTime != null) {
+          final timeSinceLastPong = DateTime.now().difference(_lastPongTime!);
+          if (timeSinceLastPong > PING_INTERVAL * 2) {
+            print("⚠️ No pong received, connection might be dead");
+            _handleDisconnect();
+            return;
+          }
+        }
+        
+        send({"type": "ping"});
+      }
+    });
+  }
+
+  void _sendRaw(Map<String, dynamic> data) {
     try {
-      // Экспортируем X25519 приватный ключ в байты
-      final x25519KeyBytes = await _myX25519KeyPair!.extractPrivateKeyBytes();
-      
-      // Экспортируем Ed25519 приватный ключ
-      final ed25519KeyPair = await _myEd25519KeyPair!.extract();
-      final ed25519KeyBytes = await ed25519KeyPair.extractPrivateKeyBytes();
-      
-      // Генерируем ключ шифрования из пароля (Argon2id)
-      final passwordKey = await Argon2id(
-        memory: 32768,
-        iterations: 3,
-        parallelism: 4,
-        hashLength: 32,
-      ).deriveKeyFromPassword(
-        password: password,
-        nonce: List.generate(16, (i) => i), // Фиксированная соль для ключей
-      );
-      
-      // Шифруем X25519 ключ
-      final encryptedX25519 = await _algo.encrypt(
-        x25519KeyBytes,
-        secretKey: passwordKey,
-      );
-      
-      // Шифруем Ed25519 ключ
-      final encryptedEd25519 = await _algo.encrypt(
-        ed25519KeyBytes,
-        secretKey: passwordKey,
-      );
-      
-      return {
-        'x25519': base64Encode(encryptedX25519.concatenation()),
-        'ed25519': base64Encode(encryptedEd25519.concatenation()),
-      };
+      final json = jsonEncode(data);
+      print("📤 Sending: ${data['type']}");
+      _channel?.sink.add(json);
     } catch (e) {
-      print('❌ [Crypto] Export error: $e');
-      throw CryptoException('Failed to export keys: $e');
+      print("❌ Failed to send raw message: $e");
     }
   }
 
-  /// Внутренний метод для расшифровки и импорта обоих ключей
-  Future<void> _importBothKeys(
-    String encryptedX25519B64,
-    String encryptedEd25519B64,
-    String password,
-  ) async {
-    try {
-      // Генерируем Argon2 ключ из пароля
-      final passwordKey = await Argon2id(
-        memory: 32768,
-        iterations: 3,
-        parallelism: 4,
-        hashLength: 32,
-      ).deriveKeyFromPassword(
-        password: password,
-        nonce: List.generate(16, (i) => i),
-      );
-      
-      // Декодируем и расшифровываем X25519 ключ
-      final x25519Combined = base64Decode(encryptedX25519B64);
-      final x25519Box = SecretBox.fromConcatenation(
-        x25519Combined,
-        nonceLength: _algo.nonceLength,
-        macLength: _algo.macAlgorithm.macLength,
-      );
-      final x25519KeyBytes = await _algo.decrypt(x25519Box, secretKey: passwordKey);
-      
-      // Декодируем и расшифровываем Ed25519 ключ
-      final ed25519Combined = base64Decode(encryptedEd25519B64);
-      final ed25519Box = SecretBox.fromConcatenation(
-        ed25519Combined,
-        nonceLength: _algo.nonceLength,
-        macLength: _algo.macAlgorithm.macLength,
-      );
-      final ed25519KeyBytes = await _algo.decrypt(ed25519Box, secretKey: passwordKey);
-      
-      // Восстанавливаем пары ключей из семян (seeds)
-      _myX25519KeyPair = await _x25519.newKeyPairFromSeed(x25519KeyBytes);
-      _myEd25519KeyPair = await _ed25519.newKeyPairFromSeed(ed25519KeyBytes);
-      _isInitialized = true;
-    } catch (e) {
-      print('❌ [Crypto] Import error: $e');
-      throw CryptoException('Failed to import keys (wrong password?): $e');
+  void send(Map<String, dynamic> data) {
+    if (!_isConnected) {
+      print("⚠️ Cannot send message - not connected");
+      return;
     }
+    _sendRaw(data);
   }
 
-  /// Возвращает публичный ключ X25519 в base64 (для отправки собеседнику)
-  Future<String> getMyPublicKey() async {
-    if (_myX25519KeyPair == null) {
-      throw StateError('Cipher not initialized');
-    }
-    final publicKey = await _myX25519KeyPair!.extractPublicKey();
-    return base64Encode(publicKey.bytes);
+  // ==================== БАЗОВЫЕ МЕТОДЫ ====================
+
+  void registerPublicKeys(String x25519Key, String ed25519Key) {
+    print("🔑 [CLIENT] Registering public keys on server...");
+    
+    send({
+      "type": "register_public_key",
+      "x25519_key": x25519Key,
+      "ed25519_key": ed25519Key,
+    });
+    
+    print("✅ [CLIENT] Public key registration message sent");
   }
 
-  /// Возвращает публичный ключ Ed25519 в base64 (для проверки твоих подписей)
-  Future<String> getMySigningKey() async {
-    if (_myEd25519KeyPair == null) {
-      throw StateError('Cipher not initialized');
-    }
-    final publicKey = await _myEd25519KeyPair!.extractPublicKey();
-    return base64Encode(publicKey.bytes);
+  void requestPublicKey(String targetUid) {
+    send({
+      "type": "request_public_key",
+      "target_uid": targetUid,
+    });
   }
 
-  /// Устанавливает общий секрет (Shared Secret) через Diffie-Hellman
-  Future<void> establishSharedSecret(
+  void sendMessage(
     String targetUid,
-    String theirPublicKeyB64, {
-    String? theirSignKeyB64,
-  }) async {
-    if (_myX25519KeyPair == null) {
-      throw StateError('Cipher not initialized');
-    }
-    
-    try {
-      // Сохраняем их публичный ключ шифрования
-      final theirPublicKey = SimplePublicKey(
-        base64Decode(theirPublicKeyB64),
-        type: KeyPairType.x25519,
-      );
-      _contactPublicKeys[targetUid] = theirPublicKey;
-      
-      // Сохраняем их публичный ключ подписи (если есть)
-      if (theirSignKeyB64 != null) {
-        final theirSignKey = SimplePublicKey(
-          base64Decode(theirSignKeyB64),
-          type: KeyPairType.ed25519,
-        );
-        _contactSignKeys[targetUid] = theirSignKey;
-      }
-      
-      // Самая важная часть: вычисляем общий секретный ключ для этой пары
-      final sharedSecret = await _x25519.sharedSecretKey(
-        keyPair: _myX25519KeyPair!,
-        remotePublicKey: theirPublicKey,
-      );
-      
-      _sharedSecrets[targetUid] = sharedSecret;
-      print('🔐 [Crypto] Established shared secret with $targetUid');
-    } catch (e) {
-      print('❌ [Crypto] ECDH error: $e');
-      throw CryptoException('Failed to establish shared secret: $e');
-    }
+    String encryptedText,
+    String signature,
+    String messageId, {
+    String? replyToId,
+    String messageType = 'text',
+    String? mediaData,
+    String? fileName,
+    int?    fileSize,
+    String? mimeType,
+  }) {
+    send({
+      "type":           "message",
+      "id":             messageId,
+      "target_uid":     targetUid,
+      "encrypted_text": encryptedText,
+      "signature":      signature,
+      "replyToId":      replyToId,
+      "messageType":    messageType,
+      "mediaData":      mediaData,
+      "fileName":       fileName,
+      "fileSize":       fileSize,
+      "mimeType":       mimeType,
+    });
   }
 
-  /// Проверяет, готов ли зашифрованный канал с этим пользователем
-  bool hasSharedSecret(String targetUid) {
-    return _sharedSecrets.containsKey(targetUid);
+  void sendTypingIndicator(String targetUid, bool isTyping) {
+    send({
+      "type": "typing_indicator",
+      "target_uid": targetUid,
+      "typing": isTyping
+    });
   }
 
-  /// Загружает кешированные ключи и устанавливает shared secret
-  /// Возвращает true если ключи были загружены из кеша
-  Future<bool> tryLoadCachedKeys(String targetUid, StorageService storage) async {
-    if (hasSharedSecret(targetUid)) {
-      return true; // Уже есть shared secret
-    }
+  // ==================== НОВЫЕ МЕТОДЫ ====================
 
-    final x25519Key = storage.getCachedX25519Key(targetUid);
-    final ed25519Key = storage.getCachedEd25519Key(targetUid);
-
-    if (x25519Key != null && ed25519Key != null) {
-      try {
-        await establishSharedSecret(
-          targetUid,
-          x25519Key,
-          theirSignKeyB64: ed25519Key,
-        );
-        print('✅ [Crypto] Loaded keys from cache for $targetUid');
-        return true;
-      } catch (e) {
-        print('❌ [Crypto] Failed to load cached keys for $targetUid: $e');
-        return false;
-      }
-    }
-
-    return false;
+  /// 1. Удаление сообщения
+  void sendDeleteMessage(String targetUid, String messageId) {
+    print("🗑️ Deleting message: $messageId");
+    send({
+      "type": "delete_message",
+      "target_uid": targetUid,
+      "message_id": messageId,
+    });
   }
 
-  /// Очищает shared secret для конкретного пользователя
-  /// Используется когда нужно пересоздать ключи (например, при ошибке расшифровки)
-  void clearSharedSecret(String targetUid) {
-    _sharedSecrets.remove(targetUid);
-    _contactPublicKeys.remove(targetUid);
-    _contactSignKeys.remove(targetUid);
-    print('🗑️ [Crypto] Cleared shared secret for $targetUid');
+  /// 2. Редактирование сообщения
+  void sendEditMessage(
+    String targetUid,
+    String messageId,
+    String newEncryptedText,
+    String newSignature,
+  ) {
+    print("✏️ Editing message: $messageId");
+    send({
+      "type": "edit_message",
+      "target_uid": targetUid,
+      "message_id": messageId,
+      "new_encrypted_text": newEncryptedText,
+      "new_signature": newSignature,
+    });
   }
 
-  /// Генерирует код безопасности для верификации (Safety Number)
-  /// Сравнивая этот код, пользователи убеждаются в отсутствии MITM атаки.
-  String getSecurityCode(String targetUid) {
-    if (!_contactPublicKeys.containsKey(targetUid) || _myX25519KeyPair == null) {
-      return "NOT_ESTABLISHED";
-    }
-    
-    try {
-      // Берем байты нашего публичного ключа (закешированные в паре) и их ключа
-      // Мы используем синхронный доступ к байтам через сохраненные данные, 
-      // чтобы не вешать UI долгими Future.
-      final theirBytes = _contactPublicKeys[targetUid]!.bytes;
-      
-      // Хешируем комбинацию для получения уникального отпечатка
-      // Мы делаем это просто: SHA256 от суммы байтов ключей
-      final hash = sha256.convert(theirBytes);
-      
-      // Превращаем в читаемый HEX-код, разбитый на группы по 4 символа
-      final fullCode = hash.toString().toUpperCase();
-      return "${fullCode.substring(0, 4)} ${fullCode.substring(4, 8)} ${fullCode.substring(8, 12)}";
-    } catch (e) {
-      print("❌ [Crypto] Security code calc error: $e");
-      return "ERROR";
-    }
+  /// 3. Реакция на сообщение
+  void sendReaction(
+    String targetUid,
+    String messageId,
+    String emoji,
+    String action, // 'add' or 'remove'
+  ) {
+    print("$emoji Reaction: $emoji on $messageId ($action)");
+    send({
+      "type": "message_reaction",
+      "target_uid": targetUid,
+      "message_id": messageId,
+      "emoji": emoji,
+      "action": action,
+    });
   }
 
-  /// Шифрует текст для конкретного получателя [targetUid]
-  Future<String> encryptText(String text, {required String targetUid}) async {
-    if (!_isInitialized) {
-      throw StateError('Cipher not initialized. Call init() first.');
-    }
-
-    if (text.isEmpty) {
-      throw ArgumentError('Cannot encrypt empty text');
-    }
-    
-    if (!_sharedSecrets.containsKey(targetUid)) {
-      throw StateError('No shared secret for $targetUid. Perform key exchange first.');
-    }
-
-    try {
-      final plainBytes = utf8.encode(text);
-      final secretBox = await _algo.encrypt(
-        plainBytes,
-        secretKey: _sharedSecrets[targetUid]!,
-      );
-      
-      // Возвращаем зашифрованные данные + IV + MAC в одной base64 строке
-      return base64Encode(secretBox.concatenation());
-    } catch (e) {
-      print('❌ [Crypto] Encryption failed: $e');
-      throw CryptoException('Encryption failed: $e');
-    }
+  /// 4. Пересылка сообщения
+  void sendForwardMessage(
+    String targetUid,
+    String originalMessageId,
+    String forwardedFromUid,
+    String encryptedText,
+    String signature,
+    String newMessageId,
+  ) {
+    print("↪️ Forwarding message: $originalMessageId to $targetUid");
+    send({
+      "type": "forward_message",
+      "id": newMessageId,
+      "target_uid": targetUid,
+      "original_message_id": originalMessageId,
+      "forwarded_from": forwardedFromUid,
+      "encrypted_text": encryptedText,
+      "signature": signature,
+    });
   }
 
-  /// Расшифровывает текст от отправителя [fromUid]
-  Future<String> decryptText(String b64, {required String fromUid}) async {
-    if (!_isInitialized) {
-      throw StateError('Cipher not initialized.');
-    }
-
-    if (b64.isEmpty) {
-      return "[⚠️ Empty payload]";
-    }
-    
-    if (!_sharedSecrets.containsKey(fromUid)) {
-      return "[⚠️ No encryption key for $fromUid]";
-    }
-
-    try {
-      final combined = base64Decode(b64);
-      
-      final box = SecretBox.fromConcatenation(
-        combined,
-        nonceLength: _algo.nonceLength,
-        macLength: _algo.macAlgorithm.macLength,
-      );
-      
-      final clearBytes = await _algo.decrypt(
-        box,
-        secretKey: _sharedSecrets[fromUid]!,
-      );
-      
-      return utf8.decode(clearBytes);
-    } on SecretBoxAuthenticationError {
-      return "[⚠️ Authentication failed: Wrong key or data corrupted]";
-    } catch (e) {
-      print('❌ [Crypto] Decryption error: $e');
-      return "[❌ Decryption error]";
-    }
+  /// 5. Read Receipt (подтверждение прочтения)
+  void sendReadReceipt(String targetUid, String messageId) {
+    print("✓✓ Sending read receipt for: $messageId");
+    send({
+      "type": "read_receipt",
+      "target_uid": targetUid,
+      "message_id": messageId,
+    });
   }
 
-  /// Подписывает сообщение (Ed25519)
-  Future<String> signMessage(String text) async {
-    if (_myEd25519KeyPair == null) {
-      throw StateError('Cipher not initialized');
-    }
-
-    try {
-      final signature = await _ed25519.sign(
-        utf8.encode(text),
-        keyPair: _myEd25519KeyPair!,
-      );
-      return base64Encode(signature.bytes);
-    } catch (e) {
-      print('❌ [Crypto] Signing error: $e');
-      throw CryptoException('Failed to sign message: $e');
-    }
+  /// 6. Delivery Receipt (подтверждение доставки)
+  void sendDeliveryReceipt(String targetUid, String messageId) {
+    print("✓ Sending delivery receipt for: $messageId");
+    send({
+      "type": "delivery_receipt",
+      "target_uid": targetUid,
+      "message_id": messageId,
+    });
   }
 
-  /// Проверяет подпись сообщения [signatureB64] от пользователя [fromUid]
-  Future<bool> verifySignature(
-    String text,
-    String signatureB64,
-    String fromUid,
+  // ==================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ====================
+
+  Future<bool> sendMessageWithAck(
+    String targetUid,
+    String messageId,
+    String encryptedPayload,
+    String signature,
   ) async {
-    if (!_contactSignKeys.containsKey(fromUid)) {
-      print('⚠️ [Crypto] No signing key for $fromUid');
+    if (!_isConnected) {
+      print("⚠️ Cannot send - not connected");
       return false;
     }
 
-    try {
-      final signature = Signature(
-        base64Decode(signatureB64),
-        publicKey: _contactSignKeys[fromUid]!,
-      );
-      
-      return await _ed25519.verify(
-        utf8.encode(text),
-        signature: signature,
-      );
-    } catch (e) {
-      print('❌ [Crypto] Signature verify error: $e');
-      return false;
-    }
+    final completer = Completer<bool>();
+    _pendingMessages[messageId] = completer;
+
+    send({
+      "type": "message",
+      "id": messageId,
+      "target_uid": targetUid,
+      "encrypted_payload": encryptedPayload,
+      "signature": signature
+    });
+
+    print("⏳ Waiting for ACK for message: $messageId");
+
+    Timer(const Duration(seconds: 3), () {
+      if (!completer.isCompleted) {
+        print("⚠️ ACK timeout for message: $messageId");
+        _pendingMessages.remove(messageId);
+        completer.complete(true);
+      }
+    });
+
+    return completer.future;
   }
 
-  /// Экспортирует приватный ключ X25519 (Legacy метод для бекапа)
-  Future<String> exportPrivateKey(String password) async {
-    if (_myX25519KeyPair == null) {
-      throw StateError('Cipher not initialized');
-    }
-
-    try {
-      final privateKeyBytes = await _myX25519KeyPair!.extractPrivateKeyBytes();
-      final passwordKey = await _derivePassKey(password);
-      
-      final encrypted = await _algo.encrypt(
-        privateKeyBytes,
-        secretKey: passwordKey,
-      );
-      
-      return base64Encode(encrypted.concatenation());
-    } catch (e) {
-      throw CryptoException('Failed to export private key: $e');
-    }
+  void markAsRead(String fromUid, String messageId) {
+    sendReadReceipt(fromUid, messageId);
   }
 
-  /// Импортирует приватный ключ X25519 (Legacy метод для бекапа)
-  Future<void> importPrivateKey(String encryptedKeyB64, String password) async {
-    try {
-      final passwordKey = await _derivePassKey(password);
-      final combined = base64Decode(encryptedKeyB64);
-      final box = SecretBox.fromConcatenation(
-        combined,
-        nonceLength: _algo.nonceLength,
-        macLength: _algo.macAlgorithm.macLength,
-      );
-      
-      final privateKeyBytes = await _algo.decrypt(box, secretKey: passwordKey);
-      _myX25519KeyPair = await _x25519.newKeyPairFromSeed(privateKeyBytes);
-      _isInitialized = true;
-      print('✅ [Crypto] Private key imported');
-    } catch (e) {
-      throw CryptoException('Failed to import private key: $e');
-    }
+  bool get isConnected => _isConnected;
+  int get reconnectAttempts => _reconnectAttempts;
+
+  void forceReconnect() {
+    _reconnectAttempts = 0;
+    _channel?.sink.close();
+    _attemptConnection();
   }
 
-  /// Вспомогательная функция вывода ключа из пароля
-  Future<SecretKey> _derivePassKey(String password) async {
-    return await Argon2id(
-      memory: 32768,
-      iterations: 3,
-      parallelism: 4,
-      hashLength: 32,
-    ).deriveKeyFromPassword(
-      password: password,
-      nonce: List.generate(16, (i) => i),
-    );
-  }
-
-  /// Проверяет, инициализирован ли cipher
-  bool get isInitialized => _isInitialized;
-
-  /// Очищает все ключи из памяти (Log out)
   void dispose() {
-    _sharedSecrets.clear();
-    _contactPublicKeys.clear();
-    _contactSignKeys.clear();
-    _myX25519KeyPair = null;
-    _myEd25519KeyPair = null;
-    _isInitialized = false;
-    print('🧹 [Crypto] Memory cleared');
+    _reconnectTimer?.cancel();
+    _pingTimer?.cancel();
+    _connectionTimeoutTimer?.cancel();
+    _channel?.sink.close();
+    _messageStream.close();
+    _pendingMessages.clear();
   }
-}
-
-/// Кастомное исключение для криптографических ошибок
-class CryptoException implements Exception {
-  final String message;
-  CryptoException(this.message);
-  @override
-  String toString() => 'CryptoException: $message';
 }
