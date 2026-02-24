@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:cryptography/cryptography.dart';
 import 'package:crypto/crypto.dart';
-import 'storage_service.dart';
 
 /// Сервис для E2E шифрования сообщений
 /// Использует X25519 для обмена ключами и ChaCha20-Poly1305 для шифрования
@@ -244,6 +243,15 @@ class SecureCipher {
     }
 
     return false;
+  }
+
+  /// Очищает shared secret для конкретного пользователя
+  /// Используется когда нужно пересоздать ключи (например, при ошибке расшифровки)
+  void clearSharedSecret(String targetUid) {
+    _sharedSecrets.remove(targetUid);
+    _contactPublicKeys.remove(targetUid);
+    _contactSignKeys.remove(targetUid);
+    print('🗑️ [Crypto] Cleared shared secret for $targetUid');
   }
 
   /// Генерирует код безопасности для верификации (Safety Number)
