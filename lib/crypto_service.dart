@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:cryptography/cryptography.dart';
 import 'package:crypto/crypto.dart';
+import 'storage_service.dart';
 
 /// Сервис для E2E шифрования сообщений
 /// Использует X25519 для обмена ключами и ChaCha20-Poly1305 для шифрования
