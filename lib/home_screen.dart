@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
 
 import 'identity_service.dart';
 import 'chat_screen.dart';
@@ -26,6 +28,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   final _storage = StorageService();
   final _socket = SocketService();
   final _cipher = SecureCipher();
+  final _imagePicker = ImagePicker(); // Для выбора аватарки
 
   final _idController = TextEditingController();
   final _serverController = TextEditingController(text: 'wss://deepdrift-backend.onrender.com/ws');
@@ -39,8 +42,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   final _quickIdController = TextEditingController();
   bool _hasUpdate = false;
-  String _currentVersion = '4.4.0';
-  String _latestVersion = '4.5.0';
+  String _currentVersion = '4.5.0';
+  String _latestVersion = '4.6.0';
+
+  // Таймер для периодического обновления статусов друзей
+  Timer? _statusCheckTimer;
 
   @override
   void initState() {
@@ -49,6 +55,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _animController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
     _pulseAnimation = Tween<double>(begin: 0.8, end: 1.0).animate(_animController);
     _setup();
+    
+    // Запускаем проверку статусов каждые 30 секунд
+    _statusCheckTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      if (_isConnected) {
+        _socket.checkStatuses(_chats);
+      }
+    });
   }
 
   @override
@@ -56,6 +69,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     WidgetsBinding.instance.removeObserver(this);
     _animController.dispose();
     _socketSub?.cancel();
+    _statusCheckTimer?.cancel();
     _searchController.dispose();
     _quickIdController.dispose();
     super.dispose();
@@ -63,8 +77,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && !_socket.isConnected) {
-      _socket.forceReconnect();
+    if (state == AppLifecycleState.resumed) {
+       if (!_socket.isConnected) _socket.forceReconnect();
+       // При возвращении в приложение сразу проверяем статусы
+       _socket.checkStatuses(_chats);
     }
   }
 
@@ -117,6 +133,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         if (type == 'uid_assigned') {
           setState(() { _isConnected = true; _connectionStatus = 'ONLINE'; });
           _registerPublicKeysOnServer();
+          // При подключении запрашиваем статусы всех друзей
+          _socket.checkStatuses(_storage.getContacts());
         }
 
         if (type == 'connection_status') {
@@ -130,22 +148,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           setState(() => _connectionStatus = 'FAILED');
         }
 
-        // ✅ НОВОЕ: Ловим статус контактов
-        if (type == 'user_status') {
-          final uid = data['uid'];
-          final isOnline = data['status'] == 'online';
-          final lastSeen = data['last_seen'];
-          _storage.setContactStatus(uid, isOnline, lastSeen);
-          if (mounted) setState(() {}); // Обновляем UI (зеленую точку)
-        }
-
-        // Обработка оффлайн сообщений
-        if (type == 'message') _handleIncomingMessageQuietly(data);
-
         // Обновляем список чатов
-        if (type == 'message' || type == 'status_update' || type == 'message_deleted') {
-          setState(() => _chats = _storage.getContactsSortedByActivity());
+        if (type == 'message' || type == 'status_update' || type == 'message_deleted' || type == 'user_status') {
+           setState(() => _chats = _storage.getContactsSortedByActivity());
         }
+        
+        if (type == 'message') _handleIncomingMessageQuietly(data);
       });
 
       setState(() {
@@ -199,45 +207,68 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   void _showMyProfileDialog() {
     final profile = _storage.getMyProfile();
     final nameCtrl = TextEditingController(text: profile['nickname']);
+    String? currentAvatar = profile['avatarUrl'];
 
     showDialog(
       context: context,
-      builder: (c) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1F3C),
-        title: Text("My Profile", style: GoogleFonts.orbitron()),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircleAvatar(
-              radius: 40,
-              backgroundColor: const Color(0xFF0A0E27),
-              child: const Icon(Icons.person, size: 40, color: Colors.cyan),
+      builder: (c) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1A1F3C),
+            title: Text("My Profile", style: GoogleFonts.orbitron()),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                GestureDetector(
+                  onTap: () async {
+                    // Выбор аватарки
+                    final img = await _imagePicker.pickImage(source: ImageSource.gallery, maxWidth: 512, maxHeight: 512);
+                    if (img != null) {
+                      // Сразу грузим на сервер
+                      String? fileId = await _socket.uploadFile(File(img.path));
+                      if (fileId != null) {
+                        setDialogState(() {
+                          currentAvatar = fileId;
+                        });
+                      }
+                    }
+                  },
+                  child: CircleAvatar(
+                    radius: 40,
+                    backgroundColor: const Color(0xFF0A0E27),
+                    backgroundImage: currentAvatar != null ? NetworkImage('https://deepdrift-backend.onrender.com/download/$currentAvatar') : null,
+                    child: currentAvatar == null ? const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan) : null,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text("ID: $_myUid", style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: nameCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: "Nickname",
+                    filled: true, fillColor: Color(0xFF0A0E27),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            Text("ID: $_myUid", style: const TextStyle(color: Colors.white54, fontSize: 12)),
-            const SizedBox(height: 16),
-            TextField(
-              controller: nameCtrl,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: "Nickname",
-                filled: true, fillColor: Color(0xFF0A0E27),
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL")),
-          ElevatedButton(
-            onPressed: () async {
-              await _storage.saveMyProfile(nickname: nameCtrl.text.trim());
-              Navigator.pop(context);
-              setState(() {}); // Обновляем
-            },
-            child: const Text("SAVE"),
-          )
-        ],
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL")),
+              ElevatedButton(
+                onPressed: () async {
+                  await _storage.saveMyProfile(nickname: nameCtrl.text.trim(), avatarUrl: currentAvatar);
+                  // Отправляем обновление на сервер
+                  _socket.updateProfile(nameCtrl.text.trim(), currentAvatar);
+                  Navigator.pop(context);
+                  setState(() {}); 
+                },
+                child: const Text("SAVE"),
+              )
+            ],
+          );
+        }
       ),
     );
   }
@@ -332,6 +363,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           ElevatedButton(
             onPressed: () async {
               if (targetC.text.length == 6 && targetC.text != _myUid) {
+                // При добавлении сразу запрашиваем профиль
+                _socket.getProfile(targetC.text);
                 await _storage.addContact(targetC.text, displayName: nameC.text.trim().isNotEmpty ? nameC.text.trim() : null);
                 Navigator.pop(context);
                 setState(() => _chats = _storage.getContactsSortedByActivity());
@@ -350,6 +383,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     if (contactId.isEmpty || contactId == _myUid) return;
 
     if (!_chats.contains(contactId)) {
+      _socket.getProfile(contactId);
       _storage.addContact(contactId, displayName: contactId);
       setState(() => _chats = _storage.getContactsSortedByActivity());
     }
@@ -382,23 +416,26 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       itemBuilder: (c, i) {
         final uid = _chats[i];
         final name = _storage.getContactDisplayName(uid);
+        final avatar = _storage.getContactAvatar(uid); // Получаем аватарку
         final meta = _storage.getChatMetadata(uid);
         final unread = meta['unreadCount'] ?? 0;
-        final isOnline = _storage.isContactOnline(uid); // ✅ ПРОВЕРКА ОНЛАЙНА
+        final isOnline = _storage.isContactOnline(uid);
 
         return ListTile(
           leading: Stack(
             children: [
-              CircleAvatar(backgroundColor: const Color(0xFF1A1F3C), child: Text(name[0].toUpperCase(), style: const TextStyle(color: Colors.cyan))),
+              CircleAvatar(
+                backgroundColor: const Color(0xFF1A1F3C),
+                backgroundImage: avatar != null ? NetworkImage('https://deepdrift-backend.onrender.com/download/$avatar') : null,
+                child: avatar == null ? Text(name[0].toUpperCase(), style: const TextStyle(color: Colors.cyan)) : null,
+              ),
               
-              // ✅ ЗЕЛЕНАЯ ТОЧКА ОНЛАЙНА
               if (isOnline)
                 Positioned(
                   right: 0, bottom: 0,
                   child: Container(width: 12, height: 12, decoration: BoxDecoration(color: Colors.greenAccent, shape: BoxShape.circle, border: Border.all(color: const Color(0xFF0A0E27), width: 2))),
                 ),
                 
-              // Красный счетчик сообщений
               if (unread > 0)
                 Positioned(
                   right: 0, top: 0,
@@ -420,6 +457,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   @override
   Widget build(BuildContext context) {
     final totalUnread = _storage.getTotalUnreadCount();
+    final myProfile = _storage.getMyProfile();
 
     return PopScope(
       canPop: !_isSearching,
@@ -449,10 +487,22 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             else ...[
               IconButton(icon: const Icon(Icons.search), onPressed: () => setState(() => _isSearching = true)),
               
-              // ✅ КНОПКА "МОЙ ПРОФИЛЬ"
-              IconButton(
-                icon: const Icon(Icons.account_circle, color: Colors.cyan),
-                onPressed: _showMyProfileDialog,
+              // Кнопка профиля с аватаркой (если есть)
+              GestureDetector(
+                onTap: _showMyProfileDialog,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12, left: 8),
+                  child: CircleAvatar(
+                    radius: 16,
+                    backgroundColor: Colors.cyan.withOpacity(0.2),
+                    backgroundImage: myProfile['avatarUrl'] != null 
+                        ? NetworkImage('https://deepdrift-backend.onrender.com/download/${myProfile['avatarUrl']}') 
+                        : null,
+                    child: myProfile['avatarUrl'] == null 
+                        ? const Icon(Icons.person, size: 20, color: Colors.cyan) 
+                        : null,
+                  ),
+                ),
               ),
             ],
           ],
