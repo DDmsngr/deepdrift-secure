@@ -1,41 +1,31 @@
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data'; // Добавлено для работы с байтами
 import 'package:cryptography/cryptography.dart';
 import 'package:crypto/crypto.dart';
 import 'storage_service.dart';
 
-/// Сервис для E2E шифрования сообщений
-/// Использует X25519 для обмена ключами и ChaCha20-Poly1305 для шифрования
-/// 
-/// Реализация с индивидуальными ключами для каждой пары пользователей.
+/// Сервис для E2E шифрования сообщений и файлов
 class SecureCipher {
   final _algo = Chacha20.poly1305Aead();
   final _x25519 = X25519();
   final _ed25519 = Ed25519();
   
-  SimpleKeyPair? _myX25519KeyPair;      // Для ECDH (Шифрование)
-  SimpleKeyPair? _myEd25519KeyPair;     // Для подписей (Аутентичность)
+  SimpleKeyPair? _myX25519KeyPair;      
+  SimpleKeyPair? _myEd25519KeyPair;     
   
-  final Map<String, SecretKey> _sharedSecrets = {};           // uid -> shared secret
-  final Map<String, SimplePublicKey> _contactPublicKeys = {}; // uid -> их X25519 публичный ключ
-  final Map<String, SimplePublicKey> _contactSignKeys = {};   // uid -> их Ed25519 публичный ключ
+  final Map<String, SecretKey> _sharedSecrets = {};           
+  final Map<String, SimplePublicKey> _contactPublicKeys = {}; 
+  final Map<String, SimplePublicKey> _contactSignKeys = {};   
   
   bool _isInitialized = false;
 
-  /// Генерирует случайную соль для пароля пользователя
-  /// Возвращает 32-байтную соль в виде base64 строки
   static String generateSalt() {
     final random = Random.secure();
     final saltBytes = List<int>.generate(32, (_) => random.nextInt(256));
     return base64Encode(saltBytes);
   }
 
-  /// Инициализирует cipher, генерируя пары ключей для пользователя
-  /// 
-  /// [password] - пароль используется для шифрования приватных ключей
-  /// [userSalt] - соль пользователя для Argon2
-  /// [encryptedX25519Key] - сохранённый зашифрованный X25519 ключ
-  /// [encryptedEd25519Key] - сохранённый зашифрованный Ed25519 ключ
   Future<void> init(
     String password, 
     String userSalt, {
@@ -43,12 +33,10 @@ class SecureCipher {
     String? encryptedEd25519Key,
   }) async {
     try {
-      // Если есть сохранённые ключи - восстанавливаем их из хранилища
       if (encryptedX25519Key != null && encryptedEd25519Key != null) {
         await _importBothKeys(encryptedX25519Key, encryptedEd25519Key, password);
         print('✅ [Crypto] Cipher initialized with restored key pairs');
       } else {
-        // Генерируем абсолютно новые пары ключей (первый запуск)
         _myX25519KeyPair = await _x25519.newKeyPair();
         _myEd25519KeyPair = await _ed25519.newKeyPair();
         _isInitialized = true;
@@ -60,22 +48,17 @@ class SecureCipher {
     }
   }
 
-  /// Экспортирует оба приватных ключа (X25519 и Ed25519) зашифрованными паролем
-  /// Возвращает Map с двумя ключами: 'x25519' и 'ed25519'
   Future<Map<String, String>> exportBothKeys(String password) async {
     if (_myX25519KeyPair == null || _myEd25519KeyPair == null) {
       throw StateError('Cipher not initialized');
     }
 
     try {
-      // Экспортируем X25519 приватный ключ в байты
       final x25519KeyBytes = await _myX25519KeyPair!.extractPrivateKeyBytes();
       
-      // Экспортируем Ed25519 приватный ключ
       final ed25519KeyPair = await _myEd25519KeyPair!.extract();
       final ed25519KeyBytes = await ed25519KeyPair.extractPrivateKeyBytes();
       
-      // Генерируем ключ шифрования из пароля (Argon2id)
       final passwordKey = await Argon2id(
         memory: 32768,
         iterations: 3,
@@ -83,20 +66,11 @@ class SecureCipher {
         hashLength: 32,
       ).deriveKeyFromPassword(
         password: password,
-        nonce: List.generate(16, (i) => i), // Фиксированная соль для ключей
+        nonce: List.generate(16, (i) => i),
       );
       
-      // Шифруем X25519 ключ
-      final encryptedX25519 = await _algo.encrypt(
-        x25519KeyBytes,
-        secretKey: passwordKey,
-      );
-      
-      // Шифруем Ed25519 ключ
-      final encryptedEd25519 = await _algo.encrypt(
-        ed25519KeyBytes,
-        secretKey: passwordKey,
-      );
+      final encryptedX25519 = await _algo.encrypt(x25519KeyBytes, secretKey: passwordKey);
+      final encryptedEd25519 = await _algo.encrypt(ed25519KeyBytes, secretKey: passwordKey);
       
       return {
         'x25519': base64Encode(encryptedX25519.concatenation()),
@@ -108,14 +82,8 @@ class SecureCipher {
     }
   }
 
-  /// Внутренний метод для расшифровки и импорта обоих ключей
-  Future<void> _importBothKeys(
-    String encryptedX25519B64,
-    String encryptedEd25519B64,
-    String password,
-  ) async {
+  Future<void> _importBothKeys(String encryptedX25519B64, String encryptedEd25519B64, String password) async {
     try {
-      // Генерируем Argon2 ключ из пароля
       final passwordKey = await Argon2id(
         memory: 32768,
         iterations: 3,
@@ -126,7 +94,6 @@ class SecureCipher {
         nonce: List.generate(16, (i) => i),
       );
       
-      // Декодируем и расшифровываем X25519 ключ
       final x25519Combined = base64Decode(encryptedX25519B64);
       final x25519Box = SecretBox.fromConcatenation(
         x25519Combined,
@@ -135,7 +102,6 @@ class SecureCipher {
       );
       final x25519KeyBytes = await _algo.decrypt(x25519Box, secretKey: passwordKey);
       
-      // Декодируем и расшифровываем Ed25519 ключ
       final ed25519Combined = base64Decode(encryptedEd25519B64);
       final ed25519Box = SecretBox.fromConcatenation(
         ed25519Combined,
@@ -144,7 +110,6 @@ class SecureCipher {
       );
       final ed25519KeyBytes = await _algo.decrypt(ed25519Box, secretKey: passwordKey);
       
-      // Восстанавливаем пары ключей из семян (seeds)
       _myX25519KeyPair = await _x25519.newKeyPairFromSeed(x25519KeyBytes);
       _myEd25519KeyPair = await _ed25519.newKeyPairFromSeed(ed25519KeyBytes);
       _isInitialized = true;
@@ -154,52 +119,34 @@ class SecureCipher {
     }
   }
 
-  /// Возвращает публичный ключ X25519 в base64 (для отправки собеседнику)
   Future<String> getMyPublicKey() async {
-    if (_myX25519KeyPair == null) {
-      throw StateError('Cipher not initialized');
-    }
+    if (_myX25519KeyPair == null) throw StateError('Cipher not initialized');
     final publicKey = await _myX25519KeyPair!.extractPublicKey();
     return base64Encode(publicKey.bytes);
   }
 
-  /// Возвращает публичный ключ Ed25519 в base64 (для проверки твоих подписей)
   Future<String> getMySigningKey() async {
-    if (_myEd25519KeyPair == null) {
-      throw StateError('Cipher not initialized');
-    }
+    if (_myEd25519KeyPair == null) throw StateError('Cipher not initialized');
     final publicKey = await _myEd25519KeyPair!.extractPublicKey();
     return base64Encode(publicKey.bytes);
   }
 
-  /// Устанавливает общий секрет (Shared Secret) через Diffie-Hellman
   Future<void> establishSharedSecret(
     String targetUid,
     String theirPublicKeyB64, {
     String? theirSignKeyB64,
   }) async {
-    if (_myX25519KeyPair == null) {
-      throw StateError('Cipher not initialized');
-    }
+    if (_myX25519KeyPair == null) throw StateError('Cipher not initialized');
     
     try {
-      // Сохраняем их публичный ключ шифрования
-      final theirPublicKey = SimplePublicKey(
-        base64Decode(theirPublicKeyB64),
-        type: KeyPairType.x25519,
-      );
+      final theirPublicKey = SimplePublicKey(base64Decode(theirPublicKeyB64), type: KeyPairType.x25519);
       _contactPublicKeys[targetUid] = theirPublicKey;
       
-      // Сохраняем их публичный ключ подписи (если есть)
       if (theirSignKeyB64 != null) {
-        final theirSignKey = SimplePublicKey(
-          base64Decode(theirSignKeyB64),
-          type: KeyPairType.ed25519,
-        );
+        final theirSignKey = SimplePublicKey(base64Decode(theirSignKeyB64), type: KeyPairType.ed25519);
         _contactSignKeys[targetUid] = theirSignKey;
       }
       
-      // Самая важная часть: вычисляем общий секретный ключ для этой пары
       final sharedSecret = await _x25519.sharedSecretKey(
         keyPair: _myX25519KeyPair!,
         remotePublicKey: theirPublicKey,
@@ -213,41 +160,27 @@ class SecureCipher {
     }
   }
 
-  /// Проверяет, готов ли зашифрованный канал с этим пользователем
-  bool hasSharedSecret(String targetUid) {
-    return _sharedSecrets.containsKey(targetUid);
-  }
+  bool hasSharedSecret(String targetUid) => _sharedSecrets.containsKey(targetUid);
 
-  /// Загружает кешированные ключи и устанавливает shared secret
-  /// Возвращает true если ключи были загружены из кеша
   Future<bool> tryLoadCachedKeys(String targetUid, StorageService storage) async {
-    if (hasSharedSecret(targetUid)) {
-      return true; // Уже есть shared secret
-    }
+    if (hasSharedSecret(targetUid)) return true;
 
     final x25519Key = storage.getCachedX25519Key(targetUid);
     final ed25519Key = storage.getCachedEd25519Key(targetUid);
 
     if (x25519Key != null && ed25519Key != null) {
       try {
-        await establishSharedSecret(
-          targetUid,
-          x25519Key,
-          theirSignKeyB64: ed25519Key,
-        );
+        await establishSharedSecret(targetUid, x25519Key, theirSignKeyB64: ed25519Key);
         print('✅ [Crypto] Loaded keys from cache for $targetUid');
         return true;
       } catch (e) {
-        print('❌ [Crypto] Failed to load cached keys for $targetUid: $e');
+        print('❌ [Crypto] Failed to load cached keys: $e');
         return false;
       }
     }
-
     return false;
   }
 
-  /// Очищает shared secret для конкретного пользователя
-  /// Используется когда нужно пересоздать ключи (например, при ошибке расшифровки)
   void clearSharedSecret(String targetUid) {
     _sharedSecrets.remove(targetUid);
     _contactPublicKeys.remove(targetUid);
@@ -255,54 +188,31 @@ class SecureCipher {
     print('🗑️ [Crypto] Cleared shared secret for $targetUid');
   }
 
-  /// Генерирует код безопасности для верификации (Safety Number)
-  /// Сравнивая этот код, пользователи убеждаются в отсутствии MITM атаки.
   String getSecurityCode(String targetUid) {
     if (!_contactPublicKeys.containsKey(targetUid) || _myX25519KeyPair == null) {
       return "NOT_ESTABLISHED";
     }
-    
     try {
-      // Берем байты нашего публичного ключа (закешированные в паре) и их ключа
-      // Мы используем синхронный доступ к байтам через сохраненные данные, 
-      // чтобы не вешать UI долгими Future.
       final theirBytes = _contactPublicKeys[targetUid]!.bytes;
-      
-      // Хешируем комбинацию для получения уникального отпечатка
-      // Мы делаем это просто: SHA256 от суммы байтов ключей
       final hash = sha256.convert(theirBytes);
-      
-      // Превращаем в читаемый HEX-код, разбитый на группы по 4 символа
       final fullCode = hash.toString().toUpperCase();
       return "${fullCode.substring(0, 4)} ${fullCode.substring(4, 8)} ${fullCode.substring(8, 12)}";
     } catch (e) {
-      print("❌ [Crypto] Security code calc error: $e");
       return "ERROR";
     }
   }
 
-  /// Шифрует текст для конкретного получателя [targetUid]
-  Future<String> encryptText(String text, {required String targetUid}) async {
-    if (!_isInitialized) {
-      throw StateError('Cipher not initialized. Call init() first.');
-    }
+  // ============================================================
+  // ШИФРОВАНИЕ ТЕКСТА
+  // ============================================================
 
-    if (text.isEmpty) {
-      throw ArgumentError('Cannot encrypt empty text');
-    }
-    
-    if (!_sharedSecrets.containsKey(targetUid)) {
-      throw StateError('No shared secret for $targetUid. Perform key exchange first.');
-    }
+  Future<String> encryptText(String text, {required String targetUid}) async {
+    if (!_isInitialized) throw StateError('Cipher not initialized');
+    if (!_sharedSecrets.containsKey(targetUid)) throw StateError('No shared secret for $targetUid');
 
     try {
       final plainBytes = utf8.encode(text);
-      final secretBox = await _algo.encrypt(
-        plainBytes,
-        secretKey: _sharedSecrets[targetUid]!,
-      );
-      
-      // Возвращаем зашифрованные данные + IV + MAC в одной base64 строке
+      final secretBox = await _algo.encrypt(plainBytes, secretKey: _sharedSecrets[targetUid]!);
       return base64Encode(secretBox.concatenation());
     } catch (e) {
       print('❌ [Crypto] Encryption failed: $e');
@@ -310,25 +220,59 @@ class SecureCipher {
     }
   }
 
-  /// Расшифровывает текст от отправителя [fromUid]
   Future<String> decryptText(String b64, {required String fromUid}) async {
-    if (!_isInitialized) {
-      throw StateError('Cipher not initialized.');
-    }
-
-    if (b64.isEmpty) {
-      return "[⚠️ Empty payload]";
-    }
-    
-    if (!_sharedSecrets.containsKey(fromUid)) {
-      return "[⚠️ No encryption key for $fromUid]";
-    }
+    if (!_isInitialized) throw StateError('Cipher not initialized');
+    if (b64.isEmpty) return "[⚠️ Empty payload]";
+    if (!_sharedSecrets.containsKey(fromUid)) return "[⚠️ No encryption key for $fromUid]";
 
     try {
       final combined = base64Decode(b64);
-      
       final box = SecretBox.fromConcatenation(
         combined,
+        nonceLength: _algo.nonceLength,
+        macLength: _algo.macAlgorithm.macLength,
+      );
+      final clearBytes = await _algo.decrypt(box, secretKey: _sharedSecrets[fromUid]!);
+      return utf8.decode(clearBytes);
+    } on SecretBoxAuthenticationError {
+      return "[⚠️ Authentication failed]";
+    } catch (e) {
+      print('❌ [Crypto] Decryption error: $e');
+      return "[❌ Decryption error]";
+    }
+  }
+
+  // ============================================================
+  // ШИФРОВАНИЕ ФАЙЛОВ (НОВОЕ)
+  // ============================================================
+
+  /// Шифрует файл (байты)
+  Future<List<int>> encryptFileBytes(List<int> fileBytes, {required String targetUid}) async {
+    if (!_isInitialized) throw StateError('Cipher not initialized');
+    if (!_sharedSecrets.containsKey(targetUid)) throw StateError('No shared secret for $targetUid');
+
+    try {
+      // Шифруем байты файла так же, как текст
+      final secretBox = await _algo.encrypt(
+        fileBytes,
+        secretKey: _sharedSecrets[targetUid]!,
+      );
+      // Возвращаем (nonce + ciphertext + mac)
+      return secretBox.concatenation();
+    } catch (e) {
+      print('❌ [Crypto] File encryption failed: $e');
+      throw CryptoException('File encryption failed: $e');
+    }
+  }
+
+  /// Расшифровывает файл (байты)
+  Future<List<int>> decryptFileBytes(List<int> encryptedBytes, {required String fromUid}) async {
+    if (!_isInitialized) throw StateError('Cipher not initialized');
+    if (!_sharedSecrets.containsKey(fromUid)) throw StateError('No key for $fromUid');
+
+    try {
+      final box = SecretBox.fromConcatenation(
+        encryptedBytes,
         nonceLength: _algo.nonceLength,
         macLength: _algo.macAlgorithm.macLength,
       );
@@ -338,118 +282,73 @@ class SecureCipher {
         secretKey: _sharedSecrets[fromUid]!,
       );
       
-      return utf8.decode(clearBytes);
-    } on SecretBoxAuthenticationError {
-      return "[⚠️ Authentication failed: Wrong key or data corrupted]";
+      return clearBytes;
     } catch (e) {
-      print('❌ [Crypto] Decryption error: $e');
-      return "[❌ Decryption error]";
+      print('❌ [Crypto] File decryption error: $e');
+      throw CryptoException('File decryption error');
     }
   }
 
-  /// Подписывает сообщение (Ed25519)
-  Future<String> signMessage(String text) async {
-    if (_myEd25519KeyPair == null) {
-      throw StateError('Cipher not initialized');
-    }
+  // ============================================================
+  // ПОДПИСИ
+  // ============================================================
 
+  Future<String> signMessage(String text) async {
+    if (_myEd25519KeyPair == null) throw StateError('Cipher not initialized');
     try {
-      final signature = await _ed25519.sign(
-        utf8.encode(text),
-        keyPair: _myEd25519KeyPair!,
-      );
+      final signature = await _ed25519.sign(utf8.encode(text), keyPair: _myEd25519KeyPair!);
       return base64Encode(signature.bytes);
     } catch (e) {
-      print('❌ [Crypto] Signing error: $e');
       throw CryptoException('Failed to sign message: $e');
     }
   }
 
-  /// Проверяет подпись сообщения [signatureB64] от пользователя [fromUid]
-  Future<bool> verifySignature(
-    String text,
-    String signatureB64,
-    String fromUid,
-  ) async {
-    if (!_contactSignKeys.containsKey(fromUid)) {
-      print('⚠️ [Crypto] No signing key for $fromUid');
-      return false;
-    }
-
+  Future<bool> verifySignature(String text, String signatureB64, String fromUid) async {
+    if (!_contactSignKeys.containsKey(fromUid)) return false;
     try {
-      final signature = Signature(
-        base64Decode(signatureB64),
-        publicKey: _contactSignKeys[fromUid]!,
-      );
-      
-      return await _ed25519.verify(
-        utf8.encode(text),
-        signature: signature,
-      );
+      final signature = Signature(base64Decode(signatureB64), publicKey: _contactSignKeys[fromUid]!);
+      return await _ed25519.verify(utf8.encode(text), signature: signature);
     } catch (e) {
-      print('❌ [Crypto] Signature verify error: $e');
       return false;
     }
   }
 
-  /// Экспортирует приватный ключ X25519 (Legacy метод для бекапа)
-  Future<String> exportPrivateKey(String password) async {
-    if (_myX25519KeyPair == null) {
-      throw StateError('Cipher not initialized');
-    }
+  // ============================================================
+  // LEGACY EXPORT (для бекапа)
+  // ============================================================
 
+  Future<String> exportPrivateKey(String password) async {
+    if (_myX25519KeyPair == null) throw StateError('Cipher not initialized');
     try {
       final privateKeyBytes = await _myX25519KeyPair!.extractPrivateKeyBytes();
       final passwordKey = await _derivePassKey(password);
-      
-      final encrypted = await _algo.encrypt(
-        privateKeyBytes,
-        secretKey: passwordKey,
-      );
-      
+      final encrypted = await _algo.encrypt(privateKeyBytes, secretKey: passwordKey);
       return base64Encode(encrypted.concatenation());
     } catch (e) {
       throw CryptoException('Failed to export private key: $e');
     }
   }
 
-  /// Импортирует приватный ключ X25519 (Legacy метод для бекапа)
   Future<void> importPrivateKey(String encryptedKeyB64, String password) async {
     try {
       final passwordKey = await _derivePassKey(password);
       final combined = base64Decode(encryptedKeyB64);
-      final box = SecretBox.fromConcatenation(
-        combined,
-        nonceLength: _algo.nonceLength,
-        macLength: _algo.macAlgorithm.macLength,
-      );
-      
+      final box = SecretBox.fromConcatenation(combined, nonceLength: _algo.nonceLength, macLength: _algo.macAlgorithm.macLength);
       final privateKeyBytes = await _algo.decrypt(box, secretKey: passwordKey);
       _myX25519KeyPair = await _x25519.newKeyPairFromSeed(privateKeyBytes);
       _isInitialized = true;
-      print('✅ [Crypto] Private key imported');
     } catch (e) {
       throw CryptoException('Failed to import private key: $e');
     }
   }
 
-  /// Вспомогательная функция вывода ключа из пароля
   Future<SecretKey> _derivePassKey(String password) async {
-    return await Argon2id(
-      memory: 32768,
-      iterations: 3,
-      parallelism: 4,
-      hashLength: 32,
-    ).deriveKeyFromPassword(
-      password: password,
-      nonce: List.generate(16, (i) => i),
-    );
+    return await Argon2id(memory: 32768, iterations: 3, parallelism: 4, hashLength: 32)
+        .deriveKeyFromPassword(password: password, nonce: List.generate(16, (i) => i));
   }
 
-  /// Проверяет, инициализирован ли cipher
   bool get isInitialized => _isInitialized;
 
-  /// Очищает все ключи из памяти (Log out)
   void dispose() {
     _sharedSecrets.clear();
     _contactPublicKeys.clear();
@@ -457,7 +356,6 @@ class SecureCipher {
     _myX25519KeyPair = null;
     _myEd25519KeyPair = null;
     _isInitialized = false;
-    print('🧹 [Crypto] Memory cleared');
   }
 }
 
