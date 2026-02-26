@@ -2,27 +2,23 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
 import 'home_screen.dart';
 import 'notification_service.dart';
 import 'socket_service.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 // ========================================
 // КРИТИЧЕСКИ ВАЖНО: Фоновый обработчик
 // ========================================
-// Этот обработчик вызывается когда приложение ЗАКРЫТО
-// и приходит push-уведомление
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // Инициализируем Firebase для фонового режима
   await Firebase.initializeApp();
   
   print("📲 Background message received: ${message.messageId}");
-  print("   From: ${message.data['from_uid']}");
   
-  // Показываем локальное уведомление
   final notification = FlutterLocalNotificationsPlugin();
-  
   const AndroidInitializationSettings initializationSettingsAndroid =
       AndroidInitializationSettings('@mipmap/ic_launcher');
   
@@ -32,7 +28,6 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   
   await notification.initialize(initializationSettings);
   
-  // Показываем уведомление
   const AndroidNotificationDetails androidPlatformChannelSpecifics =
       AndroidNotificationDetails(
     'background_messages',
@@ -41,8 +36,6 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     priority: Priority.high,
     showWhen: true,
     color: Color(0xFF00D9FF),
-    enableVibration: true,
-    playSound: true,
   );
   
   const NotificationDetails platformChannelSpecifics =
@@ -58,27 +51,33 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 }
 
 void main() async {
+  // Гарантируем инициализацию движка Flutter
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // 1. Инициализация Firebase
   await Firebase.initializeApp();
-
-  // 1. Запрос разрешений (Критично для Android 13+)
+  
+  // 2. Запрос разрешений на уведомления (для Android 13+ и iOS)
   FirebaseMessaging messaging = FirebaseMessaging.instance;
-  NotificationSettings settings = await messaging.requestPermission(
-    alert: true, badge: true, sound: true,
+  await messaging.requestPermission(
+    alert: true,
+    badge: true,
+    sound: true,
   );
 
-  // 2. Настройка отображения уведомлений, когда приложение открыто
+  // Настройка уведомлений при открытом приложении
   await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
-    alert: true, badge: true, sound: true,
+    alert: true,
+    badge: true,
+    sound: true,
   );
-
-  // 3. Фоновый обработчик (уже есть, оставляем)
+  
+  // 3. Регистрация фонового обработчика
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-
+  
+  // 4. Инициализация Hive и сервисов
   await Hive.initFlutter();
   await NotificationService().init();
-  runApp(const DeepDriftApp());
-}
   
   runApp(const DeepDriftApp());
 }
@@ -90,20 +89,17 @@ class DeepDriftApp extends StatefulWidget {
   State<DeepDriftApp> createState() => _DeepDriftAppState();
 }
 
-// ИСПРАВЛЕНИЕ: Добавлен мониторинг жизненного цикла приложения
 class _DeepDriftAppState extends State<DeepDriftApp> with WidgetsBindingObserver {
   
   @override
   void initState() {
     super.initState();
-    // Регистрируем наблюдателя жизненного цикла
     WidgetsBinding.instance.addObserver(this);
     print("🔄 Lifecycle observer registered");
   }
 
   @override
   void dispose() {
-    // Удаляем наблюдателя при уничтожении виджета
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -114,33 +110,12 @@ class _DeepDriftAppState extends State<DeepDriftApp> with WidgetsBindingObserver
     
     print("🔄 App lifecycle changed: $state");
     
-    switch (state) {
-      case AppLifecycleState.resumed:
-        // Приложение вернулось на передний план
-        print("✅ App RESUMED - calling socket service");
-        SocketService().onAppResumed();
-        break;
-        
-      case AppLifecycleState.paused:
-        // Приложение ушло в фон (но не закрыто)
-        print("⏸️ App PAUSED - notifying socket service");
-        SocketService().onAppPaused();
-        break;
-        
-      case AppLifecycleState.inactive:
-        // Приложение неактивно (например, входящий звонок)
-        print("⏸️ App INACTIVE");
-        break;
-        
-      case AppLifecycleState.detached:
-        // Приложение полностью закрывается
-        print("🛑 App DETACHED");
-        break;
-        
-      case AppLifecycleState.hidden:
-        // Приложение скрыто (новое в Flutter 3.13+)
-        print("👻 App HIDDEN");
-        break;
+    if (state == AppLifecycleState.resumed) {
+      print("✅ App RESUMED - calling socket service");
+      SocketService().onAppResumed();
+    } else if (state == AppLifecycleState.paused) {
+      print("⏸️ App PAUSED - notifying socket service");
+      SocketService().onAppPaused();
     }
   }
 
