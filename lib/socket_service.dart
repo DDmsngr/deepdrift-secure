@@ -16,8 +16,8 @@ class SocketService {
   static const String PROTOCOL_VERSION = "3.0";
   static const int MAX_RECONNECT_ATTEMPTS = 10;
   static const Duration RECONNECT_BASE_DELAY = Duration(seconds: 2);
-  static const Duration PING_INTERVAL = Duration(seconds: 30);
-  static const Duration CONNECTION_TIMEOUT = Duration(seconds: 10);
+  static const Duration PING_INTERVAL = Duration(seconds: 10);
+  static const Duration CONNECTION_TIMEOUT = Duration(seconds: 5);
   static const String HTTP_UPLOAD_URL = 'https://deepdrift-backend.onrender.com/upload';
 
   WebSocketChannel? _channel;
@@ -73,25 +73,29 @@ class SocketService {
   }
 
   // --- ЛОГИКА ЗАГРУЗКИ ФАЙЛОВ ---
-  Future<String?> uploadFile(File file) async {
+Future<String?> uploadFile(File file) async {
     try {
       String fileName = file.path.split('/').last;
       FormData formData = FormData.fromMap({
         "file": await MultipartFile.fromFile(file.path, filename: fileName),
       });
 
-      _uploadProgressController.add(0.01); // Старт
+      // Сообщаем UI, что загрузка началась
+      _uploadProgressController.add(0.01);
 
       var response = await _dio.post(
         HTTP_UPLOAD_URL,
         data: formData,
         onSendProgress: (sent, total) {
-          _uploadProgressController.add(sent / total);
+          double progress = sent / total;
+          _uploadProgressController.add(progress);
         },
       );
 
       if (response.statusCode == 200 && response.data['status'] == 'success') {
-        _uploadProgressController.add(0.0); // Финиш
+        _uploadProgressController.add(1.0); // Завершено
+        // Небольшая задержка, чтобы юзер увидел 100%
+        Future.delayed(const Duration(milliseconds: 500), () => _uploadProgressController.add(0.0));
         return response.data['file_id'];
       }
     } catch (e) {
