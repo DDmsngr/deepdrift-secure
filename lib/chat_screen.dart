@@ -12,8 +12,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:gal/gal.dart';
 import 'package:dio/dio.dart';
+import 'package:gal/gal.dart';
 
 import 'crypto_service.dart';
 import 'socket_service.dart';
@@ -258,10 +258,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // HTTP MEDIA HELPERS (НОВАЯ ЛОГИКА)
+  // HTTP MEDIA HELPERS (Dio Upload)
   // ──────────────────────────────────────────────────────────────────────────
 
-  /// Загружает файл на сервер по HTTP и возвращает ID (с прогрессом)
   Future<String?> _uploadFileHttp(File file) async {
     try {
       String fileName = file.path.split('/').last;
@@ -269,14 +268,16 @@ class _ChatScreenState extends State<ChatScreen> {
         "file": await MultipartFile.fromFile(file.path, filename: fileName),
       });
 
-      // Сбрасываем прогресс перед стартом
-      setState(() => _uploadProgress = 0.0);
+      if (mounted) {
+        setState(() {
+          _uploadProgress = 0.0;
+        });
+      }
 
       var response = await _dio.post(
         '$SERVER_HTTP_URL/upload',
         data: formData,
         onSendProgress: (int sent, int total) {
-          // Обновляем UI с процентами
           if (mounted) {
             setState(() {
               _uploadProgress = sent / total;
@@ -296,7 +297,6 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
-  /// Скачивает файл по HTTP потоком (чтобы не забить оперативку)
   Future<String?> _downloadFileHttp(String fileId, MsgType msgType, String? fileName) async {
     try {
       final appDir = await getApplicationDocumentsDirectory();
@@ -322,7 +322,6 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
-  /// Просто копирует файл в папку приложения (для локального отображения отправителю)
   Future<String?> _copyFileToMediaDir(File originalFile, MsgType msgType, String? fileName) async {
     try {
       final appDir = await getApplicationDocumentsDirectory();
@@ -338,7 +337,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Оставлен для обратной совместимости со старыми сообщениями Base64
   Future<String?> _saveMediaToDiskBase64({required String base64Data, required MsgType msgType, String? fileName}) async {
     try {
       final appDir = await getApplicationDocumentsDirectory();
@@ -411,22 +409,13 @@ class _ChatScreenState extends State<ChatScreen> {
 
     widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
       
-      // ✅ ПРОВЕРКА НА ОШИБКУ АУТЕНТИФИКАЦИИ
+      // Проверка на ошибку аутентификации
       if (decrypted.contains('Authentication failed') || 
           decrypted.contains('Wrong key')) {
-        
-        print('🔑 Authentication failed for $msgId - clearing cache and requesting new keys');
-        
-        // Очищаем shared secret
         widget.cipher.clearSharedSecret(widget.targetUid);
-        
-        // Очищаем кешированные ключи
         await _storage.clearCachedKeys(widget.targetUid);
-        
-        // Запрашиваем свежие ключи с сервера
         _socket.requestPublicKey(widget.targetUid);
         
-        // Показываем сообщение об ошибке
         final errorMsg = {
           'id': msgId,
           'text': '⚠️ Key mismatch detected. Please ask sender to resend the message.',
@@ -443,26 +432,21 @@ class _ChatScreenState extends State<ChatScreen> {
           });
           _scrollToBottom();
         }
-        
-        return; // Прерываем обработку
+        return; 
       }
       
       if (signature != null) {
-        final valid = await widget.cipher.verifySignature(decrypted, signature, widget.targetUid);
-        if (!valid) debugPrint("⚠️ Signature verification failed for $msgId");
+        await widget.cipher.verifySignature(decrypted, signature, widget.targetUid);
       }
 
       String? localPath;
       if (msgTyp != MsgType.text && data['mediaData'] != null) {
         String mediaStr = data['mediaData'];
         
-        // НОВАЯ ЛОГИКА: если это HTTP файл (начинается с FILE_ID)
         if (mediaStr.startsWith('FILE_ID:')) {
           String fileId = mediaStr.substring(8);
-          // Скачиваем файл в фоне
           localPath = await _downloadFileHttp(fileId, msgTyp, data['fileName']);
         } else {
-          // СТАРАЯ ЛОГИКА: Base64 fallback (для старых сообщений)
           localPath = await _saveMediaToDiskBase64(base64Data: mediaStr, msgType: msgTyp, fileName: data['fileName']);
         }
       }
@@ -639,7 +623,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Send Handlers (HTTP Upload)
+  // Send Handlers
   // ──────────────────────────────────────────────────────────────────────────
 
   Future<void> _sendMessage({
@@ -659,7 +643,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final messageText = text ?? _messageController.text.trim();
     if (messageText.isEmpty && mediaData == null) return;
 
-    // ✅ ПРОВЕРКА КЕША ПЕРЕД ШИФРОВАНИЕМ
+    // Проверка кеша перед шифрованием
     if (!widget.cipher.hasSharedSecret(widget.targetUid)) {
       final loaded = await widget.cipher.tryLoadCachedKeys(widget.targetUid, _storage);
       if (!loaded) {
@@ -759,14 +743,18 @@ class _ChatScreenState extends State<ChatScreen> {
 
       if (images.isEmpty) return;
 
-      setState(() => _isSendingFile = true);
+      if (mounted) {
+        setState(() {
+          _isSendingFile = true;
+          _uploadProgress = 0.0;
+        });
+      }
 
       for (final image in images) {
         File file = File(image.path);
         int fileSize = await file.length();
         String fileName = image.name;
 
-        // HTTP Загрузка
         String? fileId = await _uploadFileHttp(file);
         if (fileId == null) {
           _showError('Upload failed for $fileName');
@@ -778,7 +766,7 @@ class _ChatScreenState extends State<ChatScreen> {
         await _sendMessage(
           text: '📷 Photo',
           messageType: 'image',
-          mediaData: 'FILE_ID:$fileId', // <-- Отправляем только ID!
+          mediaData: 'FILE_ID:$fileId',
           filePath: localPath,
           fileName: fileName,
           fileSize: fileSize,
@@ -790,7 +778,12 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       _showError('Failed to send photos: $e');
     } finally {
-      if (mounted) setState(() => _isSendingFile = false);
+      if (mounted) {
+        setState(() {
+          _isSendingFile = false;
+          _uploadProgress = 0.0;
+        });
+      }
     }
   }
 
@@ -812,13 +805,17 @@ class _ChatScreenState extends State<ChatScreen> {
       final fileSize = await file.length();
       final fileName = picked.name;
 
-      setState(() => _isSendingFile = true);
+      if (mounted) {
+        setState(() {
+          _isSendingFile = true;
+          _uploadProgress = 0.0;
+        });
+      }
 
-      // HTTP Загрузка
       String? fileId = await _uploadFileHttp(file);
       if (fileId == null) {
         _showError('File upload failed');
-        setState(() => _isSendingFile = false);
+        if (mounted) setState(() => _isSendingFile = false);
         return;
       }
 
@@ -828,7 +825,7 @@ class _ChatScreenState extends State<ChatScreen> {
       await _sendMessage(
         text: '📎 $fileName',
         messageType: 'file',
-        mediaData: 'FILE_ID:$fileId', // <-- Отправляем только ID
+        mediaData: 'FILE_ID:$fileId',
         filePath: localPath,
         fileName: fileName,
         fileSize: fileSize,
@@ -837,7 +834,12 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       _showError('Failed to send file: $e');
     } finally {
-      if (mounted) setState(() => _isSendingFile = false);
+      if (mounted) {
+        setState(() {
+          _isSendingFile = false;
+          _uploadProgress = 0.0;
+        });
+      }
     }
   }
 
@@ -889,7 +891,8 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final path = await _audioRecorder.stop();
       _recordingTimer?.cancel();
-      setState(() => _isRecording = false);
+      
+      if (mounted) setState(() => _isRecording = false);
 
       if (path != null) {
         _voiceTempPath = path;
@@ -900,14 +903,18 @@ class _ChatScreenState extends State<ChatScreen> {
            return;
         }
         
-        setState(() => _isSendingFile = true);
+        if (mounted) {
+          setState(() {
+            _isSendingFile = true;
+            _uploadProgress = 0.0;
+          });
+        }
 
-        // HTTP Загрузка
         String? fileId = await _uploadFileHttp(file);
         if (fileId == null) {
           _showError('Voice upload failed');
           _cleanTempVoiceFile();
-          setState(() => _isSendingFile = false);
+          if (mounted) setState(() => _isSendingFile = false);
           return;
         }
 
@@ -918,7 +925,7 @@ class _ChatScreenState extends State<ChatScreen> {
         await _sendMessage(
           text: '🎤 Voice message',
           messageType: 'voice',
-          mediaData: 'FILE_ID:$fileId', // <-- Отправляем только ID
+          mediaData: 'FILE_ID:$fileId',
           filePath: localPath,
           fileName: fileName,
           fileSize: fileSize,
@@ -926,12 +933,12 @@ class _ChatScreenState extends State<ChatScreen> {
         );
 
         _cleanTempVoiceFile();
-        setState(() => _isSendingFile = false);
+        if (mounted) setState(() => _isSendingFile = false);
       }
     } catch (e) {
       _showError('Error sending voice: $e');
       _cancelRecording();
-      setState(() => _isSendingFile = false);
+      if (mounted) setState(() => _isSendingFile = false);
     }
   }
 
@@ -1150,6 +1157,10 @@ class _ChatScreenState extends State<ChatScreen> {
     return Icons.attach_file;
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // ФУНКЦИИ ПРОСМОТРА И СОХРАНЕНИЯ В ПАПКУ DOWNLOADS
+  // ──────────────────────────────────────────────────────────────────────────
+
   void _showFullImageFromFile(String filePath) {
     showDialog(
       context: context,
@@ -1162,27 +1173,44 @@ class _ChatScreenState extends State<ChatScreen> {
             InteractiveViewer(
               child: Image.file(File(filePath)),
             ),
+            
+            // Кнопка сохранения в Downloads/DDchat
             Positioned(
               right: 20,
               bottom: 20,
               child: FloatingActionButton(
                 backgroundColor: Colors.white24,
-                child: const Icon(Icons.download, color: Colors.white),
+                child: const Icon(Icons.folder_shared, color: Colors.white),
                 onPressed: () async {
                   try {
-                    // Запрос разрешений
                     bool hasAccess = await Gal.hasAccess();
                     if (!hasAccess) await Gal.requestAccess();
+
+                    Directory? downloadsDir;
+                    if (Platform.isAndroid) {
+                      downloadsDir = Directory('/storage/emulated/0/Download/DDchat');
+                    } else {
+                      downloadsDir = await getApplicationDocumentsDirectory();
+                    }
+
+                    if (!await downloadsDir.exists()) {
+                      await downloadsDir.create(recursive: true);
+                    }
+
+                    final originalFile = File(filePath);
+                    final fileName = originalFile.path.split('/').last;
+                    final newPath = '${downloadsDir.path}/$fileName';
                     
-                    // Сохранение
-                    await Gal.putImage(filePath);
-                    if (context.mounted) {
+                    await originalFile.copy(newPath);
+                    await Gal.putImage(newPath); 
+
+                    if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('✅ Saved to Gallery!')),
+                        SnackBar(content: Text('✅ Saved to: $newPath')),
                       );
                     }
                   } catch (e) {
-                    if (context.mounted) {
+                    if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
                       );
@@ -1191,6 +1219,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
               ),
             ),
+            
             Positioned(
               top: 40,
               right: 20,
@@ -1210,15 +1239,39 @@ class _ChatScreenState extends State<ChatScreen> {
       _showError('File not available on this device');
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Saved at: $filePath'),
-        action: SnackBarAction(
-          label: 'OK',
-          onPressed: () {},
-        ),
-      ),
-    );
+
+    try {
+      if (Platform.isAndroid) {
+        final downloadsDir = Directory('/storage/emulated/0/Download/DDchat');
+        if (!await downloadsDir.exists()) {
+          await downloadsDir.create(recursive: true);
+        }
+        final newPath = '${downloadsDir.path}/$fileName';
+        await File(filePath).copy(newPath);
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('File saved to Downloads/DDchat'),
+              action: SnackBarAction(label: 'OK', onPressed: () {}),
+            ),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Saved at: $filePath')),
+          );
+        }
+      }
+    } catch (e) {
+      print("Save error: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Saved internally at: $filePath')),
+        );
+      }
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1677,32 +1730,43 @@ class _ChatScreenState extends State<ChatScreen> {
     final displayName = _storage.getContactDisplayName(widget.targetUid);
     final displayMessages = _filteredMessages;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF0A0E27),
-      appBar: _buildAppBar(displayName),
-      body: Column(
-        children: [
-          if (_replyToText != null) _buildReplyBanner(),
-          Expanded(
-            child: ListView.builder(
-              controller: _scrollController,
-              itemCount: displayMessages.length + (_isLoadingMore ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (_isLoadingMore && index == 0) {
-                  return const Center(
-                      child: Padding(
-                    padding: EdgeInsets.all(16),
-                    child: CircularProgressIndicator(color: Colors.cyan),
-                  ));
-                }
-                final mIdx = _isLoadingMore ? index - 1 : index;
-                return _buildMessage(displayMessages[mIdx], mIdx);
-              },
+    // ЗАЩИТА ОТ ВЫХОДА ВО ВРЕМЯ ЗАГРУЗКИ
+    return PopScope(
+      canPop: !_isSendingFile,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _isSendingFile) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Please wait for upload to finish...')),
+          );
+        }
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0A0E27),
+        appBar: _buildAppBar(displayName),
+        body: Column(
+          children: [
+            if (_replyToText != null) _buildReplyBanner(),
+            Expanded(
+              child: ListView.builder(
+                controller: _scrollController,
+                itemCount: displayMessages.length + (_isLoadingMore ? 1 : 0),
+                itemBuilder: (context, index) {
+                  if (_isLoadingMore && index == 0) {
+                    return const Center(
+                        child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: CircularProgressIndicator(color: Colors.cyan),
+                    ));
+                  }
+                  final mIdx = _isLoadingMore ? index - 1 : index;
+                  return _buildMessage(displayMessages[mIdx], mIdx);
+                },
+              ),
             ),
-          ),
-          if (_editingMessageId != null) _buildEditBanner(),
-          _buildInputArea(),
-        ],
+            if (_editingMessageId != null) _buildEditBanner(),
+            _buildInputArea(),
+          ],
+        ),
       ),
     );
   }
@@ -1916,7 +1980,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       width: 24,
                       height: 24,
                       child: CircularProgressIndicator(
-                        value: _uploadProgress, // Показываем реальный прогресс
+                        value: _uploadProgress, // Прогресс Dio
                         strokeWidth: 3,
                         backgroundColor: Colors.white10,
                         color: Colors.cyan,
