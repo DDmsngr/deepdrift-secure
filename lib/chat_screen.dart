@@ -146,9 +146,10 @@ class _ChatScreenState extends State<ChatScreen> {
     _listenToMessages();
     _reactions = _storage.loadReactions(widget.targetUid);
 
-    // Запрос оффлайн сообщений
+    // Запрос профиля и оффлайн сообщений при входе в чат
     Future.delayed(const Duration(milliseconds: 500), () {
       try {
+        _socket.getProfile(widget.targetUid); // Запрашиваем актуальный статус
         _socket.requestOfflineMessages(widget.targetUid);
       } catch (e) {
         debugPrint("Note: requestOfflineMessages error: $e");
@@ -381,6 +382,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _listenToMessages() {
     _socketSub = _socket.messages.listen((data) {
+      if (!mounted) return;
+      
       final type = data['type'];
       switch (type) {
         case 'message':          _handleIncomingMessage(data); break;
@@ -391,6 +394,11 @@ class _ChatScreenState extends State<ChatScreen> {
         case 'message_deleted':  _handleMessageDeleted(data); break;
         case 'message_edited':   _handleMessageEdited(data); break;
         case 'message_reaction': _handleMessageReaction(data); break;
+        // Обновляем UI если пришел новый статус пользователя
+        case 'user_status':
+        case 'profile_response':
+          if (data['uid'] == widget.targetUid) setState(() {});
+          break;
       }
     });
   }
@@ -729,7 +737,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Отправка фото (Мульти-выбор)
   Future<void> _sendPhoto({ImageSource source = ImageSource.gallery}) async {
     try {
       List<XFile> images = [];
@@ -787,7 +794,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Отправка файла
   Future<void> _sendFile() async {
     try {
       final result = await FilePicker.platform.pickFiles(
@@ -843,7 +849,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Голосовые сообщения
   Future<void> _startRecording() async {
     if (await _audioRecorder.hasPermission()) {
       final tempDir  = await getTemporaryDirectory();
@@ -968,7 +973,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Редактирование
   void _startEditingMessage(Map<String, dynamic> message) {
     setState(() {
       _editingMessageId = message['id']?.toString();
@@ -1011,7 +1015,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // Удаление
   Future<void> _deleteMessage(String messageId,
       {required bool deleteForEveryone}) async {
     if (deleteForEveryone) {
@@ -1024,7 +1027,6 @@ class _ChatScreenState extends State<ChatScreen> {
     await _storage.deleteMessage(widget.targetUid, messageId);
   }
 
-  // Реакции
   void _addReaction(String messageId, String emoji) {
     _socket.sendReaction(widget.targetUid, messageId, emoji, 'add');
     setState(() {
@@ -1076,6 +1078,22 @@ class _ChatScreenState extends State<ChatScreen> {
         ? DateTime.fromMillisecondsSinceEpoch(timestamp)
         : DateTime.tryParse(timestamp.toString()) ?? DateTime.now();
     return DateFormat.Hm().format(dt);
+  }
+  
+  // Вспомогательный метод для форматирования "Был в сети"
+  String _formatLastSeen(int timestamp) {
+    if (timestamp == 0) return "offline";
+    
+    final dt = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    
+    if (diff.inMinutes < 1) return "just now";
+    if (diff.inMinutes < 60) return "${diff.inMinutes} min ago";
+    if (dt.day == now.day) return "today at ${DateFormat.Hm().format(dt)}";
+    if (dt.day == now.day - 1) return "yesterday at ${DateFormat.Hm().format(dt)}";
+    
+    return DateFormat("dd MMM, HH:mm").format(dt);
   }
   
   String _formatRecordingTime(int seconds) {
@@ -1157,11 +1175,7 @@ class _ChatScreenState extends State<ChatScreen> {
     return Icons.attach_file;
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // ФУНКЦИИ ПРОСМОТРА И СОХРАНЕНИЯ В ПАПКУ DOWNLOADS
-  // ──────────────────────────────────────────────────────────────────────────
-
-void _showFullImageFromFile(String filePath) {
+  void _showFullImageFromFile(String filePath) {
     showDialog(
       context: context,
       builder: (context) => Dialog(
@@ -1171,8 +1185,6 @@ void _showFullImageFromFile(String filePath) {
           alignment: Alignment.center,
           children: [
             InteractiveViewer(child: Image.file(File(filePath))),
-            
-            // Кнопка сохранения
             Positioned(
               right: 20, bottom: 20,
               child: FloatingActionButton(
@@ -1180,32 +1192,49 @@ void _showFullImageFromFile(String filePath) {
                 child: const Icon(Icons.download, color: Colors.white),
                 onPressed: () async {
                   try {
-                    // 1. Проверка прав
-                    if (!await Gal.hasAccess()) await Gal.requestAccess();
+                    bool hasAccess = await Gal.hasAccess();
+                    if (!hasAccess) await Gal.requestAccess();
 
-                    // 2. Путь к папке
-                    final folder = Directory('/storage/emulated/0/Download/DDchat');
-                    if (!await folder.exists()) await folder.create(recursive: true);
+                    Directory? downloadsDir;
+                    if (Platform.isAndroid) {
+                      downloadsDir = Directory('/storage/emulated/0/Download/DDchat');
+                    } else {
+                      downloadsDir = await getApplicationDocumentsDirectory();
+                    }
 
-                    // 3. Копирование
-                    final name = filePath.split('/').last;
-                    final savedFile = await File(filePath).copy('${folder.path}/$name');
+                    if (!await downloadsDir.exists()) {
+                      await downloadsDir.create(recursive: true);
+                    }
+
+                    final originalFile = File(filePath);
+                    final fileName = originalFile.path.split('/').last;
+                    final newPath = '${downloadsDir.path}/$fileName';
                     
-                    // 4. Добавляем в галерею, чтобы фото появилось в альбомах
-                    await Gal.putImage(savedFile.path);
+                    await originalFile.copy(newPath);
+                    await Gal.putImage(newPath); 
 
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('✅ Saved to Downloads/DDchat'))
+                        SnackBar(content: Text('✅ Saved to: $newPath')),
                       );
                     }
                   } catch (e) {
-                    _showError('Save error: $e');
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                      );
+                    }
                   }
                 },
               ),
             ),
-            Positioned(top: 40, right: 20, child: IconButton(icon: const Icon(Icons.close, color: Colors.white, size: 30), onPressed: () => Navigator.pop(context))),
+            Positioned(
+              top: 40, right: 20,
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
           ],
         ),
       ),
@@ -1217,16 +1246,12 @@ void _showFullImageFromFile(String filePath) {
       _showError('File not available on this device');
       return;
     }
-
     try {
       if (Platform.isAndroid) {
         final downloadsDir = Directory('/storage/emulated/0/Download/DDchat');
-        if (!await downloadsDir.exists()) {
-          await downloadsDir.create(recursive: true);
-        }
+        if (!await downloadsDir.exists()) await downloadsDir.create(recursive: true);
         final newPath = '${downloadsDir.path}/$fileName';
         await File(filePath).copy(newPath);
-        
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -1236,19 +1261,10 @@ void _showFullImageFromFile(String filePath) {
           );
         }
       } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Saved at: $filePath')),
-          );
-        }
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved at: $filePath')));
       }
     } catch (e) {
-      print("Save error: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Saved internally at: $filePath')),
-        );
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved internally at: $filePath')));
     }
   }
 
@@ -1708,7 +1724,6 @@ void _showFullImageFromFile(String filePath) {
     final displayName = _storage.getContactDisplayName(widget.targetUid);
     final displayMessages = _filteredMessages;
 
-    // ЗАЩИТА ОТ ВЫХОДА ВО ВРЕМЯ ЗАГРУЗКИ
     return PopScope(
       canPop: !_isSendingFile,
       onPopInvokedWithResult: (didPop, result) {
@@ -1749,49 +1764,76 @@ void _showFullImageFromFile(String filePath) {
     );
   }
 
-  AppBar _buildAppBar(String displayName) => AppBar(
-        backgroundColor: const Color(0xFF1A1F3C),
-        titleSpacing: 0,
-        title: _isSearching
-            ? TextField(
-                controller: _searchController,
-                autofocus: true,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  hintText: 'Search messages...',
-                  hintStyle: TextStyle(color: Colors.white54),
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(horizontal: 8),
-                ),
-                onChanged: (_) => setState(() {}),
-              )
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(displayName, style: GoogleFonts.orbitron(fontSize: 14)),
-                  if (_targetIsTyping)
-                    Text('typing...',
-                        style: GoogleFonts.robotoMono(
-                            fontSize: 10,
-                            color: Colors.cyan,
-                            fontStyle: FontStyle.italic))
-                  else if (_keysExchanged)
-                    Row(children: [
-                      const Icon(Icons.lock, size: 11, color: Colors.green),
-                      const SizedBox(width: 3),
-                      Text('End-to-end encrypted',
-                          style: GoogleFonts.robotoMono(
-                              fontSize: 10, color: Colors.green)),
-                    ]),
-                ],
+  AppBar _buildAppBar(String displayName) {
+    // Получаем статус собеседника
+    final isOnline = _storage.isContactOnline(widget.targetUid);
+    final lastSeen = _storage.getContactLastSeen(widget.targetUid);
+    final avatar = _storage.getContactAvatar(widget.targetUid);
+
+    return AppBar(
+      backgroundColor: const Color(0xFF1A1F3C),
+      titleSpacing: 0,
+      title: _isSearching
+          ? TextField(
+              controller: _searchController,
+              autofocus: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                hintText: 'Search messages...',
+                hintStyle: TextStyle(color: Colors.white54),
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(horizontal: 8),
               ),
-        actions: [
-          IconButton(
-            icon: Icon(_isSearching ? Icons.close : Icons.search),
-            onPressed: _toggleSearch,
-          ),
-        ],
-      );
+              onChanged: (_) => setState(() {}),
+            )
+          : Row(
+              children: [
+                // Аватарка собеседника в шапке
+                CircleAvatar(
+                  radius: 18,
+                  backgroundColor: const Color(0xFF0A0E27),
+                  backgroundImage: avatar != null ? NetworkImage('$SERVER_HTTP_URL/download/$avatar') : null,
+                  child: avatar == null ? Text(displayName[0].toUpperCase(), style: const TextStyle(color: Colors.cyan, fontSize: 14)) : null,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(displayName, style: GoogleFonts.orbitron(fontSize: 14)),
+                      
+                      // СТАТУС ПОД ИМЕНЕМ
+                      if (_targetIsTyping)
+                        Text('typing...',
+                            style: GoogleFonts.robotoMono(
+                                fontSize: 10,
+                                color: Colors.cyan,
+                                fontStyle: FontStyle.italic))
+                      else if (isOnline)
+                        const Text('online', style: TextStyle(fontSize: 10, color: Colors.green))
+                      else if (lastSeen > 0)
+                        Text('last seen ${_formatLastSeen(lastSeen)}', style: const TextStyle(fontSize: 10, color: Colors.white54))
+                      else if (_keysExchanged)
+                        Row(children: [
+                          const Icon(Icons.lock, size: 11, color: Colors.green),
+                          const SizedBox(width: 3),
+                          Text('End-to-end encrypted',
+                              style: GoogleFonts.robotoMono(
+                                  fontSize: 10, color: Colors.green)),
+                        ]),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+      actions: [
+        IconButton(
+          icon: Icon(_isSearching ? Icons.close : Icons.search),
+          onPressed: _toggleSearch,
+        ),
+      ],
+    );
+  }
 
   Widget _buildReplyBanner() => Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1948,24 +1990,29 @@ void _showFullImageFromFile(String filePath) {
                 icon: const Icon(Icons.mic, color: Colors.cyan),
                 onPressed: _startRecording,
               ),
-            if (_isSendingFile) 
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Stack(
-                alignment: Alignment.center, 
-                children: [
-                  CircularProgressIndicator(
-                    value: _uploadProgress > 0 ? _uploadProgress : null, 
-                    backgroundColor: Colors.white10, 
-                    color: Colors.cyan,
-                    strokeWidth: 3,
-                  ),
-                  if (_uploadProgress > 0)
-                    Text('${(_uploadProgress * 100).toInt()}%', 
-                      style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Colors.white)),
-                ],
+            if (_isSendingFile)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        value: _uploadProgress, 
+                        strokeWidth: 3,
+                        backgroundColor: Colors.white10,
+                        color: Colors.cyan,
+                      ),
+                    ),
+                    Text(
+                      '${(_uploadProgress * 100).toInt()}%',
+                      style: const TextStyle(fontSize: 8, color: Colors.white),
+                    ),
+                  ],
+                ),
               ),
-            ),
             Expanded(
               child: TextField(
                 controller: _messageController,
