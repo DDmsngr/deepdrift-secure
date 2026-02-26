@@ -429,10 +429,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       itemBuilder: (c, i) {
         final uid = _chats[i];
         final name = _storage.getContactDisplayName(uid);
-        final avatar = _storage.getContactAvatar(uid); 
+        final avatar = _storage.getContactAvatar(uid);
         final meta = _storage.getChatMetadata(uid);
         final unread = meta['unreadCount'] ?? 0;
-        final isOnline = _storage.isContactOnline(uid); 
+        final isOnline = _storage.isContactOnline(uid);
 
         bool hasAvatar = avatar != null && avatar.isNotEmpty && avatar != 'null';
 
@@ -444,18 +444,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 backgroundImage: hasAvatar ? NetworkImage('https://deepdrift-backend.onrender.com/download/$avatar') : null,
                 child: !hasAvatar ? Text(name[0].toUpperCase(), style: const TextStyle(color: Colors.cyan)) : null,
               ),
-              
               if (isOnline)
-                Positioned(
-                  right: 0, bottom: 0,
-                  child: Container(width: 12, height: 12, decoration: BoxDecoration(color: Colors.greenAccent, shape: BoxShape.circle, border: Border.all(color: const Color(0xFF0A0E27), width: 2))),
-                ),
-                
+                Positioned(right: 0, bottom: 0, child: Container(width: 12, height: 12, decoration: BoxDecoration(color: Colors.greenAccent, shape: BoxShape.circle, border: Border.all(color: const Color(0xFF0A0E27), width: 2)))),
               if (unread > 0)
-                Positioned(
-                  right: 0, top: 0,
-                  child: Container(padding: const EdgeInsets.all(4), decoration: const BoxDecoration(color: Colors.cyan, shape: BoxShape.circle), child: Text('$unread', style: const TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold))),
-                ),
+                Positioned(right: 0, top: 0, child: Container(padding: const EdgeInsets.all(4), decoration: const BoxDecoration(color: Colors.cyan, shape: BoxShape.circle), child: Text('$unread', style: const TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold)))),
             ],
           ),
           title: Text(name, style: TextStyle(color: Colors.white, fontWeight: unread > 0 ? FontWeight.bold : FontWeight.normal)),
@@ -464,11 +456,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             Navigator.push(context, MaterialPageRoute(builder: (c) => ChatScreen(myUid: _myUid!, targetUid: uid, cipher: _cipher)))
                 .then((_) => setState(() => _chats = _storage.getContactsSortedByActivity()));
           },
+          // ✅ ВОССТАНОВЛЕНО: Долгое нажатие для удаления
+          onLongPress: () => _showContactOptions(uid),
         );
       },
     );
-  }
-
   @override
   Widget build(BuildContext context) {
     final totalUnread = _storage.getTotalUnreadCount();
