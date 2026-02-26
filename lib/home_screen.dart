@@ -212,6 +212,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       context: context,
       builder: (c) => StatefulBuilder(
         builder: (context, setDialogState) {
+          bool hasAvatar = currentAvatar != null && currentAvatar!.isNotEmpty && currentAvatar != 'null';
+          
           return AlertDialog(
             backgroundColor: const Color(0xFF1A1F3C),
             title: Text("My Profile", style: GoogleFonts.orbitron()),
@@ -235,8 +237,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   child: CircleAvatar(
                     radius: 40,
                     backgroundColor: const Color(0xFF0A0E27),
-                    backgroundImage: currentAvatar != null ? NetworkImage('https://deepdrift-backend.onrender.com/download/$currentAvatar') : null,
-                    child: currentAvatar == null ? const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan) : null,
+                    backgroundImage: hasAvatar ? NetworkImage('https://deepdrift-backend.onrender.com/download/$currentAvatar') : null,
+                    child: !hasAvatar ? const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan) : null,
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -322,10 +324,18 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
         title: Text("FRACTAL IDENTITY", style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF))),
-        content: TextField(
-          controller: _idController, keyboardType: TextInputType.number, maxLength: 6,
-          style: const TextStyle(color: Colors.white, fontSize: 18), textAlign: TextAlign.center,
-          decoration: const InputDecoration(hintText: "000000", filled: true, fillColor: Color(0xFF0A0E27)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text("Придумай себе номер (по этому номеру тебя будут искать друзья)", 
+                style: TextStyle(color: Colors.white70, fontSize: 12), textAlign: TextAlign.center),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _idController, keyboardType: TextInputType.number, maxLength: 6,
+              style: const TextStyle(color: Colors.white, fontSize: 18), textAlign: TextAlign.center,
+              decoration: const InputDecoration(hintText: "000000", filled: true, fillColor: Color(0xFF0A0E27)),
+            ),
+          ],
         ),
         actions: [
           ElevatedButton(
@@ -424,13 +434,15 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         final unread = meta['unreadCount'] ?? 0;
         final isOnline = _storage.isContactOnline(uid); 
 
+        bool hasAvatar = avatar != null && avatar.isNotEmpty && avatar != 'null';
+
         return ListTile(
           leading: Stack(
             children: [
               CircleAvatar(
                 backgroundColor: const Color(0xFF1A1F3C),
-                backgroundImage: avatar != null ? NetworkImage('https://deepdrift-backend.onrender.com/download/$avatar') : null,
-                child: avatar == null ? Text(name[0].toUpperCase(), style: const TextStyle(color: Colors.cyan)) : null,
+                backgroundImage: hasAvatar ? NetworkImage('https://deepdrift-backend.onrender.com/download/$avatar') : null,
+                child: !hasAvatar ? Text(name[0].toUpperCase(), style: const TextStyle(color: Colors.cyan)) : null,
               ),
               
               if (isOnline)
@@ -461,6 +473,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Widget build(BuildContext context) {
     final totalUnread = _storage.getTotalUnreadCount();
     final myProfile = _storage.getMyProfile();
+    bool hasMyAvatar = myProfile['avatarUrl'] != null && myProfile['avatarUrl']!.isNotEmpty && myProfile['avatarUrl'] != 'null';
 
     return PopScope(
       canPop: !_isSearching,
@@ -497,12 +510,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   child: CircleAvatar(
                     radius: 16,
                     backgroundColor: Colors.cyan.withValues(alpha: 0.2),
-                    backgroundImage: myProfile['avatarUrl'] != null 
-                        ? NetworkImage('https://deepdrift-backend.onrender.com/download/${myProfile['avatarUrl']}') 
-                        : null,
-                    child: myProfile['avatarUrl'] == null 
-                        ? const Icon(Icons.person, size: 20, color: Colors.cyan) 
-                        : null,
+                    backgroundImage: hasMyAvatar ? NetworkImage('https://deepdrift-backend.onrender.com/download/${myProfile['avatarUrl']}') : null,
+                    child: !hasMyAvatar ? const Icon(Icons.person, size: 20, color: Colors.cyan) : null,
                   ),
                 ),
               ),
@@ -511,7 +520,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         ),
         body: _isSearching ? _buildSearchResults() : _buildChatList(),
         
-        // Быстрый поиск контакта (восстановлено)
         bottomNavigationBar: _isSearching 
           ? null 
           : Container(
