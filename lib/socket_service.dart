@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:dio/dio.dart'; // <--- ВАЖНО
+import 'package:dio/dio.dart';
 import 'storage_service.dart';
 import 'crypto_service.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -22,11 +22,9 @@ class SocketService {
 
   WebSocketChannel? _channel;
   final _messageStream = StreamController<Map<String, dynamic>>.broadcast();
-  
-  // Стрим прогресса загрузки
   final _uploadProgressController = StreamController<double>.broadcast();
+  
   Stream<double> get uploadProgress => _uploadProgressController.stream;
-
   Stream<Map<String, dynamic>> get messages => _messageStream.stream;
 
   late SecureCipher _cipher;
@@ -42,7 +40,6 @@ class SocketService {
   Timer? _reconnectTimer;
   Timer? _pingTimer;
   Timer? _connectionTimeoutTimer;
-  
   int _reconnectAttempts = 0;
   DateTime? _lastPongTime;
   
@@ -72,30 +69,18 @@ class SocketService {
     _attemptConnection();
   }
 
-  // --- ЛОГИКА ЗАГРУЗКИ ФАЙЛОВ ---
-Future<String?> uploadFile(File file) async {
+  Future<String?> uploadFile(File file) async {
     try {
       String fileName = file.path.split('/').last;
       FormData formData = FormData.fromMap({
         "file": await MultipartFile.fromFile(file.path, filename: fileName),
       });
-
-      // Сообщаем UI, что загрузка началась
       _uploadProgressController.add(0.01);
-
-      var response = await _dio.post(
-        HTTP_UPLOAD_URL,
-        data: formData,
-        onSendProgress: (sent, total) {
-          double progress = sent / total;
-          _uploadProgressController.add(progress);
-        },
-      );
-
+      var response = await _dio.post(HTTP_UPLOAD_URL, data: formData, onSendProgress: (sent, total) {
+          _uploadProgressController.add(sent / total);
+      });
       if (response.statusCode == 200 && response.data['status'] == 'success') {
-        _uploadProgressController.add(1.0); // Завершено
-        // Небольшая задержка, чтобы юзер увидел 100%
-        Future.delayed(const Duration(milliseconds: 500), () => _uploadProgressController.add(0.0));
+        _uploadProgressController.add(0.0);
         return response.data['file_id'];
       }
     } catch (e) {
@@ -104,7 +89,6 @@ Future<String?> uploadFile(File file) async {
     }
     return null;
   }
-  // -----------------------------
 
   Duration _getReconnectDelay() {
     final baseSeconds = RECONNECT_BASE_DELAY.inSeconds;
@@ -117,7 +101,6 @@ Future<String?> uploadFile(File file) async {
     if (_isConnected || _isConnecting) return;
     _isConnecting = true;
     _connectionTimeoutTimer?.cancel();
-    
     _connectionTimeoutTimer = Timer(CONNECTION_TIMEOUT, () {
       if (!_isConnected && _isConnecting) {
         _isConnecting = false;
@@ -129,19 +112,8 @@ Future<String?> uploadFile(File file) async {
     try {
       _channel?.sink.close();
       _channel = WebSocketChannel.connect(Uri.parse(_url!));
-      
-      _sendRaw({
-        "type": "init",
-        "my_uid": _myUid,
-        "protocol_version": PROTOCOL_VERSION,
-        "auth_token": _authToken,
-      });
-
-      _channel!.stream.listen(
-        _handleIncomingMessage,
-        onDone: _handleDisconnect,
-        onError: _handleError,
-      );
+      _sendRaw({"type": "init", "my_uid": _myUid, "protocol_version": PROTOCOL_VERSION, "auth_token": _authToken});
+      _channel!.stream.listen(_handleIncomingMessage, onDone: _handleDisconnect, onError: _handleError);
     } catch (e) {
       _isConnecting = false;
       _scheduleReconnect();
@@ -171,12 +143,24 @@ Future<String?> uploadFile(File file) async {
         _pendingMessages.remove(messageId);
         return;
       }
+
+      // Обновление профиля пришло с сервера
+      if (msgType == 'profile_response') {
+        await _storage.setContactDisplayName(data['uid'], data['nickname']);
+        if (data['avatar_id'] != null) {
+          await _storage.setContactAvatar(data['uid'], data['avatar_id']);
+        }
+        await _storage.setContactStatus(data['uid'], data['status'] == 'online', data['last_seen']);
+      }
+
+      if (msgType == 'user_status') {
+        await _storage.setContactStatus(data['uid'], data['status'] == 'online', data['last_seen']);
+      }
       
       if (msgType == 'public_key_response') {
         final targetUid = data['target_uid'];
         final x25519Key = data['x25519_key'];
         final ed25519Key = data['ed25519_key'];
-        
         if (targetUid != null && x25519Key != null && !data.containsKey('error')) {
           await _cipher.establishSharedSecret(targetUid, x25519Key, theirSignKeyB64: ed25519Key);
         }
@@ -231,21 +215,13 @@ Future<String?> uploadFile(File file) async {
 
   void _startHeartbeat() {
     _pingTimer?.cancel();
-    _lastPongTime = DateTime.now(); // Сбрасываем время при старте
-    
+    _lastPongTime = DateTime.now();
     _pingTimer = Timer.periodic(PING_INTERVAL, (_) {
       if (_isConnected) {
-        // ПРОВЕРКА: Если сервер не отвечал дольше двух интервалов (60 сек)
-        if (_lastPongTime != null) {
-          final timeSinceLastPong = DateTime.now().difference(_lastPongTime!);
-          if (timeSinceLastPong > PING_INTERVAL * 2) {
-            print("⚠️ No pong received for 60s, connection dead. Reconnecting...");
-            _handleDisconnect(); // Обрываем связь, чтобы сработал реконнект
-            return;
-          }
+        if (_lastPongTime != null && DateTime.now().difference(_lastPongTime!) > PING_INTERVAL * 2) {
+          _handleDisconnect();
+          return;
         }
-        
-        // Шлем пинг серверу
         send({"type": "ping"});
       }
     });
@@ -263,6 +239,31 @@ Future<String?> uploadFile(File file) async {
     if (!_isConnected) return;
     _sendRaw(data);
   }
+
+  // --- НОВЫЕ МЕТОДЫ ПРОФИЛЯ ---
+  void updateProfile(String nickname, String? avatarId) {
+    send({
+      "type": "update_profile",
+      "nickname": nickname,
+      "avatar_id": avatarId
+    });
+  }
+
+  void getProfile(String targetUid) {
+    send({
+      "type": "get_profile",
+      "target_uid": targetUid
+    });
+  }
+
+  void checkStatuses(List<String> uids) {
+    if (uids.isEmpty) return;
+    send({
+      "type": "check_statuses",
+      "uids": uids
+    });
+  }
+  // ----------------------------
 
   void requestOfflineMessages(String fromUid) {
     if (!_isConnected) return;
