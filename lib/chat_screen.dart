@@ -70,48 +70,38 @@ class _ChatScreenState extends State<ChatScreen> {
   final _imagePicker = ImagePicker();
   final _audioRecorder = AudioRecorder();
   final _audioPlayer = AudioPlayer();
-  final _dio = Dio(); // Клиент для загрузки с прогрессом
+  final _dio = Dio();
 
   StreamSubscription? _socketSub;
 
-  // Typing
   bool _isTyping = false;
   Timer? _typingTimer;
   bool _targetIsTyping = false;
 
-  // Pagination
   bool _isLoadingMore = false;
   bool _hasMoreMessages = true;
 
-  // Reply
   String? _replyToText;
   String? _replyToId;
 
-  // Key exchange
   bool _keysExchanged = false;
   Timer? _keyExchangeTimeout;
 
-  // Search
   bool _isSearching = false;
 
-  // Voice recording
   bool _isRecording = false;
   String? _voiceTempPath;
   Timer? _recordingTimer;
   int _recordingDuration = 0;
 
-  // Edit
   String? _editingMessageId;
 
-  // Reactions: messageId → {emoji}
   Map<String, Set<String>> _reactions = {};
 
-  // Playing voice
   String? _playingMessageId;
 
-  // File upload progress
   bool _isSendingFile = false;
-  double _uploadProgress = 0.0; // Прогресс от 0.0 до 1.0
+  double _uploadProgress = 0.0;
 
   static const int MESSAGES_PER_PAGE = 50;
   static const Duration KEY_EXCHANGE_TIMEOUT = Duration(seconds: 5);
@@ -128,12 +118,10 @@ class _ChatScreenState extends State<ChatScreen> {
     
     _initializeSecureChat();
     
-    // Загрузка истории и скролл вниз
     _loadRecentHistory().then((_) {
       _markAllAsRead();
       _scrollToBottom(animated: false);
       
-      // ✅ ПРОВЕРКА КЕША ПРИ ОТКРЫТИИ (Оптимизация)
       widget.cipher.tryLoadCachedKeys(widget.targetUid, _storage).then((loaded) {
         if (loaded && mounted) {
           setState(() {
@@ -146,10 +134,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _listenToMessages();
     _reactions = _storage.loadReactions(widget.targetUid);
 
-    // Запрос профиля и оффлайн сообщений при входе в чат
     Future.delayed(const Duration(milliseconds: 500), () {
       try {
-        _socket.getProfile(widget.targetUid); // Обновляем инфу о собеседнике
+        _socket.getProfile(widget.targetUid);
         _socket.requestOfflineMessages(widget.targetUid);
       } catch (e) {
         debugPrint("Note: requestOfflineMessages error: $e");
@@ -259,7 +246,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // HTTP MEDIA HELPERS (Dio Upload)
+  // HTTP MEDIA HELPERS
   // ──────────────────────────────────────────────────────────────────────────
 
   Future<String?> _uploadFileHttp(File file) async {
@@ -269,34 +256,95 @@ class _ChatScreenState extends State<ChatScreen> {
         "file": await MultipartFile.fromFile(file.path, filename: fileName),
       });
 
-      if (mounted) {
-        setState(() {
-          _uploadProgress = 0.0;
-        });
-      }
+      if (mounted) setState(() => _uploadProgress = 0.0);
 
       var response = await _dio.post(
         '$SERVER_HTTP_URL/upload',
         data: formData,
         onSendProgress: (int sent, int total) {
-          if (mounted) {
-            setState(() {
-              _uploadProgress = sent / total;
-            });
-          }
+          if (mounted) setState(() => _uploadProgress = sent / total);
         },
       );
 
-      if (response.statusCode == 200) {
-        if (response.data['status'] == 'success') {
-          return response.data['file_id'];
-        }
+      if (response.statusCode == 200 && response.data['status'] == 'success') {
+        return response.data['file_id'];
       }
     } catch (e) {
       debugPrint("Dio Upload error: $e");
     }
     return null;
   }
+
+  // ── ИЗМЕНЕНИЕ 2: Шифрованная загрузка и скачивание ───────────────────────
+
+  Future<String?> _uploadFileEncrypted(File file) async {
+    try {
+      // 1. Читаем байты файла и шифруем их
+      final bytes = await file.readAsBytes();
+      final encryptedBytes = await widget.cipher.encryptFileBytes(
+        bytes,
+        targetUid: widget.targetUid,
+      );
+
+      // 2. Создаем временный файл для отправки
+      final tempDir = await getTemporaryDirectory();
+      final tempFile = File('${tempDir.path}/${file.path.split('/').last}.enc');
+      await tempFile.writeAsBytes(encryptedBytes);
+
+      // 3. Отправляем через Dio
+      FormData formData = FormData.fromMap({
+        "file": await MultipartFile.fromFile(tempFile.path, filename: tempFile.path.split('/').last),
+      });
+
+      if (mounted) setState(() => _uploadProgress = 0.0);
+
+      var response = await _dio.post(
+        '$SERVER_HTTP_URL/upload',
+        data: formData,
+        onSendProgress: (sent, total) {
+          if (mounted) setState(() => _uploadProgress = sent / total);
+        },
+      );
+
+      if (await tempFile.exists()) await tempFile.delete(); // Удаляем зашифрованный мусор
+
+      if (response.statusCode == 200 && response.data['status'] == 'success') {
+        return response.data['file_id'];
+      }
+    } catch (e) {
+      debugPrint("Encrypted Upload error: $e");
+    }
+    return null;
+  }
+
+  Future<String?> _downloadFileEncrypted(String fileId, String? fileName) async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+
+      // 1. Скачиваем зашифрованные байты
+      final response = await http.get(Uri.parse('$SERVER_HTTP_URL/download/$fileId'));
+      if (response.statusCode != 200) return null;
+
+      // 2. Расшифровываем байты через наш SecureCipher
+      final decryptedBytes = await widget.cipher.decryptFileBytes(
+        response.bodyBytes,
+        fromUid: widget.targetUid,
+      );
+
+      // 3. Сохраняем расшифрованный результат
+      final name = fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
+      final file = File('${appDir.path}/deepdrift_media/$name');
+      if (!await file.parent.exists()) await file.parent.create(recursive: true);
+      await file.writeAsBytes(decryptedBytes);
+
+      return file.path;
+    } catch (e) {
+      debugPrint("Encrypted Download error: $e");
+    }
+    return null;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
 
   Future<String?> _downloadFileHttp(String fileId, MsgType msgType, String? fileName) async {
     try {
@@ -394,8 +442,6 @@ class _ChatScreenState extends State<ChatScreen> {
         case 'message_deleted':  _handleMessageDeleted(data); break;
         case 'message_edited':   _handleMessageEdited(data); break;
         case 'message_reaction': _handleMessageReaction(data); break;
-        
-        // Обновляем UI (статус в шапке) при изменении статуса
         case 'user_status':
         case 'profile_response':
           if (data['uid'] == widget.targetUid) setState(() {});
@@ -418,7 +464,6 @@ class _ChatScreenState extends State<ChatScreen> {
 
     widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
       
-      // Проверка на ошибку аутентификации
       if (decrypted.contains('Authentication failed') || 
           decrypted.contains('Wrong key')) {
         widget.cipher.clearSharedSecret(widget.targetUid);
@@ -452,12 +497,15 @@ class _ChatScreenState extends State<ChatScreen> {
       if (msgTyp != MsgType.text && data['mediaData'] != null) {
         String mediaStr = data['mediaData'];
         
+        // ── ИЗМЕНЕНИЕ 1: Шифрованное скачивание ──────────────────────────
         if (mediaStr.startsWith('FILE_ID:')) {
-          String fileId = mediaStr.substring(8);
-          localPath = await _downloadFileHttp(fileId, msgTyp, data['fileName']);
+          // НОВАЯ ЛОГИКА: Скачиваем зашифрованный файл и расшифровываем его
+          localPath = await _downloadFileEncrypted(mediaStr.substring(8), data['fileName']);
         } else {
+          // СТАРАЯ ЛОГИКА: Base64 fallback
           localPath = await _saveMediaToDiskBase64(base64Data: mediaStr, msgType: msgTyp, fileName: data['fileName']);
         }
+        // ─────────────────────────────────────────────────────────────────
       }
 
       final msg = {
@@ -652,7 +700,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final messageText = text ?? _messageController.text.trim();
     if (messageText.isEmpty && mediaData == null) return;
 
-    // Проверка кеша перед шифрованием
     if (!widget.cipher.hasSharedSecret(widget.targetUid)) {
       final loaded = await widget.cipher.tryLoadCachedKeys(widget.targetUid, _storage);
       if (!loaded) {
@@ -763,7 +810,9 @@ class _ChatScreenState extends State<ChatScreen> {
         int fileSize = await file.length();
         String fileName = image.name;
 
-        String? fileId = await _uploadFileHttp(file);
+        // ── ИЗМЕНЕНИЕ 3а: Шифрованная загрузка ───────────────────────────
+        String? fileId = await _uploadFileEncrypted(file);
+        // ─────────────────────────────────────────────────────────────────
         if (fileId == null) {
           _showError('Upload failed for $fileName');
           continue; 
@@ -819,7 +868,9 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       }
 
-      String? fileId = await _uploadFileHttp(file);
+      // ── ИЗМЕНЕНИЕ 3б: Шифрованная загрузка ───────────────────────────────
+      String? fileId = await _uploadFileEncrypted(file);
+      // ─────────────────────────────────────────────────────────────────────
       if (fileId == null) {
         _showError('File upload failed');
         if (mounted) setState(() => _isSendingFile = false);
@@ -916,7 +967,9 @@ class _ChatScreenState extends State<ChatScreen> {
           });
         }
 
-        String? fileId = await _uploadFileHttp(file);
+        // ── ИЗМЕНЕНИЕ 3в: Шифрованная загрузка ───────────────────────────
+        String? fileId = await _uploadFileEncrypted(file);
+        // ─────────────────────────────────────────────────────────────────
         if (fileId == null) {
           _showError('Voice upload failed');
           _cleanTempVoiceFile();
@@ -1081,7 +1134,6 @@ class _ChatScreenState extends State<ChatScreen> {
     return DateFormat.Hm().format(dt);
   }
   
-  // Вспомогательный метод для форматирования "Был в сети"
   String _formatLastSeen(int timestamp) {
     if (timestamp == 0) return "offline";
     
@@ -1177,7 +1229,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // ФУНКЦИИ ПРОСМОТРА И СОХРАНЕНИЯ В ПАПКУ DOWNLOADS
+  // ФУНКЦИИ ПРОСМОТРА И СОХРАНЕНИЯ
   // ──────────────────────────────────────────────────────────────────────────
 
   void _showFullImageFromFile(String filePath) {
@@ -1192,8 +1244,6 @@ class _ChatScreenState extends State<ChatScreen> {
             InteractiveViewer(
               child: Image.file(File(filePath)),
             ),
-            
-            // Кнопка сохранения в Downloads/DDchat
             Positioned(
               right: 20,
               bottom: 20,
@@ -1238,7 +1288,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
               ),
             ),
-            
             Positioned(
               top: 40,
               right: 20,
@@ -1464,7 +1513,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Reply preview
                     if (msg['replyTo'] != null) ...[
                       Container(
                         padding: const EdgeInsets.all(8),
@@ -1489,12 +1537,10 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     ],
 
-                    // Content
                     _buildMessageContent(msg, msgType, isMe),
 
                     const SizedBox(height: 4),
 
-                    // Meta row
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1527,7 +1573,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
 
-              // Reactions row
               if (reactions.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
@@ -1789,8 +1834,8 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  // ── ИЗМЕНЕНИЕ 4: Обновлённый AppBar ──────────────────────────────────────
   AppBar _buildAppBar(String displayName) {
-    // Получаем статус собеседника
     final isOnline = _storage.isContactOnline(widget.targetUid);
     final lastSeen = _storage.getContactLastSeen(widget.targetUid);
     final avatar = _storage.getContactAvatar(widget.targetUid);
@@ -1813,15 +1858,15 @@ class _ChatScreenState extends State<ChatScreen> {
             )
           : Row(
               children: [
-                // Аватарка собеседника в шапке
                 CircleAvatar(
                   radius: 18,
                   backgroundColor: const Color(0xFF0A0E27),
-                  backgroundImage: (avatar != null && avatar.isNotEmpty && avatar != 'null') 
-                      ? NetworkImage('$SERVER_HTTP_URL/download/$avatar') 
+                  backgroundImage: (avatar != null && avatar.isNotEmpty)
+                      ? NetworkImage('$SERVER_HTTP_URL/download/$avatar')
                       : null,
-                  child: (avatar == null || avatar.isEmpty || avatar == 'null') 
-                      ? Text(displayName[0].toUpperCase(), style: const TextStyle(color: Colors.cyan, fontSize: 14)) 
+                  child: (avatar == null || avatar.isEmpty)
+                      ? Text(displayName[0].toUpperCase(),
+                          style: const TextStyle(color: Colors.cyan, fontSize: 14))
                       : null,
                 ),
                 const SizedBox(width: 12),
@@ -1830,26 +1875,16 @@ class _ChatScreenState extends State<ChatScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(displayName, style: GoogleFonts.orbitron(fontSize: 14)),
-                      
-                      // СТАТУС ПОД ИМЕНЕМ
                       if (_targetIsTyping)
-                        Text('typing...',
-                            style: GoogleFonts.robotoMono(
-                                fontSize: 10,
-                                color: Colors.cyan,
-                                fontStyle: FontStyle.italic))
+                        const Text('typing...',
+                            style: TextStyle(fontSize: 10, color: Colors.cyan))
                       else if (isOnline)
-                        const Text('online', style: TextStyle(fontSize: 10, color: Colors.green))
+                        const Text('online',
+                            style: TextStyle(fontSize: 10, color: Colors.green))
                       else if (lastSeen > 0)
-                        Text('last seen ${_formatLastSeen(lastSeen)}', style: const TextStyle(fontSize: 10, color: Colors.white54))
-                      else if (_keysExchanged)
-                        Row(children: [
-                          const Icon(Icons.lock, size: 11, color: Colors.green),
-                          const SizedBox(width: 3),
-                          Text('End-to-end encrypted',
-                              style: GoogleFonts.robotoMono(
-                                  fontSize: 10, color: Colors.green)),
-                        ]),
+                        Text('last seen ${_formatLastSeen(lastSeen)}',
+                            style: const TextStyle(
+                                fontSize: 10, color: Colors.white54)),
                     ],
                   ),
                 ),
@@ -1863,6 +1898,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ],
     );
   }
+  // ─────────────────────────────────────────────────────────────────────────
 
   Widget _buildReplyBanner() => Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
