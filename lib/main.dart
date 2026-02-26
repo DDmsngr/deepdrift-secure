@@ -13,7 +13,6 @@ import 'socket_service.dart';
 // ========================================
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  // Инициализируем Firebase для фонового режима
   await Firebase.initializeApp();
   
   print("📲 Background message received: ${message.messageId}");
@@ -22,11 +21,7 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   const AndroidInitializationSettings initializationSettingsAndroid =
       AndroidInitializationSettings('@mipmap/ic_launcher');
   
-  const InitializationSettings initializationSettings = InitializationSettings(
-    android: initializationSettingsAndroid,
-  );
-  
-  await notification.initialize(initializationSettings);
+  await notification.initialize(const InitializationSettings(android: initializationSettingsAndroid));
   
   const AndroidNotificationDetails androidPlatformChannelSpecifics =
       AndroidNotificationDetails(
@@ -36,29 +31,37 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     priority: Priority.high,
     showWhen: true,
     color: Color(0xFF00D9FF),
+    enableVibration: true,
+    playSound: true,
   );
-  
-  const NotificationDetails platformChannelSpecifics =
-      NotificationDetails(android: androidPlatformChannelSpecifics);
   
   await notification.show(
     message.hashCode,
-    message.notification?.title ?? 'Новое сообщение',
-    message.notification?.body ?? 'У вас новое сообщение',
-    platformChannelSpecifics,
+    message.notification?.title ?? 'DDChat',
+    message.notification?.body ?? 'New Message',
+    const NotificationDetails(android: androidPlatformChannelSpecifics),
     payload: message.data['from_uid'],
   );
 }
 
 void main() async {
-  // Гарантируем инициализацию движка Flutter
   WidgetsFlutterBinding.ensureInitialized();
   
   // 1. Инициализация Firebase
   await Firebase.initializeApp();
   
-  // 2. Запрос разрешений на уведомления (для Android 13+ и iOS)
   FirebaseMessaging messaging = FirebaseMessaging.instance;
+
+  // 🔥 ЛЕЧЕНИЕ ОШИБКИ "Requested entity was not found":
+  // Мы удаляем старый токен, чтобы Firebase выдал новый, рабочий.
+  try {
+    await messaging.deleteToken(); 
+    print("🗑️ Old FCM token deleted (Fixing push notifications)");
+  } catch (e) {
+    print("⚠️ Token delete error: $e");
+  }
+  
+  // 2. Запрос разрешений
   await messaging.requestPermission(
     alert: true,
     badge: true,
@@ -110,6 +113,7 @@ class _DeepDriftAppState extends State<DeepDriftApp> with WidgetsBindingObserver
     
     print("🔄 App lifecycle changed: $state");
     
+    // Твоя логика управления сокетами (ОСТАВЛЯЕМ КАК БЫЛО)
     if (state == AppLifecycleState.resumed) {
       print("✅ App RESUMED - calling socket service");
       SocketService().onAppResumed();
