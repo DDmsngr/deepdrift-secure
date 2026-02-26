@@ -249,32 +249,6 @@ class _ChatScreenState extends State<ChatScreen> {
   // HTTP MEDIA HELPERS
   // ──────────────────────────────────────────────────────────────────────────
 
-  Future<String?> _uploadFileHttp(File file) async {
-    try {
-      String fileName = file.path.split('/').last;
-      FormData formData = FormData.fromMap({
-        "file": await MultipartFile.fromFile(file.path, filename: fileName),
-      });
-
-      if (mounted) setState(() => _uploadProgress = 0.0);
-
-      var response = await _dio.post(
-        '$SERVER_HTTP_URL/upload',
-        data: formData,
-        onSendProgress: (int sent, int total) {
-          if (mounted) setState(() => _uploadProgress = sent / total);
-        },
-      );
-
-      if (response.statusCode == 200 && response.data['status'] == 'success') {
-        return response.data['file_id'];
-      }
-    } catch (e) {
-      debugPrint("Dio Upload error: $e");
-    }
-    return null;
-  }
-
   // ── ИЗМЕНЕНИЕ 2: Шифрованная загрузка и скачивание ───────────────────────
 
   Future<String?> _uploadFileEncrypted(File file) async {
@@ -345,31 +319,6 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-
-  Future<String?> _downloadFileHttp(String fileId, MsgType msgType, String? fileName) async {
-    try {
-      final appDir = await getApplicationDocumentsDirectory();
-      final mediaDir = Directory('${appDir.path}/deepdrift_media');
-      if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
-
-      final ext = _extensionForType(msgType, fileName);
-      final name = fileName ?? 'media_${DateTime.now().millisecondsSinceEpoch}$ext';
-      final file = File('${mediaDir.path}/$name');
-
-      final request = http.Request('GET', Uri.parse('$SERVER_HTTP_URL/download/$fileId'));
-      final response = await http.Client().send(request);
-      
-      if (response.statusCode == 200) {
-        final sink = file.openWrite();
-        await response.stream.pipe(sink);
-        await sink.close();
-        return file.path;
-      }
-    } catch (e) {
-      debugPrint("HTTP Download error: $e");
-    }
-    return null;
-  }
 
   Future<String?> _copyFileToMediaDir(File originalFile, MsgType msgType, String? fileName) async {
     try {
