@@ -59,26 +59,26 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Инициализируем Firebase
   await Firebase.initializeApp();
-  
-  // Запрос разрешений на уведомления (для Android 13+ и iOS)
+
+  // 1. Запрос разрешений (Критично для Android 13+)
   FirebaseMessaging messaging = FirebaseMessaging.instance;
-  await messaging.requestPermission(
-    alert: true,
-    badge: true,
-    sound: true,
+  NotificationSettings settings = await messaging.requestPermission(
+    alert: true, badge: true, sound: true,
   );
-  
-  // ВАЖНО: Регистрируем фоновый обработчик ДО runApp
+
+  // 2. Настройка отображения уведомлений, когда приложение открыто
+  await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
+    alert: true, badge: true, sound: true,
+  );
+
+  // 3. Фоновый обработчик (уже есть, оставляем)
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-  
-  // Инициализируем Hive
+
   await Hive.initFlutter();
-  
-  // Инициализируем сервис уведомлений
   await NotificationService().init();
+  runApp(const DeepDriftApp());
+}
   
   runApp(const DeepDriftApp());
 }
