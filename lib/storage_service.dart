@@ -21,6 +21,48 @@ class StorageService {
   }
 
   // ============================================================
+  // ПРОФИЛЬ И СТАТУСЫ (НОВОЕ)
+  // ============================================================
+
+  // Свой профиль
+  Future<void> saveMyProfile({String? nickname, String? avatarUrl}) async {
+    if (nickname != null) await saveSetting('my_nickname', nickname);
+    if (avatarUrl != null) await saveSetting('my_avatar', avatarUrl);
+  }
+
+  Map<String, String?> getMyProfile() {
+    return {
+      'nickname': getSetting('my_nickname'),
+      'avatarUrl': getSetting('my_avatar'),
+    };
+  }
+
+  // Статус контактов (Онлайн/Оффлайн)
+  Future<void> setContactStatus(String uid, bool isOnline, int? lastSeen) async {
+    await Hive.box(_metadataBox).put('online_$uid', isOnline);
+    if (lastSeen != null) {
+      await Hive.box(_metadataBox).put('last_seen_$uid', lastSeen);
+    }
+  }
+
+  bool isContactOnline(String uid) {
+    return Hive.box(_metadataBox).get('online_$uid', defaultValue: false);
+  }
+
+  int getContactLastSeen(String uid) {
+    return Hive.box(_metadataBox).get('last_seen_$uid', defaultValue: 0);
+  }
+
+  // Аватары контактов
+  Future<void> setContactAvatar(String uid, String avatarUrl) async {
+    await Hive.box(_contactsBox).put('avatar_$uid', avatarUrl);
+  }
+
+  String? getContactAvatar(String uid) {
+    return Hive.box(_contactsBox).get('avatar_$uid');
+  }
+
+  // ============================================================
   // СООБЩЕНИЯ 
   // ============================================================
 
@@ -42,7 +84,6 @@ class StorageService {
     await _updateChatMetadata(chatWith, msg);
   }
 
-  // Проверка наличия сообщения по ID
   bool hasMessage(String chatWith, String messageId) {
     final history = getHistory(chatWith);
     return history.any((m) => m is Map && m['id'] == messageId);
@@ -67,15 +108,9 @@ class StorageService {
     return all.sublist(start, beforeIndex);
   }
 
-  Future<void> updateMessageStatus(
-    String chatWith,
-    String messageId,
-    String status,
-  ) async {
+  Future<void> updateMessageStatus(String chatWith, String messageId, String status) async {
     var box = Hive.box(_msgBox);
-    List history = getHistory(chatWith)
-        .map((e) => Map<String, dynamic>.from(e))
-        .toList();
+    List history = getHistory(chatWith).map((e) => Map<String, dynamic>.from(e)).toList();
 
     bool updated = false;
     for (var msg in history) {
@@ -106,15 +141,13 @@ class StorageService {
   }
 
   // ============================================================
-  // РЕАКЦИИ (персистентность)
+  // РЕАКЦИИ 
   // ============================================================
 
-  /// Загружает реакции для чата: messageId -> Set<emoji>
   Map<String, Set<String>> loadReactions(String chatWith) {
     final box = Hive.box(_reactionsBox);
     final raw = box.get(chatWith);
     if (raw == null) return {};
-
     try {
       final Map<dynamic, dynamic> stored = raw as Map;
       return stored.map((key, value) {
@@ -126,28 +159,20 @@ class StorageService {
     }
   }
 
-  /// Сохраняет все реакции чата
-  Future<void> saveReactions(
-      String chatWith, Map<String, Set<String>> reactions) async {
+  Future<void> saveReactions(String chatWith, Map<String, Set<String>> reactions) async {
     final box = Hive.box(_reactionsBox);
-    final serializable = reactions.map(
-      (key, value) => MapEntry(key, value.toList()),
-    );
+    final serializable = reactions.map((key, value) => MapEntry(key, value.toList()));
     await box.put(chatWith, serializable);
   }
 
-  /// Добавляет одну реакцию и сохраняет
-  Future<void> addReaction(
-      String chatWith, String messageId, String emoji) async {
+  Future<void> addReaction(String chatWith, String messageId, String emoji) async {
     final reactions = loadReactions(chatWith);
     reactions.putIfAbsent(messageId, () => {});
     reactions[messageId]!.add(emoji);
     await saveReactions(chatWith, reactions);
   }
 
-  /// Удаляет одну реакцию и сохраняет
-  Future<void> removeReaction(
-      String chatWith, String messageId, String emoji) async {
+  Future<void> removeReaction(String chatWith, String messageId, String emoji) async {
     final reactions = loadReactions(chatWith);
     reactions[messageId]?.remove(emoji);
     if (reactions[messageId]?.isEmpty ?? false) {
@@ -213,18 +238,9 @@ class StorageService {
     return Hive.box(_contactsBox).get('name_$uid', defaultValue: uid);
   }
 
-  // ============================================================
-  // НЕПРОЧИТАННЫЕ СООБЩЕНИЯ
-  // ============================================================
-
   int getUnreadCount(String chatWith) {
     List history = getHistory(chatWith);
-    return history
-        .where((msg) =>
-            msg is Map &&
-            msg['isMe'] == false &&
-            msg['status'] != 'read')
-        .length;
+    return history.where((msg) => msg is Map && msg['isMe'] == false && msg['status'] != 'read').length;
   }
 
   int getTotalUnreadCount() {
@@ -237,9 +253,7 @@ class StorageService {
 
   Future<void> markAllAsRead(String chatWith) async {
     var box = Hive.box(_msgBox);
-    List history = getHistory(chatWith)
-        .map((e) => Map<String, dynamic>.from(e))
-        .toList();
+    List history = getHistory(chatWith).map((e) => Map<String, dynamic>.from(e)).toList();
 
     bool updated = false;
     for (var msg in history) {
@@ -256,33 +270,26 @@ class StorageService {
   }
 
   // ============================================================
-  // МЕТАДАННЫЕ ЧАТОВ
+  // МЕТАДАННЫЕ ЧАТОВ И НАСТРОЙКИ
   // ============================================================
 
-  Future<void> _updateChatMetadata(
-    String chatWith,
-    Map<String, dynamic>? lastMessage,
-  ) async {
+  Future<void> _updateChatMetadata(String chatWith, Map<String, dynamic>? lastMessage) async {
     var box = Hive.box(_metadataBox);
-    var metadata = Map<String, dynamic>.from(
-        box.get('chat_$chatWith', defaultValue: {}));
+    var metadata = Map<String, dynamic>.from(box.get('chat_$chatWith', defaultValue: {}));
 
     if (lastMessage != null) {
       metadata['lastMessageText'] = lastMessage['text'];
-      // Нормализуем время: и int (ms), и ISO-строка → ISO-строка
       final rawTime = lastMessage['time'];
       if (rawTime is int) {
-        metadata['lastMessageTime'] =
-            DateTime.fromMillisecondsSinceEpoch(rawTime).toIso8601String();
+        metadata['lastMessageTime'] = DateTime.fromMillisecondsSinceEpoch(rawTime).toIso8601String();
       } else {
         metadata['lastMessageTime'] = rawTime;
       }
       metadata['lastMessageIsMe'] = lastMessage['isMe'];
     }
 
-    metadata['unreadCount']    = getUnreadCount(chatWith);
-    metadata['totalMessages']  = getHistory(chatWith).length;
-
+    metadata['unreadCount'] = getUnreadCount(chatWith);
+    metadata['totalMessages'] = getHistory(chatWith).length;
     await box.put('chat_$chatWith', metadata);
   }
 
@@ -294,10 +301,6 @@ class StorageService {
     final data = Hive.box(_metadataBox).get('chat_$chatWith', defaultValue: {});
     return Map<String, dynamic>.from(data);
   }
-
-  // ============================================================
-  // НАСТРОЙКИ
-  // ============================================================
 
   Future<void> saveSetting(String key, dynamic value) async {
     await Hive.box(_settingsBox).put(key, value);
@@ -311,44 +314,24 @@ class StorageService {
     await Hive.box(_settingsBox).delete(key);
   }
 
-  // ============================================================
   // КЕШИРОВАНИЕ ПУБЛИЧНЫХ КЛЮЧЕЙ
-  // ============================================================
-
-  /// Сохраняет публичные ключи контакта в кеш
-  Future<void> cachePublicKeys(
-    String uid, 
-    String x25519Key, 
-    String ed25519Key,
-  ) async {
+  Future<void> cachePublicKeys(String uid, String x25519Key, String ed25519Key) async {
     await saveSetting('cached_x25519_$uid', x25519Key);
     await saveSetting('cached_ed25519_$uid', ed25519Key);
     await saveSetting('cached_keys_time_$uid', DateTime.now().toIso8601String());
-    print('💾 [Storage] Cached public keys for $uid');
   }
 
-  /// Получает X25519 ключ из кеша
-  String? getCachedX25519Key(String uid) {
-    return getSetting('cached_x25519_$uid');
-  }
-
-  /// Получает Ed25519 ключ из кеша
-  String? getCachedEd25519Key(String uid) {
-    return getSetting('cached_ed25519_$uid');
-  }
-
-  /// Проверяет есть ли кешированные ключи для пользователя
+  String? getCachedX25519Key(String uid) => getSetting('cached_x25519_$uid');
+  String? getCachedEd25519Key(String uid) => getSetting('cached_ed25519_$uid');
+  
   bool hasCachedKeys(String uid) {
-    return getCachedX25519Key(uid) != null && 
-           getCachedEd25519Key(uid) != null;
+    return getCachedX25519Key(uid) != null && getCachedEd25519Key(uid) != null;
   }
 
-  /// Удаляет кешированные ключи (например, при смене ключей)
   Future<void> clearCachedKeys(String uid) async {
     await deleteSetting('cached_x25519_$uid');
     await deleteSetting('cached_ed25519_$uid');
     await deleteSetting('cached_keys_time_$uid');
-    print('🗑️ [Storage] Cleared cached keys for $uid');
   }
 
   // ============================================================
@@ -366,181 +349,31 @@ class StorageService {
       List history = getHistory(chatWith.toString());
       for (var msg in history) {
         if (results.length >= limit) break;
-        if (msg is Map &&
-            msg['text'] != null &&
-            msg['text'].toString().toLowerCase().contains(lowerQuery)) {
-          results.add({
-            ...Map<String, dynamic>.from(msg),
-            'chatWith': chatWith,
-          });
+        if (msg is Map && msg['text'] != null && msg['text'].toString().toLowerCase().contains(lowerQuery)) {
+          results.add({...Map<String, dynamic>.from(msg), 'chatWith': chatWith});
         }
       }
     }
-
-    results.sort((a, b) {
-      final aTime = _parseTime(a['time']);
-      final bTime = _parseTime(b['time']);
-      return bTime.compareTo(aTime);
-    });
-
+    results.sort((a, b) => _parseTime(b['time']).compareTo(_parseTime(a['time'])));
     return results;
   }
 
-  List<Map<String, dynamic>> searchInChat(String chatWith, String query) {
-    if (query.isEmpty) return [];
-    final history = getHistory(chatWith);
-    final lowerQuery = query.toLowerCase();
-
-    return history
-        .where((msg) =>
-            msg is Map &&
-            msg['text'] != null &&
-            msg['text'].toString().toLowerCase().contains(lowerQuery))
-        .map((msg) => Map<String, dynamic>.from(msg))
-        .toList();
-  }
-
   // ============================================================
-  // ЭКСПОРТ
+  // ОЧИСТКА И УТИЛИТЫ
   // ============================================================
-
-  String exportChat(String chatWith) {
-    List history = getHistory(chatWith);
-    StringBuffer sb = StringBuffer();
-    final displayName = getContactDisplayName(chatWith);
-    sb.writeln("=== Chat with $displayName ($chatWith) ===");
-    sb.writeln("Exported: ${DateTime.now().toIso8601String()}");
-    sb.writeln("Total messages: ${history.length}");
-    sb.writeln("");
-
-    for (var msg in history) {
-      if (msg is Map) {
-        String sender = msg['isMe'] == true ? 'Me' : displayName;
-        String text   = msg['text'] ?? '';
-
-        final dt = _parseTime(msg['time']);
-        final time =
-            "${dt.day}/${dt.month}/${dt.year} ${dt.hour}:${dt.minute.toString().padLeft(2, '0')}";
-
-        sb.write("[$time] $sender: $text");
-        if (msg['isMe'] == true && (msg['status'] ?? '').isNotEmpty) {
-          sb.write(" (${msg['status']})");
-        }
-        sb.writeln();
-      }
-    }
-
-    return sb.toString();
-  }
-
-  /// Экспортирует все чаты в текстовый формат
-  String exportAllChats() {
-    StringBuffer sb = StringBuffer();
-    sb.writeln("=== DeepDrift Messenger - Full Export ===");
-    sb.writeln("Exported: ${DateTime.now().toIso8601String()}");
-    sb.writeln("");
-
-    for (final contact in getContacts()) {
-      sb.writeln(exportChat(contact));
-      sb.writeln("");
-      sb.writeln("=" * 80);
-      sb.writeln("");
-    }
-
-    return sb.toString();
-  }
-
-  String exportChatAsJson(String chatWith) {
-    final history = getHistory(chatWith);
-    final displayName = getContactDisplayName(chatWith);
-    final export = {
-      'chatWith':     chatWith,
-      'displayName':  displayName,
-      'exportedAt':   DateTime.now().toIso8601String(),
-      'messageCount': history.length,
-      'messages':     history,
-    };
-    return jsonEncode(export);
-  }
-
-  // ============================================================
-  // СТАТИСТИКА
-  // ============================================================
-
-  Map<String, dynamic> getChatStats(String chatWith) {
-    final history = getHistory(chatWith);
-    int myMessages    = 0;
-    int theirMessages = 0;
-    int totalChars    = 0;
-    DateTime? firstMessageTime;
-    DateTime? lastMessageTime;
-
-    for (var msg in history) {
-      if (msg is Map) {
-        if (msg['isMe'] == true) {
-          myMessages++;
-        } else {
-          theirMessages++;
-        }
-        if (msg['text'] != null) {
-          totalChars += msg['text'].toString().length;
-        }
-        final t = _parseTime(msg['time']);
-        if (t.year > 2000) {
-          firstMessageTime ??= t;
-          lastMessageTime = t;
-        }
-      }
-    }
-
-    return {
-      'totalMessages':         history.length,
-      'myMessages':            myMessages,
-      'theirMessages':         theirMessages,
-      'averageMessageLength':  history.isNotEmpty ? totalChars ~/ history.length : 0,
-      'firstMessageTime':      firstMessageTime?.toIso8601String(),
-      'lastMessageTime':       lastMessageTime?.toIso8601String(),
-    };
-  }
-
-  // ============================================================
-  // ОЧИСТКА
-  // ============================================================
-
-  Future<void> clearAllData() async {
-    await Hive.box(_msgBox).clear();
-    await Hive.box(_contactsBox).clear();
-    await Hive.box(_settingsBox).clear();
-    await Hive.box(_metadataBox).clear();
-    await Hive.box(_reactionsBox).clear();
-  }
 
   Future<void> deleteOldMessages(int olderThanDays) async {
     final cutoffDate = DateTime.now().subtract(Duration(days: olderThanDays));
     var box = Hive.box(_msgBox);
 
     for (var chatWith in box.keys) {
-      List history =
-          getHistory(chatWith.toString()).whereType<Map>().toList();
-
-      history.removeWhere((msg) {
-        final t = _parseTime(msg['time']);
-        return t.isBefore(cutoffDate);
-      });
-
-      if (history.isEmpty) {
-        await box.delete(chatWith);
-      } else {
-        await box.put(chatWith, history);
-      }
+      List history = getHistory(chatWith.toString()).whereType<Map>().toList();
+      history.removeWhere((msg) => _parseTime(msg['time']).isBefore(cutoffDate));
+      if (history.isEmpty) await box.delete(chatWith);
+      else await box.put(chatWith, history);
     }
   }
 
-  // ============================================================
-  // ВНУТРЕННИЕ УТИЛИТЫ
-  // ============================================================
-
-  /// Парсит время из int (ms) или ISO-строки в DateTime.
   DateTime _parseTime(dynamic raw) {
     if (raw == null) return DateTime(2000);
     if (raw is int) return DateTime.fromMillisecondsSinceEpoch(raw);
