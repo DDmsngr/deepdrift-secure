@@ -227,9 +227,21 @@ class SocketService {
 
   void _startHeartbeat() {
     _pingTimer?.cancel();
-    _lastPongTime = DateTime.now();
+    _lastPongTime = DateTime.now(); // Сбрасываем время при старте
+    
     _pingTimer = Timer.periodic(PING_INTERVAL, (_) {
       if (_isConnected) {
+        // ПРОВЕРКА: Если сервер не отвечал дольше двух интервалов (60 сек)
+        if (_lastPongTime != null) {
+          final timeSinceLastPong = DateTime.now().difference(_lastPongTime!);
+          if (timeSinceLastPong > PING_INTERVAL * 2) {
+            print("⚠️ No pong received for 60s, connection dead. Reconnecting...");
+            _handleDisconnect(); // Обрываем связь, чтобы сработал реконнект
+            return;
+          }
+        }
+        
+        // Шлем пинг серверу
         send({"type": "ping"});
       }
     });
