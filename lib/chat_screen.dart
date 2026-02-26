@@ -149,7 +149,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // Запрос профиля и оффлайн сообщений при входе в чат
     Future.delayed(const Duration(milliseconds: 500), () {
       try {
-        _socket.getProfile(widget.targetUid); // Запрашиваем актуальный статус
+        _socket.getProfile(widget.targetUid); // Обновляем инфу о собеседнике
         _socket.requestOfflineMessages(widget.targetUid);
       } catch (e) {
         debugPrint("Note: requestOfflineMessages error: $e");
@@ -394,7 +394,8 @@ class _ChatScreenState extends State<ChatScreen> {
         case 'message_deleted':  _handleMessageDeleted(data); break;
         case 'message_edited':   _handleMessageEdited(data); break;
         case 'message_reaction': _handleMessageReaction(data); break;
-        // Обновляем UI если пришел новый статус пользователя
+        
+        // Обновляем UI (статус в шапке) при изменении статуса
         case 'user_status':
         case 'profile_response':
           if (data['uid'] == widget.targetUid) setState(() {});
@@ -1175,6 +1176,10 @@ class _ChatScreenState extends State<ChatScreen> {
     return Icons.attach_file;
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // ФУНКЦИИ ПРОСМОТРА И СОХРАНЕНИЯ В ПАПКУ DOWNLOADS
+  // ──────────────────────────────────────────────────────────────────────────
+
   void _showFullImageFromFile(String filePath) {
     showDialog(
       context: context,
@@ -1184,12 +1189,17 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Stack(
           alignment: Alignment.center,
           children: [
-            InteractiveViewer(child: Image.file(File(filePath))),
+            InteractiveViewer(
+              child: Image.file(File(filePath)),
+            ),
+            
+            // Кнопка сохранения в Downloads/DDchat
             Positioned(
-              right: 20, bottom: 20,
+              right: 20,
+              bottom: 20,
               child: FloatingActionButton(
                 backgroundColor: Colors.white24,
-                child: const Icon(Icons.download, color: Colors.white),
+                child: const Icon(Icons.folder_shared, color: Colors.white),
                 onPressed: () async {
                   try {
                     bool hasAccess = await Gal.hasAccess();
@@ -1228,8 +1238,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
               ),
             ),
+            
             Positioned(
-              top: 40, right: 20,
+              top: 40,
+              right: 20,
               child: IconButton(
                 icon: const Icon(Icons.close, color: Colors.white, size: 30),
                 onPressed: () => Navigator.pop(context),
@@ -1246,12 +1258,16 @@ class _ChatScreenState extends State<ChatScreen> {
       _showError('File not available on this device');
       return;
     }
+
     try {
       if (Platform.isAndroid) {
         final downloadsDir = Directory('/storage/emulated/0/Download/DDchat');
-        if (!await downloadsDir.exists()) await downloadsDir.create(recursive: true);
+        if (!await downloadsDir.exists()) {
+          await downloadsDir.create(recursive: true);
+        }
         final newPath = '${downloadsDir.path}/$fileName';
         await File(filePath).copy(newPath);
+        
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -1261,10 +1277,19 @@ class _ChatScreenState extends State<ChatScreen> {
           );
         }
       } else {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved at: $filePath')));
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Saved at: $filePath')),
+          );
+        }
       }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved internally at: $filePath')));
+      print("Save error: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Saved internally at: $filePath')),
+        );
+      }
     }
   }
 
@@ -1792,8 +1817,12 @@ class _ChatScreenState extends State<ChatScreen> {
                 CircleAvatar(
                   radius: 18,
                   backgroundColor: const Color(0xFF0A0E27),
-                  backgroundImage: avatar != null ? NetworkImage('$SERVER_HTTP_URL/download/$avatar') : null,
-                  child: avatar == null ? Text(displayName[0].toUpperCase(), style: const TextStyle(color: Colors.cyan, fontSize: 14)) : null,
+                  backgroundImage: (avatar != null && avatar.isNotEmpty && avatar != 'null') 
+                      ? NetworkImage('$SERVER_HTTP_URL/download/$avatar') 
+                      : null,
+                  child: (avatar == null || avatar.isEmpty || avatar == 'null') 
+                      ? Text(displayName[0].toUpperCase(), style: const TextStyle(color: Colors.cyan, fontSize: 14)) 
+                      : null,
                 ),
                 const SizedBox(width: 12),
                 Expanded(
