@@ -1161,7 +1161,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // ФУНКЦИИ ПРОСМОТРА И СОХРАНЕНИЯ В ПАПКУ DOWNLOADS
   // ──────────────────────────────────────────────────────────────────────────
 
-  void _showFullImageFromFile(String filePath) {
+void _showFullImageFromFile(String filePath) {
     showDialog(
       context: context,
       builder: (context) => Dialog(
@@ -1170,64 +1170,42 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Stack(
           alignment: Alignment.center,
           children: [
-            InteractiveViewer(
-              child: Image.file(File(filePath)),
-            ),
+            InteractiveViewer(child: Image.file(File(filePath))),
             
-            // Кнопка сохранения в Downloads/DDchat
+            // Кнопка сохранения
             Positioned(
-              right: 20,
-              bottom: 20,
+              right: 20, bottom: 20,
               child: FloatingActionButton(
                 backgroundColor: Colors.white24,
-                child: const Icon(Icons.folder_shared, color: Colors.white),
+                child: const Icon(Icons.download, color: Colors.white),
                 onPressed: () async {
                   try {
-                    bool hasAccess = await Gal.hasAccess();
-                    if (!hasAccess) await Gal.requestAccess();
+                    // 1. Проверка прав
+                    if (!await Gal.hasAccess()) await Gal.requestAccess();
 
-                    Directory? downloadsDir;
-                    if (Platform.isAndroid) {
-                      downloadsDir = Directory('/storage/emulated/0/Download/DDchat');
-                    } else {
-                      downloadsDir = await getApplicationDocumentsDirectory();
-                    }
+                    // 2. Путь к папке
+                    final folder = Directory('/storage/emulated/0/Download/DDchat');
+                    if (!await folder.exists()) await folder.create(recursive: true);
 
-                    if (!await downloadsDir.exists()) {
-                      await downloadsDir.create(recursive: true);
-                    }
-
-                    final originalFile = File(filePath);
-                    final fileName = originalFile.path.split('/').last;
-                    final newPath = '${downloadsDir.path}/$fileName';
+                    // 3. Копирование
+                    final name = filePath.split('/').last;
+                    final savedFile = await File(filePath).copy('${folder.path}/$name');
                     
-                    await originalFile.copy(newPath);
-                    await Gal.putImage(newPath); 
+                    // 4. Добавляем в галерею, чтобы фото появилось в альбомах
+                    await Gal.putImage(savedFile.path);
 
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('✅ Saved to: $newPath')),
+                        SnackBar(content: Text('✅ Saved to Downloads/DDchat'))
                       );
                     }
                   } catch (e) {
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
-                      );
-                    }
+                    _showError('Save error: $e');
                   }
                 },
               ),
             ),
-            
-            Positioned(
-              top: 40,
-              right: 20,
-              child: IconButton(
-                icon: const Icon(Icons.close, color: Colors.white, size: 30),
-                onPressed: () => Navigator.pop(context),
-              ),
-            ),
+            Positioned(top: 40, right: 20, child: IconButton(icon: const Icon(Icons.close, color: Colors.white, size: 30), onPressed: () => Navigator.pop(context))),
           ],
         ),
       ),
@@ -1970,29 +1948,24 @@ class _ChatScreenState extends State<ChatScreen> {
                 icon: const Icon(Icons.mic, color: Colors.cyan),
                 onPressed: _startRecording,
               ),
-            if (_isSendingFile)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: CircularProgressIndicator(
-                        value: _uploadProgress, // Прогресс Dio
-                        strokeWidth: 3,
-                        backgroundColor: Colors.white10,
-                        color: Colors.cyan,
-                      ),
-                    ),
-                    Text(
-                      '${(_uploadProgress * 100).toInt()}%',
-                      style: const TextStyle(fontSize: 8, color: Colors.white),
-                    ),
-                  ],
-                ),
+            if (_isSendingFile) 
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Stack(
+                alignment: Alignment.center, 
+                children: [
+                  CircularProgressIndicator(
+                    value: _uploadProgress > 0 ? _uploadProgress : null, 
+                    backgroundColor: Colors.white10, 
+                    color: Colors.cyan,
+                    strokeWidth: 3,
+                  ),
+                  if (_uploadProgress > 0)
+                    Text('${(_uploadProgress * 100).toInt()}%', 
+                      style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Colors.white)),
+                ],
               ),
+            ),
             Expanded(
               child: TextField(
                 controller: _messageController,
