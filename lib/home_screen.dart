@@ -28,35 +28,25 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   final _storage = StorageService();
   final _socket = SocketService();
   final _cipher = SecureCipher();
-  final _imagePicker = ImagePicker(); // Для выбора аватарки
+  final _imagePicker = ImagePicker(); 
 
   final _idController = TextEditingController();
   final _serverController = TextEditingController(text: 'wss://deepdrift-backend.onrender.com/ws');
-
-  late AnimationController _animController;
-  late Animation<double> _pulseAnimation;
 
   bool _isSearching = false;
   final _searchController = TextEditingController();
   List<Map<String, dynamic>> _searchResults = [];
 
   final _quickIdController = TextEditingController();
-  bool _hasUpdate = false;
-  String _currentVersion = '4.5.0';
-  String _latestVersion = '4.6.0';
 
-  // Таймер для периодического обновления статусов друзей
   Timer? _statusCheckTimer;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _animController = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
-    _pulseAnimation = Tween<double>(begin: 0.8, end: 1.0).animate(_animController);
     _setup();
     
-    // Запускаем проверку статусов каждые 30 секунд
     _statusCheckTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
       if (_isConnected) {
         _socket.checkStatuses(_chats);
@@ -67,7 +57,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _animController.dispose();
     _socketSub?.cancel();
     _statusCheckTimer?.cancel();
     _searchController.dispose();
@@ -79,7 +68,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
        if (!_socket.isConnected) _socket.forceReconnect();
-       // При возвращении в приложение сразу проверяем статусы
        _socket.checkStatuses(_chats);
     }
   }
@@ -133,7 +121,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         if (type == 'uid_assigned') {
           setState(() { _isConnected = true; _connectionStatus = 'ONLINE'; });
           _registerPublicKeysOnServer();
-          // При подключении запрашиваем статусы всех друзей
           _socket.checkStatuses(_storage.getContacts());
         }
 
@@ -148,12 +135,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           setState(() => _connectionStatus = 'FAILED');
         }
 
-        // Обновляем список чатов
+        if (type == 'user_status') {
+          final uid = data['uid'];
+          final isOnline = data['status'] == 'online';
+          final lastSeen = data['last_seen'];
+          _storage.setContactStatus(uid, isOnline, lastSeen);
+          if (mounted) setState(() {}); 
+        }
+
+        if (type == 'message') _handleIncomingMessageQuietly(data);
+
         if (type == 'message' || type == 'status_update' || type == 'message_deleted' || type == 'user_status') {
            setState(() => _chats = _storage.getContactsSortedByActivity());
         }
-        
-        if (type == 'message') _handleIncomingMessageQuietly(data);
       });
 
       setState(() {
@@ -204,6 +198,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   // ДИАЛОГИ И UI
   // ==========================================
 
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: Colors.red));
+  }
+
   void _showMyProfileDialog() {
     final profile = _storage.getMyProfile();
     final nameCtrl = TextEditingController(text: profile['nickname']);
@@ -221,15 +220,15 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               children: [
                 GestureDetector(
                   onTap: () async {
-                    // Выбор аватарки
                     final img = await _imagePicker.pickImage(source: ImageSource.gallery, maxWidth: 512, maxHeight: 512);
                     if (img != null) {
-                      // Сразу грузим на сервер
                       String? fileId = await _socket.uploadFile(File(img.path));
                       if (fileId != null) {
                         setDialogState(() {
                           currentAvatar = fileId;
                         });
+                      } else {
+                        _showError("Failed to upload avatar");
                       }
                     }
                   },
@@ -259,7 +258,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ElevatedButton(
                 onPressed: () async {
                   await _storage.saveMyProfile(nickname: nameCtrl.text.trim(), avatarUrl: currentAvatar);
-                  // Отправляем обновление на сервер
                   _socket.updateProfile(nameCtrl.text.trim(), currentAvatar);
                   Navigator.pop(context);
                   setState(() {}); 
@@ -296,7 +294,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         actions: [
           ElevatedButton(
             onPressed: () async {
-              if (pwdCtrl.text.length < 8 || pwdCtrl.text != confCtrl.text) return;
+              if (pwdCtrl.text.length < 8 || pwdCtrl.text != confCtrl.text) {
+                _showError("Passwords must match and be at least 8 chars");
+                return;
+              }
               final salt = SecureCipher.generateSalt();
               await _cipher.init(pwdCtrl.text, salt);
               final keys = await _cipher.exportBothKeys(pwdCtrl.text);
@@ -333,6 +334,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 await _idService.saveUID(_idController.text);
                 Navigator.pop(context);
                 _setup();
+              } else {
+                _showError("ID must be exactly 6 digits");
               }
             },
             child: const Text("SAVE"),
@@ -363,11 +366,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           ElevatedButton(
             onPressed: () async {
               if (targetC.text.length == 6 && targetC.text != _myUid) {
-                // При добавлении сразу запрашиваем профиль
                 _socket.getProfile(targetC.text);
                 await _storage.addContact(targetC.text, displayName: nameC.text.trim().isNotEmpty ? nameC.text.trim() : null);
                 Navigator.pop(context);
                 setState(() => _chats = _storage.getContactsSortedByActivity());
+              } else {
+                _showError("Invalid ID");
               }
             },
             child: const Text("ADD"),
@@ -380,7 +384,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   void _addContactWithId(String contactId) {
     if (!_isReady) return;
     contactId = contactId.trim();
-    if (contactId.isEmpty || contactId == _myUid) return;
+    if (contactId.isEmpty || contactId == _myUid) {
+      _showError("Invalid contact ID");
+      return;
+    }
 
     if (!_chats.contains(contactId)) {
       _socket.getProfile(contactId);
@@ -390,10 +397,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     
     Navigator.push(context, MaterialPageRoute(builder: (c) => ChatScreen(myUid: _myUid!, targetUid: contactId, cipher: _cipher)))
         .then((_) => setState(() => _chats = _storage.getContactsSortedByActivity()));
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: Colors.red));
   }
 
   void _performSearch(String query) {
@@ -416,10 +419,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       itemBuilder: (c, i) {
         final uid = _chats[i];
         final name = _storage.getContactDisplayName(uid);
-        final avatar = _storage.getContactAvatar(uid); // Получаем аватарку
+        final avatar = _storage.getContactAvatar(uid); 
         final meta = _storage.getChatMetadata(uid);
         final unread = meta['unreadCount'] ?? 0;
-        final isOnline = _storage.isContactOnline(uid);
+        final isOnline = _storage.isContactOnline(uid); 
 
         return ListTile(
           leading: Stack(
@@ -487,14 +490,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             else ...[
               IconButton(icon: const Icon(Icons.search), onPressed: () => setState(() => _isSearching = true)),
               
-              // Кнопка профиля с аватаркой (если есть)
               GestureDetector(
                 onTap: _showMyProfileDialog,
                 child: Padding(
                   padding: const EdgeInsets.only(right: 12, left: 8),
                   child: CircleAvatar(
                     radius: 16,
-                    backgroundColor: Colors.cyan.withOpacity(0.2),
+                    backgroundColor: Colors.cyan.withValues(alpha: 0.2),
                     backgroundImage: myProfile['avatarUrl'] != null 
                         ? NetworkImage('https://deepdrift-backend.onrender.com/download/${myProfile['avatarUrl']}') 
                         : null,
@@ -508,6 +510,59 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           ],
         ),
         body: _isSearching ? _buildSearchResults() : _buildChatList(),
+        
+        // Быстрый поиск контакта (восстановлено)
+        bottomNavigationBar: _isSearching 
+          ? null 
+          : Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1A1F3C),
+                border: Border(top: BorderSide(color: Color(0xFF00D9FF), width: 0.5)),
+              ),
+              child: SafeArea(
+                child: Row(
+                  children: [
+                    const Icon(Icons.flash_on, color: Color(0xFF00D9FF), size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _quickIdController,
+                        style: const TextStyle(color: Colors.white, fontSize: 14),
+                        decoration: InputDecoration(
+                          hintText: 'Enter ID for quick chat...',
+                          hintStyle: const TextStyle(color: Colors.white38, fontSize: 13),
+                          filled: true, fillColor: const Color(0xFF0A0E27),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        ),
+                        onSubmitted: (value) {
+                          if (value.isNotEmpty) {
+                            _addContactWithId(value);
+                            _quickIdController.clear();
+                          }
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      decoration: const BoxDecoration(color: Color(0xFF00D9FF), shape: BoxShape.circle),
+                      child: IconButton(
+                        icon: const Icon(Icons.arrow_forward, color: Colors.black),
+                        iconSize: 20,
+                        onPressed: () {
+                          if (_quickIdController.text.isNotEmpty) {
+                            _addContactWithId(_quickIdController.text);
+                            setState(() => _quickIdController.clear());
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
         floatingActionButton: _isSearching ? null : FloatingActionButton(onPressed: _addContact, backgroundColor: Colors.cyan, child: const Icon(Icons.add, color: Colors.black)),
       ),
     );
