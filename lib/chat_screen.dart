@@ -975,7 +975,7 @@ class _ChatScreenState extends State<ChatScreen> {
   /// Пересылаемое сообщение шифруется заново для получателя — оригинальный
   /// зашифртекст никогда не передаётся третьим лицам.
   void _forwardMessage(Map<String, dynamic> message) {
-    final contacts = _storage.getContactsList();
+    final contacts = _storage.getContacts();
     if (contacts.isEmpty) {
       _showError('No contacts to forward to');
       return;
