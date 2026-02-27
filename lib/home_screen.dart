@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:qr_flutter/qr_flutter.dart'; // <-- ВЕРНУЛИ QR КОДЫ
 
 import 'identity_service.dart';
 import 'chat_screen.dart';
@@ -21,10 +22,10 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   String? _myUid;
-  List<String> _chats = [];
+  List<String> _chats =[];
   bool _isConnected = false;
   bool _isReady = false;
-  String _connectionStatus = 'OFFLINE';
+  String _connectionStatus = 'ОФФЛАЙН';
   StreamSubscription? _socketSub;
 
   final _idService    = IdentityService();
@@ -39,7 +40,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   bool _isSearching = false;
   final _searchController = TextEditingController();
-  List<Map<String, dynamic>> _searchResults = [];
+  List<Map<String, dynamic>> _searchResults =[];
 
   final _quickIdController = TextEditingController();
 
@@ -84,13 +85,13 @@ class _HomeScreenState extends State<HomeScreen>
         await _autoConnect();
       }
     } catch (e) {
-      if (mounted) setState(() { _connectionStatus = 'ERROR'; _isReady = true; });
+      if (mounted) setState(() { _connectionStatus = 'ОШИБКА'; _isReady = true; });
     }
   }
 
   Future<void> _autoConnect() async {
     try {
-      setState(() => _connectionStatus = 'CONNECTING...');
+      setState(() => _connectionStatus = 'ПОДКЛЮЧЕНИЕ...');
 
       final savedPassword   = _storage.getSetting('user_password');
       final savedSalt       = _storage.getSetting('user_salt');
@@ -121,17 +122,17 @@ class _HomeScreenState extends State<HomeScreen>
         final type = data['type'];
 
         if (type == 'uid_assigned') {
-          setState(() { _isConnected = true; _connectionStatus = 'ONLINE'; });
+          setState(() { _isConnected = true; _connectionStatus = 'В СЕТИ'; });
           _registerPublicKeysOnServer();
           _socket.checkStatuses(_storage.getContacts());
         }
         if (type == 'connection_status') {
           setState(() {
             _isConnected = data['connected'] ?? false;
-            _connectionStatus = _isConnected ? 'ONLINE' : 'OFFLINE';
+            _connectionStatus = _isConnected ? 'В СЕТИ' : 'ОФФЛАЙН';
           });
         }
-        if (type == 'connection_failed') setState(() => _connectionStatus = 'FAILED');
+        if (type == 'connection_failed') setState(() => _connectionStatus = 'ОШИБКА СЕТИ');
         if (type == 'user_status') {
           _storage.setContactStatus(data['uid'], data['status'] == 'online', data['last_seen']);
           if (mounted) setState(() {});
@@ -148,7 +149,7 @@ class _HomeScreenState extends State<HomeScreen>
         _chats = _storage.getContactsSortedByActivity();
       });
     } catch (e) {
-      setState(() { _connectionStatus = 'ERROR'; _isReady = true; });
+      setState(() { _connectionStatus = 'ОШИБКА'; _isReady = true; });
     }
   }
 
@@ -196,13 +197,14 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   // ============================================================
-  // ДИАЛОГИ
+  // ДИАЛОГИ (ВЕРНУЛИ РУССКИЙ И QR КОДЫ)
   // ============================================================
 
   void _showMyProfileDialog() {
     final profile  = _storage.getMyProfile();
     final nameCtrl = TextEditingController(text: profile['nickname']);
     String? currentAvatar = profile['avatarUrl'];
+    
     showDialog(
       context: context,
       builder: (c) => StatefulBuilder(
@@ -211,45 +213,67 @@ class _HomeScreenState extends State<HomeScreen>
               currentAvatar!.isNotEmpty && currentAvatar != 'null';
           return AlertDialog(
             backgroundColor: const Color(0xFF1A1F3C),
-            title: Text("My Profile", style: GoogleFonts.orbitron()),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                GestureDetector(
-                  onTap: () async {
-                    final img = await _imagePicker.pickImage(
-                        source: ImageSource.gallery, maxWidth: 512, maxHeight: 512);
-                    if (img != null) {
-                      String? fileId = await _socket.uploadFile(File(img.path));
-                      if (fileId != null) {
-                        setDialogState(() => currentAvatar = fileId);
-                      } else { _showError("Failed to upload avatar"); }
-                    }
-                  },
-                  child: CircleAvatar(
-                    radius: 40,
-                    backgroundColor: const Color(0xFF0A0E27),
-                    backgroundImage: hasAvatar
-                        ? NetworkImage('https://deepdrift-backend.onrender.com/download/$currentAvatar')
-                        : null,
-                    child: !hasAvatar ? const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan) : null,
+            title: Text("Мой профиль", style: GoogleFonts.orbitron()),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children:[
+                  GestureDetector(
+                    onTap: () async {
+                      final img = await _imagePicker.pickImage(
+                          source: ImageSource.gallery, maxWidth: 512, maxHeight: 512);
+                      if (img != null) {
+                        String? fileId = await _socket.uploadFile(File(img.path));
+                        if (fileId != null) {
+                          setDialogState(() => currentAvatar = fileId);
+                        } else { _showError("Ошибка загрузки аватара"); }
+                      }
+                    },
+                    child: CircleAvatar(
+                      radius: 40,
+                      backgroundColor: const Color(0xFF0A0E27),
+                      backgroundImage: hasAvatar
+                          ? NetworkImage('https://deepdrift-backend.onrender.com/download/$currentAvatar')
+                          : null,
+                      child: !hasAvatar ? const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan) : null,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Text("ID: $_myUid", style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: nameCtrl,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: "Nickname", filled: true,
-                    fillColor: Color(0xFF0A0E27), border: OutlineInputBorder(),
+                  const SizedBox(height: 12),
+                  Text("Твой ID: $_myUid", style: const TextStyle(color: Colors.cyan, fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2)),
+                  const SizedBox(height: 16),
+                  
+                  // --- ВЕРНУЛИ ГЕНЕРАТОР QR-КОДА ---
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: QrImageView(
+                      data: _myUid ?? '000000',
+                      version: QrVersions.auto,
+                      size: 140.0,
+                      backgroundColor: Colors.white,
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 8),
+                  const Text("Покажи этот QR-код другу\nдля быстрого добавления", textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  const SizedBox(height: 16),
+                  // ------------------------------------
+
+                  TextField(
+                    controller: nameCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: "Твое имя (никнейм)", filled: true,
+                      fillColor: Color(0xFF0A0E27), border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
             ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL")),
+            actions:[
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text("ОТМЕНА")),
               ElevatedButton(
                 onPressed: () async {
                   await _storage.saveMyProfile(
@@ -258,7 +282,8 @@ class _HomeScreenState extends State<HomeScreen>
                   Navigator.pop(context);
                   setState(() {});
                 },
-                child: const Text("SAVE"),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan, foregroundColor: Colors.black),
+                child: const Text("СОХРАНИТЬ", style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ],
           );
@@ -275,28 +300,28 @@ class _HomeScreenState extends State<HomeScreen>
       barrierDismissible: false,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: Text("SECURE YOUR MESSAGES",
+        title: Text("ЗАЩИТА ЧАТОВ",
             style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF))),
         content: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text("⚠️ Write it down! Cannot be recovered.",
+          children:[
+            const Text("⚠️ Обязательно запомни его! Восстановить будет невозможно.",
                 style: TextStyle(color: Colors.orange, fontSize: 11)),
             const SizedBox(height: 16),
             TextField(controller: pwdCtrl, obscureText: true,
                 style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(labelText: "Password", filled: true, fillColor: Color(0xFF0A0E27))),
+                decoration: const InputDecoration(labelText: "Придумай пароль", filled: true, fillColor: Color(0xFF0A0E27))),
             const SizedBox(height: 12),
             TextField(controller: confCtrl, obscureText: true,
                 style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(labelText: "Confirm Password", filled: true, fillColor: Color(0xFF0A0E27))),
+                decoration: const InputDecoration(labelText: "Повтори пароль", filled: true, fillColor: Color(0xFF0A0E27))),
           ],
         ),
-        actions: [
+        actions:[
           ElevatedButton(
             onPressed: () async {
               if (pwdCtrl.text.length < 8 || pwdCtrl.text != confCtrl.text) {
-                _showError("Passwords must match and be at least 8 chars");
+                _showError("Пароли должны совпадать (минимум 8 символов)");
                 return;
               }
               final salt = SecureCipher.generateSalt();
@@ -309,7 +334,8 @@ class _HomeScreenState extends State<HomeScreen>
               Navigator.pop(context);
               _autoConnect();
             },
-            child: const Text("CREATE"),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan, foregroundColor: Colors.black),
+            child: const Text("СОЗДАТЬ", style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -322,31 +348,32 @@ class _HomeScreenState extends State<HomeScreen>
       barrierDismissible: false,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: Text("FRACTAL IDENTITY",
-            style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF))),
+        title: Text("ДОБРО ПОЖАЛОВАТЬ В DDCHAT",
+            style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 16)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text("Придумай себе номер (по этому номеру тебя будут искать друзья)",
-                style: TextStyle(color: Colors.white70, fontSize: 12), textAlign: TextAlign.center),
+          children:[
+            const Text("Придумай себе номер из 6 цифр.\nПо нему тебя будут находить друзья!",
+                style: TextStyle(color: Colors.white70, fontSize: 13), textAlign: TextAlign.center),
             const SizedBox(height: 16),
             TextField(
               controller: _idController, keyboardType: TextInputType.number, maxLength: 6,
-              style: const TextStyle(color: Colors.white, fontSize: 18), textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 24, letterSpacing: 6, fontWeight: FontWeight.bold), textAlign: TextAlign.center,
               decoration: const InputDecoration(hintText: "000000", filled: true, fillColor: Color(0xFF0A0E27)),
             ),
           ],
         ),
-        actions: [
+        actions:[
           ElevatedButton(
             onPressed: () async {
               if (_idController.text.length == 6) {
                 await _idService.saveUID(_idController.text);
                 Navigator.pop(context);
                 _setup();
-              } else { _showError("ID must be exactly 6 digits"); }
+              } else { _showError("Номер должен состоять ровно из 6 цифр"); }
             },
-            child: const Text("SAVE"),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan, foregroundColor: Colors.black),
+            child: const Text("СОЗДАТЬ", style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -360,20 +387,20 @@ class _HomeScreenState extends State<HomeScreen>
       context: context,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: Text("Add contact", style: GoogleFonts.orbitron()),
+        title: Text("Добавить контакт", style: GoogleFonts.orbitron()),
         content: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [
+          children:[
             TextField(controller: targetC, keyboardType: TextInputType.number, maxLength: 6,
                 style: const TextStyle(color: Colors.white), textAlign: TextAlign.center,
                 decoration: const InputDecoration(hintText: "000000", filled: true, fillColor: Color(0xFF0A0E27))),
             const SizedBox(height: 12),
             TextField(controller: nameC, style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(labelText: "Display name (optional)", filled: true, fillColor: Color(0xFF0A0E27))),
+                decoration: const InputDecoration(labelText: "Имя (необязательно)", filled: true, fillColor: Color(0xFF0A0E27))),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL")),
+        actions:[
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("ОТМЕНА")),
           ElevatedButton(
             onPressed: () async {
               if (targetC.text.length == 6 && targetC.text != _myUid) {
@@ -382,9 +409,9 @@ class _HomeScreenState extends State<HomeScreen>
                     displayName: nameC.text.trim().isNotEmpty ? nameC.text.trim() : null);
                 Navigator.pop(context);
                 setState(() => _chats = _storage.getContactsSortedByActivity());
-              } else { _showError("Invalid ID"); }
+              } else { _showError("Неверный ID"); }
             },
-            child: const Text("ADD"),
+            child: const Text("ДОБАВИТЬ"),
           ),
         ],
       ),
@@ -394,7 +421,7 @@ class _HomeScreenState extends State<HomeScreen>
   void _addContactWithId(String contactId) {
     if (!_isReady) return;
     contactId = contactId.trim();
-    if (contactId.isEmpty || contactId == _myUid) { _showError("Invalid contact ID"); return; }
+    if (contactId.isEmpty || contactId == _myUid) { _showError("Неверный ID контакта"); return; }
     if (!_chats.contains(contactId)) {
       _socket.getProfile(contactId);
       _storage.addContact(contactId, displayName: contactId);
@@ -406,7 +433,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   // ============================================================
-  // МЕНЮ КОНТАКТА
+  // МЕНЮ КОНТАКТА (ТЕПЕРЬ НА РУССКОМ)
   // ============================================================
 
   void _showContactOptions(String uid) {
@@ -422,11 +449,11 @@ class _HomeScreenState extends State<HomeScreen>
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [
+          children:[
             // Шапка
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Row(children: [
+              child: Row(children:[
                 CircleAvatar(
                   radius: 20,
                   backgroundColor: Colors.cyan.withValues(alpha: 0.15),
@@ -434,7 +461,7 @@ class _HomeScreenState extends State<HomeScreen>
                       style: const TextStyle(color: Colors.cyan, fontWeight: FontWeight.bold)),
                 ),
                 const SizedBox(width: 12),
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children:[
                   Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
                   Text('ID: $uid', style: const TextStyle(color: Colors.white38, fontSize: 12)),
                 ]),
@@ -446,20 +473,20 @@ class _HomeScreenState extends State<HomeScreen>
             ListTile(
               leading: Icon(isPinned ? Icons.push_pin : Icons.push_pin_outlined,
                   color: isPinned ? Colors.amber : Colors.white70),
-              title: Text(isPinned ? 'Unpin' : 'Pin to top',
+              title: Text(isPinned ? 'Открепить' : 'Закрепить сверху',
                   style: TextStyle(color: isPinned ? Colors.amber : Colors.white)),
               onTap: () async {
                 Navigator.pop(context);
                 await _storage.setContactPinned(uid, !isPinned);
                 setState(() => _chats = _storage.getContactsSortedByActivity());
-                _showSuccess(isPinned ? 'Unpinned' : '📌 $name pinned to top');
+                _showSuccess(isPinned ? 'Откреплено' : '📌 $name закреплен');
               },
             ),
 
             // Переименовать
             ListTile(
               leading: const Icon(Icons.edit_outlined, color: Colors.white70),
-              title: const Text('Rename', style: TextStyle(color: Colors.white)),
+              title: const Text('Переименовать', style: TextStyle(color: Colors.white)),
               onTap: () { Navigator.pop(context); _showRenameDialog(uid, name); },
             ),
 
@@ -467,38 +494,38 @@ class _HomeScreenState extends State<HomeScreen>
             ListTile(
               leading: Icon(isMuted ? Icons.volume_up_outlined : Icons.volume_off_outlined,
                   color: isMuted ? Colors.white70 : Colors.orange),
-              title: Text(isMuted ? 'Unmute' : 'Mute notifications',
+              title: Text(isMuted ? 'Включить звук' : 'Без звука',
                   style: TextStyle(color: isMuted ? Colors.white : Colors.orange)),
               onTap: () async {
                 Navigator.pop(context);
                 await _storage.setContactMuted(uid, !isMuted);
                 setState(() {});
-                _showSuccess(isMuted ? 'Notifications on for $name' : '🔇 $name muted');
+                _showSuccess(isMuted ? 'Звук включен для $name' : '🔇 $name заглушен');
               },
             ),
 
             // Скопировать ID
             ListTile(
               leading: const Icon(Icons.copy_outlined, color: Colors.white70),
-              title: const Text('Copy ID', style: TextStyle(color: Colors.white)),
+              title: const Text('Скопировать ID', style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(context);
                 Clipboard.setData(ClipboardData(text: uid));
-                _showSuccess('ID copied: $uid');
+                _showSuccess('ID скопирован: $uid');
               },
             ),
 
             // Очистить историю
             ListTile(
               leading: const Icon(Icons.cleaning_services_outlined, color: Colors.orange),
-              title: const Text('Clear chat history', style: TextStyle(color: Colors.orange)),
+              title: const Text('Очистить историю', style: TextStyle(color: Colors.orange)),
               onTap: () { Navigator.pop(context); _confirmClearHistory(uid, name); },
             ),
 
             // Удалить контакт
             ListTile(
               leading: const Icon(Icons.person_remove_outlined, color: Colors.red),
-              title: Text('Delete "$name"', style: const TextStyle(color: Colors.red)),
+              title: Text('Удалить "$name"', style: const TextStyle(color: Colors.red)),
               onTap: () { Navigator.pop(context); _confirmDeleteContact(uid, name); },
             ),
 
@@ -515,17 +542,17 @@ class _HomeScreenState extends State<HomeScreen>
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: const Text('Rename contact', style: TextStyle(color: Colors.white)),
+        title: const Text('Переименовать контакт', style: TextStyle(color: Colors.white)),
         content: TextField(
           controller: ctrl, autofocus: true,
           style: const TextStyle(color: Colors.white),
           decoration: const InputDecoration(
-            hintText: 'New name...', hintStyle: TextStyle(color: Colors.white38),
+            hintText: 'Новое имя...', hintStyle: TextStyle(color: Colors.white38),
             filled: true, fillColor: Color(0xFF0A0E27), border: OutlineInputBorder(),
           ),
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
+        actions:[
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('ОТМЕНА')),
           ElevatedButton(
             onPressed: () async {
               final newName = ctrl.text.trim();
@@ -533,9 +560,9 @@ class _HomeScreenState extends State<HomeScreen>
               await _storage.setContactDisplayName(uid, newName);
               Navigator.pop(context);
               setState(() => _chats = _storage.getContactsSortedByActivity());
-              _showSuccess('Renamed to "$newName"');
+              _showSuccess('Переименован в "$newName"');
             },
-            child: const Text('SAVE'),
+            child: const Text('СОХРАНИТЬ'),
           ),
         ],
       ),
@@ -547,21 +574,21 @@ class _HomeScreenState extends State<HomeScreen>
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: const Text('Clear history?', style: TextStyle(color: Colors.white)),
+        title: const Text('Очистить историю?', style: TextStyle(color: Colors.white)),
         content: Text(
-          'All messages with "$name" will be deleted locally.\nThe contact stays in your list.',
+          'Все сообщения с "$name" будут удалены с устройства.\nСам контакт останется в списке.',
           style: const TextStyle(color: Colors.white70),
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
+        actions:[
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('ОТМЕНА')),
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
               await _storage.clearChatHistory(uid);
               setState(() => _chats = _storage.getContactsSortedByActivity());
-              _showSuccess('Chat history cleared');
+              _showSuccess('История очищена');
             },
-            child: const Text('CLEAR', style: TextStyle(color: Colors.orange)),
+            child: const Text('ОЧИСТИТЬ', style: TextStyle(color: Colors.orange)),
           ),
         ],
       ),
@@ -573,18 +600,18 @@ class _HomeScreenState extends State<HomeScreen>
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: const Text('Delete contact?', style: TextStyle(color: Colors.white)),
-        content: Text('Remove "$name" and all chat history?',
+        title: const Text('Удалить контакт?', style: TextStyle(color: Colors.white)),
+        content: Text('Удалить "$name" и всю историю переписки?',
             style: const TextStyle(color: Colors.white70)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
+        actions:[
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('ОТМЕНА')),
           TextButton(
             onPressed: () {
               Navigator.pop(context);
               _storage.removeContact(uid);
               setState(() => _chats = _storage.getContactsSortedByActivity());
             },
-            child: const Text('DELETE', style: TextStyle(color: Colors.red)),
+            child: const Text('УДАЛИТЬ', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -593,7 +620,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _performSearch(String query) {
     setState(() {
-      _searchResults = query.isEmpty ? [] : _storage.searchMessages(query, limit: 50);
+      _searchResults = query.isEmpty ?[] : _storage.searchMessages(query, limit: 50);
     });
   }
 
@@ -602,10 +629,10 @@ class _HomeScreenState extends State<HomeScreen>
   // ============================================================
 
   Widget _buildConnectionIndicator() {
-    Color color = _connectionStatus == 'ONLINE'
+    Color color = _connectionStatus == 'В СЕТИ'
         ? Colors.green
-        : (_connectionStatus == 'CONNECTING...' ? Colors.orange : Colors.red);
-    return Row(mainAxisSize: MainAxisSize.min, children: [
+        : (_connectionStatus == 'ПОДКЛЮЧЕНИЕ...' ? Colors.orange : Colors.red);
+    return Row(mainAxisSize: MainAxisSize.min, children:[
       Icon(Icons.circle, color: color, size: 8),
       const SizedBox(width: 4),
       Text(_connectionStatus, style: TextStyle(fontSize: 10, color: color)),
@@ -615,7 +642,7 @@ class _HomeScreenState extends State<HomeScreen>
   Widget _buildChatList() {
     if (!_isReady) return const Center(child: CircularProgressIndicator(color: Colors.cyan));
     if (_chats.isEmpty) return Center(
-        child: Text("No contacts yet", style: GoogleFonts.orbitron(color: Colors.white38)));
+        child: Text("Нет чатов", style: GoogleFonts.orbitron(color: Colors.white38)));
 
     return ListView.builder(
       itemCount: _chats.length,
@@ -631,7 +658,7 @@ class _HomeScreenState extends State<HomeScreen>
         bool hasAvatar = avatar != null && avatar.isNotEmpty && avatar != 'null';
 
         return ListTile(
-          leading: Stack(children: [
+          leading: Stack(children:[
             CircleAvatar(
               backgroundColor: const Color(0xFF1A1F3C),
               backgroundImage: hasAvatar
@@ -653,7 +680,7 @@ class _HomeScreenState extends State<HomeScreen>
                       child: Text('$unread',
                           style: const TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold)))),
           ]),
-          title: Row(children: [
+          title: Row(children:[
             if (isPinned)
               const Padding(padding: EdgeInsets.only(right: 4),
                   child: Icon(Icons.push_pin, size: 12, color: Colors.amber)),
@@ -666,7 +693,7 @@ class _HomeScreenState extends State<HomeScreen>
                       fontWeight: unread > 0 ? FontWeight.bold : FontWeight.normal)),
             ),
           ]),
-          subtitle: Text(meta['lastMessageText'] ?? "No messages",
+          subtitle: Text(meta['lastMessageText'] ?? "Нет сообщений",
               style: TextStyle(color: unread > 0 ? Colors.white54 : Colors.white24, fontSize: 12),
               maxLines: 1, overflow: TextOverflow.ellipsis),
           onTap: () {
@@ -699,10 +726,10 @@ class _HomeScreenState extends State<HomeScreen>
           title: _isSearching
               ? TextField(controller: _searchController, autofocus: true,
                   style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(hintText: 'Search...', border: InputBorder.none),
+                  decoration: const InputDecoration(hintText: 'Поиск...', border: InputBorder.none),
                   onChanged: _performSearch)
               : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: [
+                  Row(children:[
                     Text("DDChat", style: GoogleFonts.orbitron(fontSize: 18)),
                     if (totalUnread > 0)
                       Container(margin: const EdgeInsets.only(left: 8),
@@ -710,20 +737,20 @@ class _HomeScreenState extends State<HomeScreen>
                           decoration: BoxDecoration(color: Colors.cyan, borderRadius: BorderRadius.circular(10)),
                           child: Text('$totalUnread', style: const TextStyle(color: Colors.black, fontSize: 10))),
                   ]),
-                  Row(children: [
+                  Row(children:[
                     Text("ID: ${_myUid ?? '...'}", style: const TextStyle(fontSize: 10, color: Colors.white54)),
                     const SizedBox(width: 8),
                     _buildConnectionIndicator(),
                   ]),
                 ]),
-          actions: [
+          actions:[
             if (_isSearching)
               IconButton(icon: const Icon(Icons.close),
                   onPressed: () => setState(() { _isSearching = false; _searchController.clear(); }))
             else ...[
               IconButton(icon: const Icon(Icons.search),
                   onPressed: () => setState(() => _isSearching = true)),
-              // Кнопка настроек
+              // Кнопка настроек (СОХРАНЕНА ИЗ НОВОГО КОДА)
               IconButton(
                 icon: const Icon(Icons.settings_outlined, color: Colors.white70),
                 onPressed: () => Navigator.push(context, MaterialPageRoute(
@@ -755,7 +782,7 @@ class _HomeScreenState extends State<HomeScreen>
             border: Border(top: BorderSide(color: Color(0xFF00D9FF), width: 0.5)),
           ),
           child: SafeArea(
-            child: Row(children: [
+            child: Row(children:[
               const Icon(Icons.flash_on, color: Color(0xFF00D9FF), size: 20),
               const SizedBox(width: 8),
               Expanded(
@@ -763,7 +790,7 @@ class _HomeScreenState extends State<HomeScreen>
                   controller: _quickIdController,
                   style: const TextStyle(color: Colors.white, fontSize: 14),
                   decoration: InputDecoration(
-                    hintText: 'Enter ID for quick chat...',
+                    hintText: 'Введи ID для быстрого чата...',
                     hintStyle: const TextStyle(color: Colors.white38, fontSize: 13),
                     filled: true, fillColor: const Color(0xFF0A0E27),
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
