@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -22,153 +24,241 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  bool _autoSavePhotos     = false;
-  bool _notificationsSound = true;
+  bool    _autoSavePhotos      = false;
+  bool    _notificationsSound  = true;
   String? _myPublicKeyFingerprint;
-  bool _loadingFingerprint = false;
+  bool    _loadingFingerprint  = false;
 
   @override
   void initState() {
     super.initState();
-    _autoSavePhotos     = widget.storage.getSetting('auto_save_photos', defaultValue: false);
+    _autoSavePhotos     = widget.storage.getSetting('auto_save_photos',    defaultValue: false);
     _notificationsSound = widget.storage.getSetting('notifications_sound', defaultValue: true);
     _loadFingerprint();
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Identity fingerprint (только МОИ ключи)
+  //
+  // Это отпечаток идентичности УСТРОЙСТВА — хэш обоих моих публичных ключей
+  // (X25519 + Ed25519). Он НЕ меняется при смене собеседника.
+  //
+  // Отличие от getSecurityCode() в ChatScreen:
+  //   • getSecurityCode() — fingerprint конкретной E2E-сессии (оба ключа обоих
+  //     участников), нужен для обнаружения MITM в конкретном чате.
+  //   • _loadFingerprint() здесь — "кто я", можно публично поделиться
+  //     для подтверждения своей идентичности на другом канале.
+  //
+  // Алгоритм: SHA-256( base64decode(myX25519PubKey) | base64decode(myEd25519PubKey) )
+  // → 64 hex-символа → 8 групп по 5: "XXXXX XXXXX XXXXX ..."
+  // ──────────────────────────────────────────────────────────────────────────
   Future<void> _loadFingerprint() async {
+    if (!mounted) return;
     setState(() => _loadingFingerprint = true);
     try {
-      final x25519Key  = await widget.cipher.getMyPublicKey();
-      final ed25519Key = await widget.cipher.getMySigningKey();
-      // Fingerprint = первые 8 байт каждого ключа в hex-формате
-      final combined   = '${x25519Key.substring(0, 8)}${ed25519Key.substring(0, 8)}';
-      // Форматируем как группы по 4: XXXX XXXX XXXX XXXX
-      final cleaned    = combined.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '').toUpperCase();
-      final groups     = <String>[];
-      for (int i = 0; i < cleaned.length && groups.length < 8; i += 4) {
-        final end = (i + 4 < cleaned.length) ? i + 4 : cleaned.length;
-        groups.add(cleaned.substring(i, end));
+      final x25519B64  = await widget.cipher.getMyPublicKey();
+      final ed25519B64 = await widget.cipher.getMySigningKey();
+
+      // Декодируем из base64 → сырые байты, затем SHA-256 конкатенации
+      final x25519Bytes  = base64Decode(x25519B64);
+      final ed25519Bytes = base64Decode(ed25519B64);
+      final combined     = [...x25519Bytes, ...ed25519Bytes];
+      final hash         = sha256.convert(combined);
+      final hex          = hash.toString().toUpperCase();
+
+      // Форматируем: 8 групп по 5 символов (первые 40 из 64)
+      final buffer = StringBuffer();
+      for (int i = 0; i < 8; i++) {
+        if (i > 0) buffer.write(' ');
+        buffer.write(hex.substring(i * 5, i * 5 + 5));
       }
-      setState(() {
-        _myPublicKeyFingerprint = groups.join(' ');
-        _loadingFingerprint     = false;
-      });
+
+      if (mounted) {
+        setState(() {
+          _myPublicKeyFingerprint = buffer.toString();
+          _loadingFingerprint     = false;
+        });
+      }
     } catch (e) {
-      setState(() {
-        _myPublicKeyFingerprint = 'Error loading key';
-        _loadingFingerprint     = false;
-      });
+      if (mounted) {
+        setState(() {
+          _myPublicKeyFingerprint = 'Error loading key';
+          _loadingFingerprint     = false;
+        });
+      }
     }
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Helpers
+  // ──────────────────────────────────────────────────────────────────────────
+
   void _showError(String msg) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), backgroundColor: Colors.red));
+      SnackBar(content: Text(msg), backgroundColor: Colors.red),
+    );
   }
 
   void _showSuccess(String msg) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), backgroundColor: const Color(0xFF1A4A2E)));
+      SnackBar(content: Text(msg), backgroundColor: const Color(0xFF1A4A2E)),
+    );
   }
 
-  // ── Смена пароля ──────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // Смена пароля
+  //
+  // 🔴-1 dependency FIX: exportBothKeys() теперь генерирует свежий случайный
+  // Argon2-нонс при каждом вызове. Старые ключи в Hive перезаписываются
+  // новым шифртекстом с новым нонсом — каждая смена пароля производит
+  // уникальный KDF-производный ключ даже если новый пароль совпадает со старым.
+  // ──────────────────────────────────────────────────────────────────────────
 
   void _showChangePasswordDialog() {
     final oldCtrl     = TextEditingController();
     final newCtrl     = TextEditingController();
     final confirmCtrl = TextEditingController();
+    // Loading state внутри диалога предотвращает двойное нажатие
+    var isLoading = false;
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1F3C),
-        title: Text('Change password', style: GoogleFonts.orbitron(fontSize: 14)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              '⚠️ After changing, all sessions on other devices will need the new password.',
-              style: TextStyle(color: Colors.orange, fontSize: 11),
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1F3C),
+          title: Text('Change password', style: GoogleFonts.orbitron(fontSize: 14)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                '⚠️ After changing, all sessions on other devices will need the new password.',
+                style: TextStyle(color: Colors.orange, fontSize: 11),
+              ),
+              const SizedBox(height: 16),
+              _passField(oldCtrl,     'Current password'),
+              const SizedBox(height: 10),
+              _passField(newCtrl,     'New password'),
+              const SizedBox(height: 10),
+              _passField(confirmCtrl, 'Confirm new password'),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: isLoading ? null : () => Navigator.pop(dialogContext),
+              child: const Text('CANCEL'),
             ),
-            const SizedBox(height: 16),
-            _passField(oldCtrl, 'Current password'),
-            const SizedBox(height: 10),
-            _passField(newCtrl, 'New password'),
-            const SizedBox(height: 10),
-            _passField(confirmCtrl, 'Confirm new password'),
+            ElevatedButton(
+              onPressed: isLoading
+                  ? null
+                  : () async {
+                      // ── Валидация ──────────────────────────────────────
+                      final savedPwd = widget.storage.getSetting('user_password') as String?;
+                      if (oldCtrl.text != savedPwd) {
+                        _showError('Current password is incorrect');
+                        return;
+                      }
+                      if (newCtrl.text.length < 8) {
+                        _showError('New password must be at least 8 characters');
+                        return;
+                      }
+                      if (newCtrl.text != confirmCtrl.text) {
+                        _showError('New passwords do not match');
+                        return;
+                      }
+
+                      // ── Перешифровка ────────────────────────────────────
+                      setDialogState(() => isLoading = true);
+                      try {
+                        // exportBothKeys() генерирует свежий Argon2-нонс —
+                        // новый пароль + новый нонс = новый ключ шифрования.
+                        final newKeys = await widget.cipher.exportBothKeys(newCtrl.text);
+
+                        await widget.storage.saveSetting('user_password',       newCtrl.text);
+                        await widget.storage.saveSetting('encrypted_x25519_key', newKeys['x25519']!);
+                        await widget.storage.saveSetting('encrypted_ed25519_key', newKeys['ed25519']!);
+
+                        if (mounted) Navigator.pop(dialogContext);
+                        _showSuccess('Password changed successfully');
+                      } catch (e) {
+                        setDialogState(() => isLoading = false);
+                        _showError('Error changing password: $e');
+                      }
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.cyan,
+                foregroundColor: Colors.black,
+              ),
+              child: isLoading
+                  ? const SizedBox(
+                      width: 16, height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
+                    )
+                  : const Text('CHANGE'),
+            ),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
-          ElevatedButton(
-            onPressed: () async {
-              final savedPwd = widget.storage.getSetting('user_password');
-              if (oldCtrl.text != savedPwd) {
-                _showError('Current password is incorrect');
-                return;
-              }
-              if (newCtrl.text.length < 8) {
-                _showError('New password must be at least 8 characters');
-                return;
-              }
-              if (newCtrl.text != confirmCtrl.text) {
-                _showError('New passwords do not match');
-                return;
-              }
-              try {
-                // Перешифровываем ключи с новым паролем
-                final newKeys = await widget.cipher.exportBothKeys(newCtrl.text);
-                await widget.storage.saveSetting('user_password', newCtrl.text);
-                await widget.storage.saveSetting('encrypted_x25519_key', newKeys['x25519']!);
-                await widget.storage.saveSetting('encrypted_ed25519_key', newKeys['ed25519']!);
-                Navigator.pop(context);
-                _showSuccess('Password changed successfully');
-              } catch (e) {
-                _showError('Error changing password: $e');
-              }
-            },
-            child: const Text('CHANGE'),
-          ),
-        ],
       ),
     );
   }
 
   Widget _passField(TextEditingController ctrl, String label) {
     return TextField(
-      controller: ctrl,
+      controller:  ctrl,
       obscureText: true,
       style: const TextStyle(color: Colors.white),
       decoration: InputDecoration(
-        labelText: label,
+        labelText:  label,
         labelStyle: const TextStyle(color: Colors.white54),
-        filled: true, fillColor: const Color(0xFF0A0E27),
-        border: const OutlineInputBorder(),
+        filled:     true,
+        fillColor:  const Color(0xFF0A0E27),
+        border:     const OutlineInputBorder(),
       ),
     );
   }
 
-  // ── Fingerprint диалог ────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // Identity fingerprint диалог
+  // ──────────────────────────────────────────────────────────────────────────
 
   void _showFingerprintDialog() {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: Row(children: [
-          const Icon(Icons.fingerprint, color: Colors.cyan, size: 20),
-          const SizedBox(width: 8),
-          Text('Security fingerprint', style: GoogleFonts.orbitron(fontSize: 13)),
-        ]),
+        title: Row(
+          children: [
+            const Icon(Icons.fingerprint, color: Colors.cyan, size: 20),
+            const SizedBox(width: 8),
+            Text('Identity fingerprint', style: GoogleFonts.orbitron(fontSize: 13)),
+          ],
+        ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'Compare this code with your contact in person or via another channel to verify no one is intercepting your messages.',
+              'This is your device identity. Share it via another channel so your contacts can verify they\'re talking to the real you — not an impostor.',
               style: TextStyle(color: Colors.white70, fontSize: 12),
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 8),
+            // Поясняем отличие от session fingerprint
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.cyan.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.cyan.withValues(alpha: 0.2)),
+              ),
+              child: const Text(
+                '💡 To verify a specific chat session (MITM check), use the Security Code in that chat instead.',
+                style: TextStyle(color: Colors.white54, fontSize: 11),
+                textAlign: TextAlign.center,
+              ),
+            ),
+            const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -179,13 +269,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Text(
                 _myPublicKeyFingerprint ?? '...',
                 style: GoogleFonts.sourceCodePro(
-                    color: Colors.cyan, fontSize: 16, letterSpacing: 2),
+                  color: Colors.cyan, fontSize: 15, letterSpacing: 2,
+                ),
                 textAlign: TextAlign.center,
               ),
             ),
             const SizedBox(height: 12),
-            Text('Your ID: ${widget.myUid}',
-                style: const TextStyle(color: Colors.white38, fontSize: 12)),
+            Text(
+              'Your ID: ${widget.myUid}',
+              style: const TextStyle(color: Colors.white38, fontSize: 12),
+            ),
           ],
         ),
         actions: [
@@ -198,16 +291,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: const Text('COPY'),
           ),
           ElevatedButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('CLOSE')),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('CLOSE'),
+          ),
         ],
       ),
     );
   }
 
-  // ============================================================
-  // BUILD
-  // ============================================================
+  // ──────────────────────────────────────────────────────────────────────────
+  // Build
+  // ──────────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -225,61 +319,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.symmetric(vertical: 8),
         children: [
 
-          // ── УВЕДОМЛЕНИЯ ─────────────────────────────────────────────────
+          // ── УВЕДОМЛЕНИЯ ────────────────────────────────────────────────────
           _sectionHeader('NOTIFICATIONS'),
 
           _switchTile(
-            icon: Icons.volume_up_outlined,
-            title: 'Sound',
+            icon:     Icons.volume_up_outlined,
+            title:    'Sound',
             subtitle: 'Play sound for incoming messages',
-            value: _notificationsSound,
+            value:    _notificationsSound,
             onChanged: (val) async {
               setState(() => _notificationsSound = val);
               await widget.storage.saveSetting('notifications_sound', val);
             },
           ),
 
-          // ── МЕДИА ────────────────────────────────────────────────────────
+          // ── МЕДИА ──────────────────────────────────────────────────────────
           _sectionHeader('MEDIA'),
 
           _switchTile(
-            icon: Icons.save_alt_outlined,
-            title: 'Auto-save photos',
+            icon:     Icons.save_alt_outlined,
+            title:    'Auto-save photos',
             subtitle: 'Automatically save incoming photos to gallery',
-            value: _autoSavePhotos,
+            value:    _autoSavePhotos,
             onChanged: (val) async {
               setState(() => _autoSavePhotos = val);
               await widget.storage.saveSetting('auto_save_photos', val);
             },
           ),
 
-          // ── БЕЗОПАСНОСТЬ ─────────────────────────────────────────────────
+          // ── БЕЗОПАСНОСТЬ ───────────────────────────────────────────────────
           _sectionHeader('SECURITY'),
 
           _actionTile(
-            icon: Icons.lock_outline,
-            title: 'Change encryption password',
+            icon:     Icons.lock_outline,
+            title:    'Change encryption password',
             subtitle: 'Re-encrypt your keys with a new password',
-            onTap: _showChangePasswordDialog,
+            onTap:    _showChangePasswordDialog,
           ),
 
           _actionTile(
-            icon: Icons.fingerprint,
+            icon:      Icons.fingerprint,
             iconColor: Colors.cyan,
-            title: 'Security fingerprint',
-            subtitle: _loadingFingerprint
+            title:     'Identity fingerprint',
+            subtitle:  _loadingFingerprint
                 ? 'Loading...'
                 : (_myPublicKeyFingerprint != null
-                    ? '${_myPublicKeyFingerprint!.substring(0, 9)}...'
+                    ? '${_myPublicKeyFingerprint!.substring(0, 11)}...'
                     : 'Tap to view'),
             onTap: _loadingFingerprint ? null : _showFingerprintDialog,
           ),
 
-          // ── О ПРИЛОЖЕНИИ ─────────────────────────────────────────────────
+          // ── О ПРИЛОЖЕНИИ ───────────────────────────────────────────────────
           _sectionHeader('ABOUT'),
 
           _infoTile(
-            icon: Icons.badge_outlined,
+            icon:  Icons.badge_outlined,
             title: 'My ID',
             value: widget.myUid,
             onTap: () {
@@ -289,15 +383,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           _infoTile(
-            icon: Icons.info_outline,
+            icon:  Icons.info_outline,
             title: 'Version',
             value: 'DDChat 1.0.0',
           ),
 
           _infoTile(
-            icon: Icons.security,
+            icon:  Icons.security,
             title: 'Encryption',
-            value: 'X25519 + Ed25519 + AES-256',
+            value: 'X25519 + Ed25519 + ChaCha20',
           ),
 
           const SizedBox(height: 32),
@@ -306,22 +400,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // ── Вспомогательные виджеты ───────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // Вспомогательные виджеты
+  // ──────────────────────────────────────────────────────────────────────────
 
   Widget _sectionHeader(String title) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 6),
-      child: Text(title,
-          style: const TextStyle(
-              color: Colors.cyan, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.5)),
+      child: Text(
+        title,
+        style: const TextStyle(
+          color: Colors.cyan, fontSize: 11,
+          fontWeight: FontWeight.bold, letterSpacing: 1.5,
+        ),
+      ),
     );
   }
 
   Widget _switchTile({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required bool value,
+    required IconData         icon,
+    required String           title,
+    required String           subtitle,
+    required bool             value,
     required ValueChanged<bool> onChanged,
   }) {
     return Container(
@@ -332,9 +432,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       child: SwitchListTile(
         secondary: Icon(icon, color: Colors.white54, size: 22),
-        title: Text(title, style: const TextStyle(color: Colors.white, fontSize: 15)),
-        subtitle: Text(subtitle, style: const TextStyle(color: Colors.white38, fontSize: 12)),
-        value: value,
+        title:     Text(title,    style: const TextStyle(color: Colors.white,   fontSize: 15)),
+        subtitle:  Text(subtitle, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+        value:     value,
         onChanged: onChanged,
         activeColor: Colors.cyan,
       ),
@@ -342,11 +442,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _actionTile({
-    required IconData icon,
-    Color iconColor = Colors.white54,
-    required String title,
-    required String subtitle,
-    VoidCallback? onTap,
+    required IconData  icon,
+    Color              iconColor = Colors.white54,
+    required String    title,
+    required String    subtitle,
+    VoidCallback?      onTap,
   }) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
@@ -355,8 +455,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         borderRadius: BorderRadius.circular(12),
       ),
       child: ListTile(
-        leading: Icon(icon, color: iconColor, size: 22),
-        title: Text(title, style: const TextStyle(color: Colors.white, fontSize: 15)),
+        leading:  Icon(icon, color: iconColor, size: 22),
+        title:    Text(title,    style: const TextStyle(color: Colors.white,   fontSize: 15)),
         subtitle: Text(subtitle, style: const TextStyle(color: Colors.white38, fontSize: 12)),
         trailing: onTap != null
             ? const Icon(Icons.chevron_right, color: Colors.white38, size: 20)
@@ -367,10 +467,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _infoTile({
-    required IconData icon,
-    required String title,
-    required String value,
-    VoidCallback? onTap,
+    required IconData  icon,
+    required String    title,
+    required String    value,
+    VoidCallback?      onTap,
   }) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
@@ -380,7 +480,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       child: ListTile(
         leading: Icon(icon, color: Colors.white54, size: 22),
-        title: Text(title, style: const TextStyle(color: Colors.white, fontSize: 15)),
+        title:   Text(title, style: const TextStyle(color: Colors.white, fontSize: 15)),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
