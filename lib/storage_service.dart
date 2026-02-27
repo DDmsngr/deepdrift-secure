@@ -20,10 +20,9 @@ class StorageService {
   }
 
   // ============================================================
-  // ПРОФИЛЬ И СТАТУСЫ (НОВОЕ)
+  // ПРОФИЛЬ И СТАТУСЫ
   // ============================================================
 
-  // Свой профиль
   Future<void> saveMyProfile({String? nickname, String? avatarUrl}) async {
     if (nickname != null) await saveSetting('my_nickname', nickname);
     if (avatarUrl != null) await saveSetting('my_avatar', avatarUrl);
@@ -36,7 +35,6 @@ class StorageService {
     };
   }
 
-  // Статус контактов (Онлайн/Оффлайн)
   Future<void> setContactStatus(String uid, bool isOnline, int? lastSeen) async {
     await Hive.box(_metadataBox).put('online_$uid', isOnline);
     if (lastSeen != null) {
@@ -52,7 +50,6 @@ class StorageService {
     return Hive.box(_metadataBox).get('last_seen_$uid', defaultValue: 0);
   }
 
-  // Аватары контактов
   Future<void> setContactAvatar(String uid, String avatarUrl) async {
     await Hive.box(_contactsBox).put('avatar_$uid', avatarUrl);
   }
@@ -62,7 +59,7 @@ class StorageService {
   }
 
   // ============================================================
-  // СООБЩЕНИЯ 
+  // СООБЩЕНИЯ
   // ============================================================
 
   Future<void> saveMessage(String chatWith, Map<String, dynamic> msg) async {
@@ -140,7 +137,7 @@ class StorageService {
   }
 
   // ============================================================
-  // РЕАКЦИИ 
+  // РЕАКЦИИ
   // ============================================================
 
   Map<String, Set<String>> loadReactions(String chatWith) {
@@ -201,14 +198,20 @@ class StorageService {
     return raw.map((e) => e.toString()).toList();
   }
 
+  /// Закреплённые вверху, затем по времени последнего сообщения
   List<String> getContactsSortedByActivity() {
     final contacts = getContacts();
     final metadata = Hive.box(_metadataBox);
 
     contacts.sort((a, b) {
+      final aPinned = isContactPinned(a);
+      final bPinned = isContactPinned(b);
+
+      if (aPinned && !bPinned) return -1;
+      if (!aPinned && bPinned) return 1;
+
       final aData = metadata.get('chat_$a');
       final bData = metadata.get('chat_$b');
-
       if (aData == null && bData == null) return 0;
       if (aData == null) return 1;
       if (bData == null) return -1;
@@ -227,6 +230,8 @@ class StorageService {
     contacts.remove(uid);
     await box.put('list', contacts);
     await _deleteChatMetadata(uid);
+    await Hive.box(_metadataBox).delete('pinned_$uid');
+    await Hive.box(_metadataBox).delete('muted_$uid');
   }
 
   Future<void> setContactDisplayName(String uid, String displayName) async {
@@ -236,6 +241,36 @@ class StorageService {
   String getContactDisplayName(String uid) {
     return Hive.box(_contactsBox).get('name_$uid', defaultValue: uid);
   }
+
+  // ── Закрепить / открепить ────────────────────────────────────────────────
+
+  Future<void> setContactPinned(String uid, bool pinned) async {
+    await Hive.box(_metadataBox).put('pinned_$uid', pinned);
+  }
+
+  bool isContactPinned(String uid) {
+    return Hive.box(_metadataBox).get('pinned_$uid', defaultValue: false);
+  }
+
+  // ── Заглушить / включить ─────────────────────────────────────────────────
+
+  Future<void> setContactMuted(String uid, bool muted) async {
+    await Hive.box(_metadataBox).put('muted_$uid', muted);
+  }
+
+  bool isContactMuted(String uid) {
+    return Hive.box(_metadataBox).get('muted_$uid', defaultValue: false);
+  }
+
+  // ── Очистить историю (контакт остаётся в списке) ─────────────────────────
+
+  Future<void> clearChatHistory(String chatWith) async {
+    await Hive.box(_msgBox).delete(chatWith);
+    await Hive.box(_reactionsBox).delete(chatWith);
+    await Hive.box(_metadataBox).delete('chat_$chatWith');
+  }
+
+  // ── Непрочитанные ─────────────────────────────────────────────────────────
 
   int getUnreadCount(String chatWith) {
     List history = getHistory(chatWith);
@@ -313,7 +348,8 @@ class StorageService {
     await Hive.box(_settingsBox).delete(key);
   }
 
-  // КЕШИРОВАНИЕ ПУБЛИЧНЫХ КЛЮЧЕЙ
+  // ── Кэш публичных ключей ─────────────────────────────────────────────────
+
   Future<void> cachePublicKeys(String uid, String x25519Key, String ed25519Key) async {
     await saveSetting('cached_x25519_$uid', x25519Key);
     await saveSetting('cached_ed25519_$uid', ed25519Key);
@@ -322,7 +358,7 @@ class StorageService {
 
   String? getCachedX25519Key(String uid) => getSetting('cached_x25519_$uid');
   String? getCachedEd25519Key(String uid) => getSetting('cached_ed25519_$uid');
-  
+
   bool hasCachedKeys(String uid) {
     return getCachedX25519Key(uid) != null && getCachedEd25519Key(uid) != null;
   }
@@ -348,7 +384,8 @@ class StorageService {
       List history = getHistory(chatWith.toString());
       for (var msg in history) {
         if (results.length >= limit) break;
-        if (msg is Map && msg['text'] != null && msg['text'].toString().toLowerCase().contains(lowerQuery)) {
+        if (msg is Map && msg['text'] != null &&
+            msg['text'].toString().toLowerCase().contains(lowerQuery)) {
           results.add({...Map<String, dynamic>.from(msg), 'chatWith': chatWith});
         }
       }
@@ -368,8 +405,11 @@ class StorageService {
     for (var chatWith in box.keys) {
       List history = getHistory(chatWith.toString()).whereType<Map>().toList();
       history.removeWhere((msg) => _parseTime(msg['time']).isBefore(cutoffDate));
-      if (history.isEmpty) await box.delete(chatWith);
-      else await box.put(chatWith, history);
+      if (history.isEmpty) {
+        await box.delete(chatWith);
+      } else {
+        await box.put(chatWith, history);
+      }
     }
   }
 
