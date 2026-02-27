@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:dio/dio.dart';
 import 'storage_service.dart';
@@ -13,51 +14,66 @@ class SocketService {
   factory SocketService() => _instance;
   SocketService._internal();
 
-  static const String PROTOCOL_VERSION = "3.0";
-  static const int MAX_RECONNECT_ATTEMPTS = 50;
-  static const Duration RECONNECT_BASE_DELAY = Duration(seconds: 2);
-  static const Duration PING_INTERVAL = Duration(seconds: 10);
-  static const Duration CONNECTION_TIMEOUT = Duration(seconds: 5);
+  static const String   PROTOCOL_VERSION      = '3.0';
+  static const int      MAX_RECONNECT_ATTEMPTS = 50;
+  static const Duration RECONNECT_BASE_DELAY   = Duration(seconds: 2);
+  static const Duration PING_INTERVAL          = Duration(seconds: 10);
+  static const Duration CONNECTION_TIMEOUT     = Duration(seconds: 5);
+  // Если ACK не пришёл за 30 секунд — считаем доставку неуспешной и
+  // освобождаем Completer, чтобы не было утечки памяти (🟡-6 FIX).
+  static const Duration PENDING_MSG_TIMEOUT    = Duration(seconds: 30);
+
   static const String HTTP_UPLOAD_URL = 'https://deepdrift-backend.onrender.com/upload';
 
   WebSocketChannel? _channel;
-  final _messageStream = StreamController<Map<String, dynamic>>.broadcast();
+  final _messageStream           = StreamController<Map<String, dynamic>>.broadcast();
   final _uploadProgressController = StreamController<double>.broadcast();
 
-  Stream<double> get uploadProgress => _uploadProgressController.stream;
-  Stream<Map<String, dynamic>> get messages => _messageStream.stream;
+  Stream<double>                  get uploadProgress => _uploadProgressController.stream;
+  Stream<Map<String, dynamic>>    get messages       => _messageStream.stream;
 
-  late SecureCipher _cipher;
+  // 🔴 Бонус-фикс: был `late SecureCipher _cipher` — LateInitializationError
+  // если public_key_response придёт до вызова init(). Теперь nullable + guard.
+  SecureCipher? _cipher;
   final _storage = StorageService();
   final Dio _dio = Dio();
 
-  bool _isConnected = false;
-  bool _isConnecting = false;
+  bool    _isConnected  = false;
+  bool    _isConnecting = false;
   String? _url;
   String? _myUid;
   String? _authToken;
 
-  Timer? _reconnectTimer;
-  Timer? _pingTimer;
-  Timer? _connectionTimeoutTimer;
+  Timer?    _reconnectTimer;
+  Timer?    _pingTimer;
+  Timer?    _connectionTimeoutTimer;
 
-  int _reconnectAttempts = 0;
+  int       _reconnectAttempts = 0;
   DateTime? _lastPongTime;
 
-  final _pendingMessages = <String, Completer<bool>>{};
+  // 🟡-6 FIX: Map хранит пару (Completer, Timer) — таймер отменяет
+  // незавершённый Completer при обрыве до получения server_ack.
+  final _pendingMessages = <String, _PendingAck>{};
+
   bool _isInBackground = false;
 
-  // ── БАГ 2 FIX: очередь запросов оффлайн-сообщений ───────────────────────
-  // Если requestOfflineMessages вызывается до установки соединения,
-  // запрос кладётся в очередь и отправляется сразу после uid_assigned.
+  // Очередь запросов офлайн-сообщений, накопившихся до uid_assigned.
   final _pendingOfflineRequests = <String>{};
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Инициализация
+  // ──────────────────────────────────────────────────────────────────────────
 
   void init(SecureCipher cipher) {
     _cipher = cipher;
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // App lifecycle
+  // ──────────────────────────────────────────────────────────────────────────
+
   void onAppResumed() {
-    print("🔄 App resumed from background");
+    debugPrint('🔄 App resumed from background');
     _isInBackground = false;
     if (!_isConnected && _url != null && _myUid != null) {
       _reconnectAttempts = 0;
@@ -66,27 +82,33 @@ class SocketService {
   }
 
   void onAppPaused() {
-    print("⏸️ App paused (background)");
+    debugPrint('⏸️ App paused (background)');
     _isInBackground = true;
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Подключение
+  // ──────────────────────────────────────────────────────────────────────────
+
   void connect(String url, String myUid, {String? authToken}) {
-    _url = url;
-    _myUid = myUid;
+    _url       = url;
+    _myUid     = myUid;
     _authToken = authToken;
     _attemptConnection();
   }
 
-  // ─── ЗАГРУЗКА ФАЙЛОВ ─────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // Загрузка файлов (незашифрованная — для случаев без E2E, например аватары)
+  // ──────────────────────────────────────────────────────────────────────────
 
   Future<String?> uploadFile(File file) async {
     try {
-      String fileName = file.path.split('/').last;
-      FormData formData = FormData.fromMap({
-        "file": await MultipartFile.fromFile(file.path, filename: fileName),
+      final fileName = file.path.split('/').last;
+      final formData = FormData.fromMap({
+        'file': await MultipartFile.fromFile(file.path, filename: fileName),
       });
       _uploadProgressController.add(0.01);
-      var response = await _dio.post(
+      final response = await _dio.post(
         HTTP_UPLOAD_URL,
         data: formData,
         onSendProgress: (sent, total) {
@@ -95,22 +117,26 @@ class SocketService {
       );
       if (response.statusCode == 200 && response.data['status'] == 'success') {
         _uploadProgressController.add(1.0);
-        Future.delayed(const Duration(milliseconds: 500),
-            () => _uploadProgressController.add(0.0));
-        return response.data['file_id'];
+        Future.delayed(
+          const Duration(milliseconds: 500),
+          () => _uploadProgressController.add(0.0),
+        );
+        return response.data['file_id'] as String?;
       }
     } catch (e) {
-      print("Upload Error: $e");
+      debugPrint('Upload Error: $e');
       _uploadProgressController.add(0.0);
     }
     return null;
   }
 
-  // ─── УПРАВЛЕНИЕ СОЕДИНЕНИЕМ ───────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // Управление соединением
+  // ──────────────────────────────────────────────────────────────────────────
 
   Duration _getReconnectDelay() {
-    final base = RECONNECT_BASE_DELAY.inSeconds;
-    final exp  = min(base * pow(2, _reconnectAttempts), 60.0);
+    final base   = RECONNECT_BASE_DELAY.inSeconds;
+    final exp    = min(base * pow(2, _reconnectAttempts), 60.0);
     final jitter = Random().nextDouble() * 0.3 * exp;
     return Duration(seconds: (exp + jitter).toInt());
   }
@@ -122,7 +148,7 @@ class SocketService {
     _connectionTimeoutTimer?.cancel();
     _connectionTimeoutTimer = Timer(CONNECTION_TIMEOUT, () {
       if (!_isConnected && _isConnecting) {
-        print("⏱️ Connection timeout");
+        debugPrint('⏱️ Connection timeout');
         _isConnecting = false;
         _channel?.sink.close();
         _scheduleReconnect();
@@ -131,14 +157,14 @@ class SocketService {
 
     try {
       _channel?.sink.close();
-      print("🔌 Connecting to $_url...");
+      debugPrint('🔌 Connecting to $_url...');
       _channel = WebSocketChannel.connect(Uri.parse(_url!));
 
       _sendRaw({
-        "type":             "init",
-        "my_uid":           _myUid,
-        "protocol_version": PROTOCOL_VERSION,
-        "auth_token":       _authToken,
+        'type':             'init',
+        'my_uid':           _myUid,
+        'protocol_version': PROTOCOL_VERSION,
+        'auth_token':       _authToken,
       });
 
       _channel!.stream.listen(
@@ -147,7 +173,7 @@ class SocketService {
         onError: _handleError,
       );
     } catch (e) {
-      print("❌ Connection error: $e");
+      debugPrint('❌ Connection error: $e');
       _isConnecting = false;
       _scheduleReconnect();
     }
@@ -155,69 +181,90 @@ class SocketService {
 
   void _handleIncomingMessage(dynamic raw) async {
     try {
-      final data    = jsonDecode(raw);
-      final msgType = data['type'];
+      final data    = jsonDecode(raw as String) as Map<String, dynamic>;
+      final msgType = data['type'] as String?;
 
+      // ── uid_assigned: соединение установлено ─────────────────────────────
       if (msgType == 'uid_assigned') {
         _connectionTimeoutTimer?.cancel();
-        _isConnected      = true;
-        _isConnecting     = false;
+        _isConnected       = true;
+        _isConnecting      = false;
         _reconnectAttempts = 0;
-        print("✅ Connected successfully");
+        debugPrint('✅ Connected successfully');
 
         await _registerFcmToken();
         _startHeartbeat();
 
-        _messageStream.add({"type": "connection_status", "connected": true});
+        _messageStream.add({'type': 'connection_status', 'connected': true});
         _messageStream.add(data);
 
-        // ── БАГ 2 FIX: отправляем накопившиеся запросы оффлайн-сообщений ──
-        // Они были сохранены пока соединение ещё не установилось.
+        // Сбрасываем очередь офлайн-запросов
         if (_pendingOfflineRequests.isNotEmpty) {
-          print("📬 Flushing ${_pendingOfflineRequests.length} pending offline requests");
+          debugPrint('📬 Flushing ${_pendingOfflineRequests.length} pending offline requests');
           for (final uid in _pendingOfflineRequests) {
-            _sendRaw({
-              'type':       'request_offline_messages',
-              'target_uid': uid,
-            });
+            _sendRaw({'type': 'request_offline_messages', 'target_uid': uid});
           }
           _pendingOfflineRequests.clear();
         }
         return;
       }
 
+      // ── server_ack: подтверждение доставки ───────────────────────────────
       if (msgType == 'server_ack') {
-        final messageId = data['id'];
-        _pendingMessages[messageId]?.complete(data['delivered_online'] ?? false);
-        _pendingMessages.remove(messageId);
+        final messageId = data['id'] as String?;
+        if (messageId != null) {
+          final pending = _pendingMessages.remove(messageId);
+          if (pending != null) {
+            pending.timeoutTimer.cancel();
+            if (!pending.completer.isCompleted) {
+              pending.completer.complete(data['delivered_online'] as bool? ?? false);
+            }
+          }
+        }
         return;
       }
 
+      // ── pong: heartbeat ──────────────────────────────────────────────────
       if (msgType == 'pong') {
         _lastPongTime = DateTime.now();
         return;
       }
 
+      // ── profile_response: кэшируем профиль контакта ──────────────────────
       if (msgType == 'profile_response') {
-        await _storage.setContactDisplayName(data['uid'], data['nickname']);
+        await _storage.setContactDisplayName(
+          data['uid'] as String,
+          data['nickname'] as String? ?? '',
+        );
         if (data['avatar_id'] != null) {
-          await _storage.setContactAvatar(data['uid'], data['avatar_id']);
+          await _storage.setContactAvatar(data['uid'] as String, data['avatar_id'] as String);
         }
         await _storage.setContactStatus(
-            data['uid'], data['status'] == 'online', data['last_seen']);
+          data['uid'] as String,
+          data['status'] == 'online',
+          data['last_seen'] as int?,
+        );
       }
 
+      // ── user_status: обновляем online/last_seen ───────────────────────────
       if (msgType == 'user_status') {
         await _storage.setContactStatus(
-            data['uid'], data['status'] == 'online', data['last_seen']);
+          data['uid'] as String,
+          data['status'] == 'online',
+          data['last_seen'] as int?,
+        );
       }
 
+      // ── public_key_response: устанавливаем shared secret ─────────────────
       if (msgType == 'public_key_response') {
-        final targetUid  = data['target_uid'];
-        final x25519Key  = data['x25519_key'];
-        final ed25519Key = data['ed25519_key'];
-        if (targetUid != null && x25519Key != null && !data.containsKey('error')) {
-          await _cipher.establishSharedSecret(
+        final targetUid  = data['target_uid']  as String?;
+        final x25519Key  = data['x25519_key']  as String?;
+        final ed25519Key = data['ed25519_key'] as String?;
+
+        // Бонус-фикс: guard на null — _cipher может быть не инициализирован
+        if (_cipher != null && targetUid != null && x25519Key != null &&
+            !data.containsKey('error')) {
+          await _cipher!.establishSharedSecret(
             targetUid,
             x25519Key,
             theirSignKeyB64: ed25519Key,
@@ -227,68 +274,77 @@ class SocketService {
 
       _messageStream.add(data);
     } catch (e) {
-      print("Socket parse error: $e");
+      debugPrint('Socket parse error: $e');
     }
   }
 
-  // ── БАГ 3 FIX: registerFcmToken теперь публичный метод ──────────────────
-  // main.dart вызывает его при onTokenRefresh без необходимости пересоздавать
-  // всё соединение.
+  // ──────────────────────────────────────────────────────────────────────────
+  // FCM
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /// Регистрирует FCM-токен на сервере. Публичный — вызывается из main.dart
+  /// при onTokenRefresh без пересоздания соединения.
   Future<void> registerFcmToken(String token) async {
     try {
       await _storage.saveSetting('fcm_token', token);
       if (_isConnected) {
-        send({"type": "register_fcm_token", "fcm_token": token});
-        print("📱 FCM token (re-)registered: ${token.substring(0, 10)}...");
+        send({'type': 'register_fcm_token', 'fcm_token': token});
+        debugPrint('📱 FCM token (re-)registered: ${token.substring(0, 10)}...');
       }
       // Если не подключены — токен сохранён в storage,
-      // _registerFcmToken() заберёт его при следующем uid_assigned
+      // _registerFcmToken() отправит его при следующем uid_assigned.
     } catch (e) {
-      print("FCM token registration error: $e");
+      debugPrint('FCM token registration error: $e');
     }
   }
 
   Future<void> _registerFcmToken() async {
     try {
-      // Сначала пробуем взять сохранённый токен (быстро, не ждём Firebase)
+      // Сначала пробуем сохранённый токен — не ждём Firebase
       String? token = _storage.getSetting('fcm_token');
-
-      // Если нет — запрашиваем у Firebase
       token ??= await FirebaseMessaging.instance.getToken();
-
       if (token != null) {
-        send({"type": "register_fcm_token", "fcm_token": token});
+        send({'type': 'register_fcm_token', 'fcm_token': token});
         await _storage.saveSetting('fcm_token', token);
-        print("📱 FCM token registered on connect");
+        debugPrint('📱 FCM token registered on connect');
       }
     } catch (e) {
-      print("FCM error: $e");
+      debugPrint('FCM error: $e');
     }
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Disconnect / Reconnect / Heartbeat
+  // ──────────────────────────────────────────────────────────────────────────
+
   void _handleDisconnect() {
-    print("🔌 WebSocket closed");
+    debugPrint('🔌 WebSocket closed');
     _isConnected  = false;
     _isConnecting = false;
     _pingTimer?.cancel();
     _connectionTimeoutTimer?.cancel();
-    _messageStream.add({"type": "connection_status", "connected": false});
+
+    // 🟡-6 FIX: при дисконнекте завершаем все висящие Completer'ы как false,
+    // чтобы не держать ссылки на объекты вечно.
+    _flushPendingMessages(deliveredOnline: false);
+
+    _messageStream.add({'type': 'connection_status', 'connected': false});
     if (!_isInBackground) _scheduleReconnect();
   }
 
-  void _handleError(error) {
-    print("❌ WebSocket error: $error");
+  void _handleError(Object error) {
+    debugPrint('❌ WebSocket error: $error');
     _handleDisconnect();
   }
 
   void _scheduleReconnect() {
     if (_reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      _messageStream.add({"type": "connection_failed"});
+      _messageStream.add({'type': 'connection_failed'});
       return;
     }
     _reconnectTimer?.cancel();
     final delay = _getReconnectDelay();
-    print("🔄 Reconnecting in ${delay.inSeconds}s (attempt $_reconnectAttempts)...");
+    debugPrint('🔄 Reconnecting in ${delay.inSeconds}s (attempt $_reconnectAttempts)...');
     _reconnectTimer = Timer(delay, () {
       _reconnectAttempts++;
       _attemptConnection();
@@ -299,25 +355,39 @@ class SocketService {
     _pingTimer?.cancel();
     _lastPongTime = DateTime.now();
     _pingTimer = Timer.periodic(PING_INTERVAL, (_) {
-      if (_isConnected) {
-        if (_lastPongTime != null) {
-          final silence = DateTime.now().difference(_lastPongTime!);
-          if (silence > PING_INTERVAL * 2) {
-            print("⚠️ No pong received, reconnecting...");
-            _handleDisconnect();
-            return;
-          }
+      if (!_isConnected) return;
+      if (_lastPongTime != null) {
+        final silence = DateTime.now().difference(_lastPongTime!);
+        if (silence > PING_INTERVAL * 2) {
+          debugPrint('⚠️ No pong received, reconnecting...');
+          _handleDisconnect();
+          return;
         }
-        send({"type": "ping"});
       }
+      send({'type': 'ping'});
     });
   }
+
+  // 🟡-6 FIX: завершает все незакрытые Completer'ы и отменяет их таймеры.
+  void _flushPendingMessages({required bool deliveredOnline}) {
+    for (final entry in _pendingMessages.values) {
+      entry.timeoutTimer.cancel();
+      if (!entry.completer.isCompleted) {
+        entry.completer.complete(deliveredOnline);
+      }
+    }
+    _pendingMessages.clear();
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Отправка
+  // ──────────────────────────────────────────────────────────────────────────
 
   void _sendRaw(Map<String, dynamic> data) {
     try {
       _channel?.sink.add(jsonEncode(data));
     } catch (e) {
-      print("Send error: $e");
+      debugPrint('Send error: $e');
     }
   }
 
@@ -326,112 +396,137 @@ class SocketService {
     _sendRaw(data);
   }
 
-  // ─── API МЕТОДЫ ──────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // API методы
+  // ──────────────────────────────────────────────────────────────────────────
 
   void updateProfile(String nickname, String? avatarId) {
-    send({"type": "update_profile", "nickname": nickname, "avatar_id": avatarId});
+    send({'type': 'update_profile', 'nickname': nickname, 'avatar_id': avatarId});
   }
 
   void getProfile(String targetUid) {
-    send({"type": "get_profile", "target_uid": targetUid});
+    send({'type': 'get_profile', 'target_uid': targetUid});
   }
 
   void checkStatuses(List<String> uids) {
     if (uids.isEmpty) return;
-    send({"type": "check_statuses", "uids": uids});
+    send({'type': 'check_statuses', 'uids': uids});
   }
 
-  // ── БАГ 1 + БАГ 2 FIX ────────────────────────────────────────────────────
-  // requestOfflineMessages больше не теряет запрос если соединение ещё не готово.
-  // Запрос кладётся в очередь → отправится сразу после uid_assigned.
-  // Вызывать ТОЛЬКО когда ключи шифрования уже загружены (из chat_screen после
-  // успешного tryLoadCachedKeys / establishSharedSecret).
+  /// Запрашивает офлайн-очередь сообщений от [fromUid].
+  /// Если соединение ещё не установлено — запрос ставится в очередь
+  /// и отправляется автоматически после uid_assigned.
   void requestOfflineMessages(String fromUid) {
     if (_isConnected) {
-      _sendRaw({
-        'type':       'request_offline_messages',
-        'target_uid': fromUid,
-      });
-      print('📬 Requested offline messages from $fromUid');
+      _sendRaw({'type': 'request_offline_messages', 'target_uid': fromUid});
+      debugPrint('📬 Requested offline messages from $fromUid');
     } else {
-      // Сохраняем в очередь — отправится после uid_assigned
       _pendingOfflineRequests.add(fromUid);
-      print('📋 Queued offline request for $fromUid (not connected yet)');
+      debugPrint('📋 Queued offline request for $fromUid (not connected yet)');
     }
   }
 
   void registerPublicKeys(String xKey, String eKey) {
     send({
-      "type":        "register_public_key",
-      "x25519_key":  xKey,
-      "ed25519_key": eKey,
+      'type':        'register_public_key',
+      'x25519_key':  xKey,
+      'ed25519_key': eKey,
     });
   }
 
   void requestPublicKey(String targetUid) {
-    send({"type": "request_public_key", "target_uid": targetUid});
+    send({'type': 'request_public_key', 'target_uid': targetUid});
   }
 
-  void sendMessage(
+  /// Отправляет зашифрованное сообщение.
+  ///
+  /// Возвращает [Future<bool>] — true если получатель был онлайн и сервер
+  /// подтвердил доставку через server_ack. Completer автоматически
+  /// завершается с false через [PENDING_MSG_TIMEOUT], чтобы не было утечки.
+  ///
+  /// [forwardedFrom] — 🟡-1 FIX: отображаемое имя источника при пересылке.
+  Future<bool> sendMessage(
     String targetUid,
     String encText,
     String sign,
     String msgId, {
     String? replyToId,
-    String messageType = 'text',
+    String  messageType    = 'text',
     String? mediaData,
     String? fileName,
-    int? fileSize,
+    int?    fileSize,
     String? mimeType,
+    String? forwardedFrom, // 🟡-1 FIX
   }) {
-    send({
-      "type":           "message",
-      "id":             msgId,
-      "target_uid":     targetUid,
-      "encrypted_text": encText,
-      "signature":      sign,
-      "replyToId":      replyToId,
-      "messageType":    messageType,
-      "mediaData":      mediaData,
-      "fileName":       fileName,
-      "fileSize":       fileSize,
-      "mimeType":       mimeType,
+    // 🟡-6 FIX: создаём Completer + таймаут в 30 секунд
+    final completer = Completer<bool>();
+    final timeoutTimer = Timer(PENDING_MSG_TIMEOUT, () {
+      if (_pendingMessages.containsKey(msgId)) {
+        _pendingMessages.remove(msgId);
+        if (!completer.isCompleted) completer.complete(false);
+        debugPrint('⏱️ ACK timeout for message $msgId');
+      }
     });
+    _pendingMessages[msgId] = _PendingAck(completer, timeoutTimer);
+
+    send({
+      'type':           'message',
+      'id':             msgId,
+      'target_uid':     targetUid,
+      'encrypted_text': encText,
+      'signature':      sign,
+      'replyToId':      replyToId,
+      'messageType':    messageType,
+      'mediaData':      mediaData,
+      'fileName':       fileName,
+      'fileSize':       fileSize,
+      'mimeType':       mimeType,
+      if (forwardedFrom != null) 'forwarded_from': forwardedFrom, // 🟡-1 FIX
+    });
+
+    return completer.future;
   }
 
   void sendTypingIndicator(String targetUid, bool isTyping) {
-    send({"type": "typing_indicator", "target_uid": targetUid, "typing": isTyping});
+    send({'type': 'typing_indicator', 'target_uid': targetUid, 'typing': isTyping});
   }
 
   void sendDeleteMessage(String targetUid, String msgId) {
-    send({"type": "delete_message", "target_uid": targetUid, "message_id": msgId});
+    send({'type': 'delete_message', 'target_uid': targetUid, 'message_id': msgId});
   }
 
   void sendEditMessage(
-      String targetUid, String msgId, String newText, String newSign) {
+    String targetUid,
+    String msgId,
+    String newEncryptedText,
+    String newSignature,
+  ) {
     send({
-      "type":               "edit_message",
-      "target_uid":         targetUid,
-      "message_id":         msgId,
-      "new_encrypted_text": newText,
-      "new_signature":      newSign,
+      'type':               'edit_message',
+      'target_uid':         targetUid,
+      'message_id':         msgId,
+      'new_encrypted_text': newEncryptedText,
+      'new_signature':      newSignature,
     });
   }
 
-  void sendReaction(
-      String targetUid, String msgId, String emoji, String action) {
+  void sendReaction(String targetUid, String msgId, String emoji, String action) {
     send({
-      "type":       "message_reaction",
-      "target_uid": targetUid,
-      "message_id": msgId,
-      "emoji":      emoji,
-      "action":     action,
+      'type':       'message_reaction',
+      'target_uid': targetUid,
+      'message_id': msgId,
+      'emoji':      emoji,
+      'action':     action,
     });
   }
 
   void sendReadReceipt(String targetUid, String msgId) {
-    send({"type": "read_receipt", "target_uid": targetUid, "message_id": msgId});
+    send({'type': 'read_receipt', 'target_uid': targetUid, 'message_id': msgId});
   }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Публичные геттеры
+  // ──────────────────────────────────────────────────────────────────────────
 
   bool get isConnected       => _isConnected;
   int  get reconnectAttempts => _reconnectAttempts;
@@ -441,4 +536,29 @@ class SocketService {
     _channel?.sink.close();
     _attemptConnection();
   }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Dispose (вызывать при завершении работы приложения)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  void dispose() {
+    _flushPendingMessages(deliveredOnline: false);
+    _reconnectTimer?.cancel();
+    _pingTimer?.cancel();
+    _connectionTimeoutTimer?.cancel();
+    _channel?.sink.close();
+    _messageStream.close();
+    _uploadProgressController.close();
+  }
+}
+
+// ─── Вспомогательный класс для pending ACK ───────────────────────────────────
+
+/// Хранит Completer и таймаут для одного неподтверждённого сообщения.
+/// При получении server_ack или дисконнекте — таймаут отменяется,
+/// Completer завершается.
+class _PendingAck {
+  final Completer<bool> completer;
+  final Timer           timeoutTimer;
+  const _PendingAck(this.completer, this.timeoutTimer);
 }
