@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -60,9 +59,6 @@ class _HomeScreenState extends State<HomeScreen>
     WidgetsBinding.instance.addObserver(this);
 
     // 🟡-2 FIX: регистрируем callback навигации по нотификациям.
-    // NotificationService вызовет _openChatWithUid() при тапе на уведомление.
-    // Если при запуске уже есть _pendingUid (cold start), callback выполнится
-    // немедленно через addPostFrameCallback — после завершения initState.
     NotificationService().setOpenChatCallback(_openChatWithUid);
 
     _setup();
@@ -96,23 +92,15 @@ class _HomeScreenState extends State<HomeScreen>
   // 🟡-2 FIX: Навигация к чату по uid (из нотификации)
   // ──────────────────────────────────────────────────────────────────────────
 
-  /// Открывает чат с [fromUid]. Вызывается NotificationService при тапе
-  /// на push-уведомление во всех трёх сценариях: foreground, background, cold start.
-  ///
-  /// Если пользователь ещё не авторизован (_myUid == null) или приложение
-  /// ещё не готово (_isReady == false) — uid добавляется как контакт и чат
-  /// откроется когда _setup() завершится.
   void _openChatWithUid(String fromUid) {
     if (!mounted) return;
 
-    // Добавляем контакт если ещё нет (может прийти уведомление от нового пользователя)
     if (!_chats.contains(fromUid)) {
       _socket.getProfile(fromUid);
       _storage.addContact(fromUid, displayName: fromUid);
       if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
     }
 
-    // Если приложение ещё инициализируется — ждём следующего кадра
     if (!_isReady || _myUid == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _openChatWithUid(fromUid));
       return;
@@ -231,7 +219,7 @@ class _HomeScreenState extends State<HomeScreen>
       final ed25519Key = await _cipher.getMySigningKey();
       _socket.registerPublicKeys(x25519Key, ed25519Key);
     } catch (e) {
-      debugPrint('Failed to register public keys: $e'); // 🟢-3 FIX
+      debugPrint('Failed to register public keys: $e'); 
     }
   }
 
@@ -256,14 +244,13 @@ class _HomeScreenState extends State<HomeScreen>
         'type':     data['messageType'] ?? 'text',
         'fileName': data['fileName'],
         'fileSize': data['fileSize'],
-        // Подпись не верифицируем в тихом режиме — сделает ChatScreen при открытии
-        'signatureStatus': SignatureStatus.unknown.index,
+        'signatureStatus': 0, // SignatureStatus.unknown.index
       };
       await _storage.saveMessage(senderUid, msg);
       _socket.sendReadReceipt(senderUid, msgId);
       if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
     } catch (e) {
-      debugPrint('Quiet save error: $e'); // 🟢-3 FIX
+      debugPrint('Quiet save error: $e'); 
     }
   }
 
@@ -388,8 +375,10 @@ class _HomeScreenState extends State<HomeScreen>
                     avatarUrl: currentAvatar,
                   );
                   _socket.updateProfile(nameCtrl.text.trim(), currentAvatar);
-                  Navigator.pop(context);
-                  setState(() {});
+                  if (context.mounted) {
+                    Navigator.pop(context);
+                    setState(() {});
+                  }
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.cyan,
@@ -457,8 +446,10 @@ class _HomeScreenState extends State<HomeScreen>
               await _storage.saveSetting('user_salt', salt);
               await _storage.saveSetting('encrypted_x25519_key', keys['x25519']!);
               await _storage.saveSetting('encrypted_ed25519_key', keys['ed25519']!);
-              Navigator.pop(context);
-              _autoConnect();
+              if (context.mounted) {
+                Navigator.pop(context);
+                _autoConnect();
+              }
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.cyan, foregroundColor: Colors.black,
@@ -508,8 +499,10 @@ class _HomeScreenState extends State<HomeScreen>
             onPressed: () async {
               if (_idController.text.length == 6) {
                 await _idService.saveUID(_idController.text);
-                Navigator.pop(context);
-                _setup();
+                if (context.mounted) {
+                  Navigator.pop(context);
+                  _setup();
+                }
               } else {
                 _showError('Номер должен состоять ровно из 6 цифр');
               }
@@ -570,8 +563,10 @@ class _HomeScreenState extends State<HomeScreen>
                   targetC.text,
                   displayName: nameC.text.trim().isNotEmpty ? nameC.text.trim() : null,
                 );
-                Navigator.pop(context);
-                setState(() => _chats = _storage.getContactsSortedByActivity());
+                if (context.mounted) {
+                  Navigator.pop(context);
+                  setState(() => _chats = _storage.getContactsSortedByActivity());
+                }
               } else {
                 _showError('Неверный ID');
               }
@@ -628,7 +623,6 @@ class _HomeScreenState extends State<HomeScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Шапка
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
               child: Row(
@@ -658,7 +652,6 @@ class _HomeScreenState extends State<HomeScreen>
             ),
             const Divider(color: Colors.white12, height: 1),
 
-            // Закрепить / открепить
             ListTile(
               leading: Icon(
                 isPinned ? Icons.push_pin : Icons.push_pin_outlined,
@@ -676,7 +669,6 @@ class _HomeScreenState extends State<HomeScreen>
               },
             ),
 
-            // Переименовать
             ListTile(
               leading: const Icon(Icons.edit_outlined, color: Colors.white70),
               title: const Text('Переименовать', style: TextStyle(color: Colors.white)),
@@ -686,7 +678,6 @@ class _HomeScreenState extends State<HomeScreen>
               },
             ),
 
-            // Заглушить
             ListTile(
               leading: Icon(
                 isMuted ? Icons.volume_up_outlined : Icons.volume_off_outlined,
@@ -704,7 +695,6 @@ class _HomeScreenState extends State<HomeScreen>
               },
             ),
 
-            // Скопировать ID
             ListTile(
               leading: const Icon(Icons.copy_outlined, color: Colors.white70),
               title: const Text('Скопировать ID', style: TextStyle(color: Colors.white)),
@@ -715,7 +705,6 @@ class _HomeScreenState extends State<HomeScreen>
               },
             ),
 
-            // Очистить историю
             ListTile(
               leading: const Icon(Icons.cleaning_services_outlined, color: Colors.orange),
               title: const Text('Очистить историю', style: TextStyle(color: Colors.orange)),
@@ -725,7 +714,6 @@ class _HomeScreenState extends State<HomeScreen>
               },
             ),
 
-            // Удалить контакт
             ListTile(
               leading: const Icon(Icons.person_remove_outlined, color: Colors.red),
               title: Text('Удалить "$name"', style: const TextStyle(color: Colors.red)),
@@ -770,9 +758,11 @@ class _HomeScreenState extends State<HomeScreen>
               final newName = ctrl.text.trim();
               if (newName.isEmpty) return;
               await _storage.setContactDisplayName(uid, newName);
-              Navigator.pop(context);
-              setState(() => _chats = _storage.getContactsSortedByActivity());
-              _showSuccess('Переименован в "$newName"');
+              if (context.mounted) {
+                Navigator.pop(context);
+                setState(() => _chats = _storage.getContactsSortedByActivity());
+                _showSuccess('Переименован в "$newName"');
+              }
             },
             child: const Text('СОХРАНИТЬ'),
           ),
