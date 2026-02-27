@@ -8,6 +8,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'home_screen.dart';
 import 'notification_service.dart';
 import 'socket_service.dart';
+import 'splash_screen.dart';
 
 // ── Фоновый обработчик FCM ───────────────────────────────────────────────────
 // Должен быть top-level функцией (не методом класса) — требование Firebase.
@@ -157,7 +158,7 @@ class _DeepDriftAppState extends State<DeepDriftApp>
           elevation: 0,
         ),
       ),
-      home: const HomeScreen(),
+      home: const SplashScreen(),
     );
   }
 }
