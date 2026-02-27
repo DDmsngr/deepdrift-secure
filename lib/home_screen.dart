@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:qr_flutter/qr_flutter.dart';
+import 'package:qr_flutter/qr_flutter.dart'; // Подключили библиотеку QR
 
 import 'identity_service.dart';
 import 'chat_screen.dart';
@@ -19,7 +19,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   String? _myUid;
-  List<String> _chats = [];
+  List<String> _chats =[];
   bool _isConnected = false;
   bool _isReady = false;
   String _connectionStatus = 'OFFLINE';
@@ -36,7 +36,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   bool _isSearching = false;
   final _searchController = TextEditingController();
-  List<Map<String, dynamic>> _searchResults = [];
+  List<Map<String, dynamic>> _searchResults =[];
 
   final _quickIdController = TextEditingController();
 
@@ -247,7 +247,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   Text("Твой ID: $_myUid", style: const TextStyle(color: Colors.cyan, fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2)),
                   const SizedBox(height: 16),
                   
-                  // --- НОВЫЙ БЛОК: ГЕНЕРАТОР QR-КОДА ---
+                  // ГЕНЕРАТОР QR-КОДА
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
@@ -264,7 +264,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   const SizedBox(height: 8),
                   const Text("Покажи этот QR-код другу\nдля быстрого добавления", textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 11)),
                   const SizedBox(height: 16),
-                  // ------------------------------------
 
                   TextField(
                     controller: nameCtrl,
@@ -293,6 +292,51 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             ],
           );
         }
+      ),
+    );
+  }
+
+  Future<void> _showPasswordSetupDialog() async {
+    final pwdCtrl = TextEditingController();
+    final confCtrl = TextEditingController();
+
+    return showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1F3C),
+        title: Text("ЗАЩИТА ЧАТОВ", style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF))),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children:[
+            const Text("⚠️ Обязательно запомни его! Восстановить будет невозможно.", style: TextStyle(color: Colors.orange, fontSize: 11)),
+            const SizedBox(height: 16),
+            TextField(controller: pwdCtrl, obscureText: true, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Придумай пароль", filled: true, fillColor: Color(0xFF0A0E27))),
+            const SizedBox(height: 12),
+            TextField(controller: confCtrl, obscureText: true, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Повтори пароль", filled: true, fillColor: Color(0xFF0A0E27))),
+          ],
+        ),
+        actions:[
+          ElevatedButton(
+            onPressed: () async {
+              if (pwdCtrl.text.length < 8 || pwdCtrl.text != confCtrl.text) {
+                _showError("Пароли должны совпадать (минимум 8 символов)");
+                return;
+              }
+              final salt = SecureCipher.generateSalt();
+              await _cipher.init(pwdCtrl.text, salt);
+              final keys = await _cipher.exportBothKeys(pwdCtrl.text);
+              await _storage.saveSetting('user_password', pwdCtrl.text);
+              await _storage.saveSetting('user_salt', salt);
+              await _storage.saveSetting('encrypted_x25519_key', keys['x25519']!);
+              await _storage.saveSetting('encrypted_ed25519_key', keys['ed25519']!);
+              Navigator.pop(context);
+              _autoConnect();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan, foregroundColor: Colors.black),
+            child: const Text("СОЗДАТЬ", style: TextStyle(fontWeight: FontWeight.bold)),
+          )
+        ],
       ),
     );
   }
@@ -346,13 +390,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         title: Text("Add contact", style: GoogleFonts.orbitron()),
         content: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [
+          children:[
             TextField(controller: targetC, keyboardType: TextInputType.number, maxLength: 6, style: const TextStyle(color: Colors.white), textAlign: TextAlign.center, decoration: const InputDecoration(hintText: "000000", filled: true, fillColor: Color(0xFF0A0E27))),
             const SizedBox(height: 12),
             TextField(controller: nameC, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Display name (optional)", filled: true, fillColor: Color(0xFF0A0E27))),
           ],
         ),
-        actions: [
+        actions:[
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL")),
           ElevatedButton(
             onPressed: () async {
@@ -401,7 +445,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [
+          children:[
             ListTile(
               leading: const Icon(Icons.delete, color: Colors.red),
               title: Text('Delete "$name"', style: const TextStyle(color: Colors.red)),
@@ -423,7 +467,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         backgroundColor: const Color(0xFF1A1F3C),
         title: const Text('Delete contact?', style: TextStyle(color: Colors.white)),
         content: Text('Remove "$name" and all chat history?', style: const TextStyle(color: Colors.white70)),
-        actions: [
+        actions:[
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('CANCEL')),
           TextButton(
             onPressed: () {
@@ -440,13 +484,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   void _performSearch(String query) {
     setState(() {
-      _searchResults = query.isEmpty ? [] : _storage.searchMessages(query, limit: 50);
+      _searchResults = query.isEmpty ?[] : _storage.searchMessages(query, limit: 50);
     });
   }
 
   Widget _buildConnectionIndicator() {
     Color color = _connectionStatus == 'ONLINE' ? Colors.green : (_connectionStatus == 'CONNECTING...' ? Colors.orange : Colors.red);
-    return Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.circle, color: color, size: 8), const SizedBox(width: 4), Text(_connectionStatus, style: TextStyle(fontSize: 10, color: color))]);
+    return Row(mainAxisSize: MainAxisSize.min, children:[Icon(Icons.circle, color: color, size: 8), const SizedBox(width: 4), Text(_connectionStatus, style: TextStyle(fontSize: 10, color: color))]);
   }
 
   Widget _buildChatList() {
@@ -467,7 +511,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
         return ListTile(
           leading: Stack(
-            children: [
+            children:[
               CircleAvatar(
                 backgroundColor: const Color(0xFF1A1F3C),
                 backgroundImage: hasAvatar ? NetworkImage('https://deepdrift-backend.onrender.com/download/$avatar') : null,
@@ -489,7 +533,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         );
       },
     );
-  } // ← закрывающая скобка _buildChatList
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -510,17 +554,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ? TextField(controller: _searchController, autofocus: true, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: 'Search...', border: InputBorder.none), onChanged: _performSearch)
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
+                  children:[
                     Row(
-                      children: [
+                      children:[
                         Text("DDChat", style: GoogleFonts.orbitron(fontSize: 18)),
                         if (totalUnread > 0) Container(margin: const EdgeInsets.only(left: 8), padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: Colors.cyan, borderRadius: BorderRadius.circular(10)), child: Text('$totalUnread', style: const TextStyle(color: Colors.black, fontSize: 10))),
                       ],
                     ),
-                    Row(children: [Text("ID: ${_myUid ?? '...'}", style: const TextStyle(fontSize: 10, color: Colors.white54)), const SizedBox(width: 8), _buildConnectionIndicator()]),
+                    Row(children:[Text("ID: ${_myUid ?? '...'}", style: const TextStyle(fontSize: 10, color: Colors.white54)), const SizedBox(width: 8), _buildConnectionIndicator()]),
                   ],
                 ),
-          actions: [
+          actions:[
             if (_isSearching) IconButton(icon: const Icon(Icons.close), onPressed: () => setState(() { _isSearching = false; _searchController.clear(); }))
             else ...[
               IconButton(icon: const Icon(Icons.search), onPressed: () => setState(() => _isSearching = true)),
@@ -551,7 +595,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               ),
               child: SafeArea(
                 child: Row(
-                  children: [
+                  children:[
                     const Icon(Icons.flash_on, color: Color(0xFF00D9FF), size: 20),
                     const SizedBox(width: 8),
                     Expanded(
