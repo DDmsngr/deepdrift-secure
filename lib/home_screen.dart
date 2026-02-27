@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import 'identity_service.dart';
 import 'chat_screen.dart';
@@ -216,47 +217,69 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           
           return AlertDialog(
             backgroundColor: const Color(0xFF1A1F3C),
-            title: Text("My Profile", style: GoogleFonts.orbitron()),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                GestureDetector(
-                  onTap: () async {
-                    final img = await _imagePicker.pickImage(source: ImageSource.gallery, maxWidth: 512, maxHeight: 512);
-                    if (img != null) {
-                      String? fileId = await _socket.uploadFile(File(img.path));
-                      if (fileId != null) {
-                        setDialogState(() {
-                          currentAvatar = fileId;
-                        });
-                      } else {
-                        _showError("Failed to upload avatar");
+            title: Text("Мой профиль", style: GoogleFonts.orbitron()),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children:[
+                  GestureDetector(
+                    onTap: () async {
+                      final img = await _imagePicker.pickImage(source: ImageSource.gallery, maxWidth: 512, maxHeight: 512);
+                      if (img != null) {
+                        String? fileId = await _socket.uploadFile(File(img.path));
+                        if (fileId != null) {
+                          setDialogState(() {
+                            currentAvatar = fileId;
+                          });
+                        } else {
+                          _showError("Ошибка загрузки аватара");
+                        }
                       }
-                    }
-                  },
-                  child: CircleAvatar(
-                    radius: 40,
-                    backgroundColor: const Color(0xFF0A0E27),
-                    backgroundImage: hasAvatar ? NetworkImage('https://deepdrift-backend.onrender.com/download/$currentAvatar') : null,
-                    child: !hasAvatar ? const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan) : null,
+                    },
+                    child: CircleAvatar(
+                      radius: 40,
+                      backgroundColor: const Color(0xFF0A0E27),
+                      backgroundImage: hasAvatar ? NetworkImage('https://deepdrift-backend.onrender.com/download/$currentAvatar') : null,
+                      child: !hasAvatar ? const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan) : null,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Text("ID: $_myUid", style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: nameCtrl,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: "Nickname",
-                    filled: true, fillColor: Color(0xFF0A0E27),
-                    border: OutlineInputBorder(),
+                  const SizedBox(height: 12),
+                  Text("Твой ID: $_myUid", style: const TextStyle(color: Colors.cyan, fontSize: 18, fontWeight: FontWeight.bold, letterSpacing: 2)),
+                  const SizedBox(height: 16),
+                  
+                  // --- НОВЫЙ БЛОК: ГЕНЕРАТОР QR-КОДА ---
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: QrImageView(
+                      data: _myUid ?? '000000',
+                      version: QrVersions.auto,
+                      size: 140.0,
+                      backgroundColor: Colors.white,
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 8),
+                  const Text("Покажи этот QR-код другу\nдля быстрого добавления", textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  const SizedBox(height: 16),
+                  // ------------------------------------
+
+                  TextField(
+                    controller: nameCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: "Твое имя (никнейм)",
+                      filled: true, fillColor: Color(0xFF0A0E27),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
             ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text("CANCEL")),
+            actions:[
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text("ОТМЕНА")),
               ElevatedButton(
                 onPressed: () async {
                   await _storage.saveMyProfile(nickname: nameCtrl.text.trim(), avatarUrl: currentAvatar);
@@ -264,55 +287,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   Navigator.pop(context);
                   setState(() {}); 
                 },
-                child: const Text("SAVE"),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan, foregroundColor: Colors.black),
+                child: const Text("СОХРАНИТЬ", style: TextStyle(fontWeight: FontWeight.bold)),
               )
             ],
           );
         }
-      ),
-    );
-  }
-
-  Future<void> _showPasswordSetupDialog() async {
-    final pwdCtrl = TextEditingController();
-    final confCtrl = TextEditingController();
-
-    return showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (c) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1F3C),
-        title: Text("SECURE YOUR MESSAGES", style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF))),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text("⚠️ Write it down! Cannot be recovered.", style: TextStyle(color: Colors.orange, fontSize: 11)),
-            const SizedBox(height: 16),
-            TextField(controller: pwdCtrl, obscureText: true, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Password", filled: true, fillColor: Color(0xFF0A0E27))),
-            const SizedBox(height: 12),
-            TextField(controller: confCtrl, obscureText: true, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Confirm Password", filled: true, fillColor: Color(0xFF0A0E27))),
-          ],
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: () async {
-              if (pwdCtrl.text.length < 8 || pwdCtrl.text != confCtrl.text) {
-                _showError("Passwords must match and be at least 8 chars");
-                return;
-              }
-              final salt = SecureCipher.generateSalt();
-              await _cipher.init(pwdCtrl.text, salt);
-              final keys = await _cipher.exportBothKeys(pwdCtrl.text);
-              await _storage.saveSetting('user_password', pwdCtrl.text);
-              await _storage.saveSetting('user_salt', salt);
-              await _storage.saveSetting('encrypted_x25519_key', keys['x25519']!);
-              await _storage.saveSetting('encrypted_ed25519_key', keys['ed25519']!);
-              Navigator.pop(context);
-              _autoConnect();
-            },
-            child: const Text("CREATE"),
-          )
-        ],
       ),
     );
   }
@@ -323,21 +303,21 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       barrierDismissible: false,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: Text("FRACTAL IDENTITY", style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF))),
+        title: Text("ДОБРО ПОЖАЛОВАТЬ В DDCHAT", style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 16)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text("Придумай себе номер (по этому номеру тебя будут искать друзья)", 
-                style: TextStyle(color: Colors.white70, fontSize: 12), textAlign: TextAlign.center),
+          children:[
+            const Text("Придумай себе номер из 6 цифр.\nПо нему тебя будут находить друзья!", 
+                style: TextStyle(color: Colors.white70, fontSize: 13), textAlign: TextAlign.center),
             const SizedBox(height: 16),
             TextField(
               controller: _idController, keyboardType: TextInputType.number, maxLength: 6,
-              style: const TextStyle(color: Colors.white, fontSize: 18), textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 24, letterSpacing: 6, fontWeight: FontWeight.bold), textAlign: TextAlign.center,
               decoration: const InputDecoration(hintText: "000000", filled: true, fillColor: Color(0xFF0A0E27)),
             ),
           ],
         ),
-        actions: [
+        actions:[
           ElevatedButton(
             onPressed: () async {
               if (_idController.text.length == 6) {
@@ -345,10 +325,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 Navigator.pop(context);
                 _setup();
               } else {
-                _showError("ID must be exactly 6 digits");
+                _showError("Номер должен состоять ровно из 6 цифр");
               }
             },
-            child: const Text("SAVE"),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan, foregroundColor: Colors.black),
+            child: const Text("СОЗДАТЬ", style: TextStyle(fontWeight: FontWeight.bold)),
           )
         ],
       ),
