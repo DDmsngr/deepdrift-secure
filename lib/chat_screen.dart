@@ -410,7 +410,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _storage.saveMessage(widget.targetUid, msg);
         _sendReadReceipt(msgId);
       }
-    }).catchError((e) => debugPrint("Decrypt error: $e"));
+    }).catchError((e) { debugPrint("Decrypt error: $e"); return null; });
   }
 
   void _handleTypingIndicator(Map<String, dynamic> data) {
