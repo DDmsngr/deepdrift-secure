@@ -8,61 +8,60 @@ class NotificationService {
   NotificationService._internal();
 
   final FirebaseMessaging _fcm = FirebaseMessaging.instance;
-  final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _localNotifications =
+      FlutterLocalNotificationsPlugin();
 
   Future<void> init() async {
-    // Запрос разрешений
-    await _fcm.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-    );
+    // Запрос разрешений (дублируется из main.dart — безвредно)
+    await _fcm.requestPermission(alert: true, badge: true, sound: true);
 
-    // Настройка локальных уведомлений
-    const AndroidInitializationSettings initializationSettingsAndroid =
+    const AndroidInitializationSettings androidInit =
         AndroidInitializationSettings('@mipmap/ic_launcher');
-    
-    const InitializationSettings initializationSettings = InitializationSettings(
-      android: initializationSettingsAndroid,
-    );
+    const InitializationSettings initSettings =
+        InitializationSettings(android: androidInit);
 
     await _localNotifications.initialize(
-      initializationSettings,
+      initSettings,
       onDidReceiveNotificationResponse: (NotificationResponse response) {
         print('📲 User tapped notification: ${response.payload}');
-        // TODO: Навигация к чату при нажатии на уведомление
+        // TODO: навигация к чату по response.payload (from_uid)
       },
     );
 
-    // ИСПРАВЛЕНИЕ #1: Обработка уведомлений когда приложение АКТИВНО (foreground)
+    // ── Foreground: приложение активно ───────────────────────────────────
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      print('📲 FCM message received (foreground): ${message.messageId}');
-      print('   Data: ${message.data}');
-      
-      if (message.notification != null) {
-        print('   Has notification: ${message.notification!.title}');
+      print('📲 FCM foreground: ${message.messageId}');
+
+      // ── БАГ 5 FIX: Не показываем foreground-уведомление если текст пришёл
+      // через WebSocket (он приоритетнее). Уведомление нужно ТОЛЬКО если
+      // сокет не доставил сообщение (редкий кейс).
+      // Простая эвристика: FCM data-only без notification → показываем.
+      // FCM с notification → Android сам покажет (мы не дублируем).
+      if (message.notification == null) {
+        // data-only push — показываем локально
+        final fromUid = message.data['from_uid'] ?? '';
         showMessageNotification(
-          fromUid: message.data['from_uid'] ?? '',
-          displayName: message.notification!.title ?? 'DeepDrift',
-          messageText: message.notification!.body ?? '',
+          fromUid: fromUid,
+          displayName: 'DDChat: $fromUid',
+          // ── Никогда не показываем зашифрованный/сырой текст ──────────
+          messageText: 'New encrypted message',
         );
       }
+      // Если notification != null — Android/iOS сами отображают баннер,
+      // дублировать локальным уведомлением не нужно.
     });
 
-    // ИСПРАВЛЕНИЕ #2: Обработка уведомлений когда приложение СВЁРНУТО (background)
-    // Это срабатывает когда приложение в фоне но не убито
+    // ── Background: пользователь тапнул уведомление ──────────────────────
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-      print('📲 User opened app from notification: ${message.messageId}');
-      print('   From: ${message.data['from_uid']}');
-      // TODO: Навигация к чату
+      print('📲 Opened from notification: ${message.data['from_uid']}');
+      // TODO: навигация к чату
     });
 
-    // ИСПРАВЛЕНИЕ #3: Проверяем, было ли приложение запущено через уведомление
+    // ── Cold start: приложение было убито ────────────────────────────────
     final initialMessage = await _fcm.getInitialMessage();
     if (initialMessage != null) {
-      print('📲 App launched from notification: ${initialMessage.messageId}');
-      print('   From: ${initialMessage.data['from_uid']}');
-      // TODO: Навигация к чату после загрузки
+      print('📲 App launched from notification: ${initialMessage.data['from_uid']}');
+      // TODO: навигация к чату после загрузки
     }
   }
 
@@ -71,10 +70,7 @@ class NotificationService {
     required String displayName,
     required String messageText,
   }) async {
-    print('🔔 Showing local notification for $fromUid: $messageText');
-    
-    // ИСПРАВЛЕНИЕ: Убрали const, так как используем динамические значения
-    final AndroidNotificationDetails androidPlatformChannelSpecifics =
+    final AndroidNotificationDetails androidDetails =
         AndroidNotificationDetails(
       'chat_messages',
       'Chat Messages',
@@ -82,27 +78,23 @@ class NotificationService {
       importance: Importance.max,
       priority: Priority.high,
       showWhen: true,
-      color: Color(0xFF00D9FF),
+      color: const Color(0xFF00D9FF),
       enableVibration: true,
       playSound: true,
-      // Теперь можем использовать динамические значения
-      ticker: 'New message from $displayName',
+      ticker: 'New message',
       styleInformation: BigTextStyleInformation(
         messageText,
         contentTitle: displayName,
-        summaryText: 'DeepDrift',
+        summaryText: 'DDChat',
       ),
     );
-    
-    final NotificationDetails platformChannelSpecifics =
-        NotificationDetails(android: androidPlatformChannelSpecifics);
 
     await _localNotifications.show(
-      fromUid.hashCode, // Используем хэш uid чтобы обновлять уведомления от одного человека
+      fromUid.hashCode, // один ID на контакт → новое уведомление заменяет старое
       displayName,
       messageText,
-      platformChannelSpecifics,
-      payload: fromUid, 
+      NotificationDetails(android: androidDetails),
+      payload: fromUid,
     );
   }
 
