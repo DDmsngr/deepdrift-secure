@@ -42,6 +42,8 @@ dependencies:
   image_picker: ^1.0.7
   record: ^6.0.0
   audioplayers: ^5.2.1
+  camera: ^0.11.0     # < ДЛЯ ЗАПИСИ КРУЖОЧКОВ
+  video_player: ^2.8.2 # < ДЛЯ ПРОСМОТРА КРУЖОЧКОВ
   
   # Разрешения
   permission_handler: ^11.2.0
