@@ -8,80 +8,84 @@ import 'home_screen.dart';
 import 'notification_service.dart';
 import 'socket_service.dart';
 
-// ========================================
-// КРИТИЧЕСКИ ВАЖНО: Фоновый обработчик
-// ========================================
+// ── Фоновый обработчик (должен быть top-level функцией) ──────────────────────
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
-  
-  print("📲 Background message received: ${message.messageId}");
-  
-  final notification = FlutterLocalNotificationsPlugin();
-  const AndroidInitializationSettings initializationSettingsAndroid =
-      AndroidInitializationSettings('@mipmap/ic_launcher');
-  
-  await notification.initialize(const InitializationSettings(android: initializationSettingsAndroid));
-  
-  const AndroidNotificationDetails androidPlatformChannelSpecifics =
-      AndroidNotificationDetails(
-    'background_messages',
-    'Background Messages',
-    importance: Importance.max,
-    priority: Priority.high,
-    showWhen: true,
-    color: Color(0xFF00D9FF),
-    enableVibration: true,
-    playSound: true,
-  );
-  
-  await notification.show(
-    message.hashCode,
-    message.notification?.title ?? 'DDChat',
-    message.notification?.body ?? 'New Message',
-    const NotificationDetails(android: androidPlatformChannelSpecifics),
-    payload: message.data['from_uid'],
-  );
+  print("📲 Background FCM received: ${message.messageId}");
+
+  // Показываем локальное уведомление вручную только если нет нотификации от FCM
+  // (на Android data-only messages не показываются автоматически)
+  if (message.notification == null) {
+    final notification = FlutterLocalNotificationsPlugin();
+    const AndroidInitializationSettings androidInit =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+    await notification.initialize(
+        const InitializationSettings(android: androidInit));
+
+    final fromUid = message.data['from_uid'] ?? 'DDChat';
+    await notification.show(
+      message.hashCode,
+      'DDChat: $fromUid',
+      'New encrypted message',
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'background_messages',
+          'Background Messages',
+          importance: Importance.max,
+          priority: Priority.high,
+          showWhen: true,
+          color: Color(0xFF00D9FF),
+          enableVibration: true,
+          playSound: true,
+        ),
+      ),
+      payload: message.data['from_uid'],
+    );
+  }
 }
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   // 1. Инициализация Firebase
   await Firebase.initializeApp();
-  
-  FirebaseMessaging messaging = FirebaseMessaging.instance;
 
-  // 🔥 ЛЕЧЕНИЕ ОШИБКИ "Requested entity was not found":
-  // Мы удаляем старый токен, чтобы Firebase выдал новый, рабочий.
-  try {
-    await messaging.deleteToken(); 
-    print("🗑️ Old FCM token deleted (Fixing push notifications)");
-  } catch (e) {
-    print("⚠️ Token delete error: $e");
-  }
-  
   // 2. Запрос разрешений
+  final messaging = FirebaseMessaging.instance;
   await messaging.requestPermission(
     alert: true,
     badge: true,
     sound: true,
   );
 
-  // Настройка уведомлений при открытом приложении
+  // 3. Foreground уведомления (iOS)
   await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
     alert: true,
     badge: true,
     sound: true,
   );
-  
-  // 3. Регистрация фонового обработчика
+
+  // 4. Регистрация фонового обработчика
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-  
-  // 4. Инициализация Hive и сервисов
+
+  // ── БАГ 3 FIX: НЕ удаляем токен при запуске ─────────────────────────────
+  // deleteToken() при каждом запуске убивал FCM-токен в Redis ДО того,
+  // как приложение успевало зарегистрировать новый. Это и было причиной
+  // "пуши не приходят" в первые секунды/минуты после запуска.
+  //
+  // Вместо этого подписываемся на onTokenRefresh — Firebase сам сообщит
+  // когда токен обновится (раз в несколько недель или после переустановки).
+  FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
+    print("🔄 FCM token refreshed, re-registering...");
+    // SocketService зарегистрирует токен как только получит событие
+    SocketService().registerFcmToken(newToken);
+  });
+
+  // 5. Инициализация Hive и сервисов
   await Hive.initFlutter();
   await NotificationService().init();
-  
+
   runApp(const DeepDriftApp());
 }
 
@@ -92,13 +96,13 @@ class DeepDriftApp extends StatefulWidget {
   State<DeepDriftApp> createState() => _DeepDriftAppState();
 }
 
-class _DeepDriftAppState extends State<DeepDriftApp> with WidgetsBindingObserver {
-  
+class _DeepDriftAppState extends State<DeepDriftApp>
+    with WidgetsBindingObserver {
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    print("🔄 Lifecycle observer registered");
   }
 
   @override
@@ -110,15 +114,10 @@ class _DeepDriftAppState extends State<DeepDriftApp> with WidgetsBindingObserver
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    
-    print("🔄 App lifecycle changed: $state");
-    
-    // Твоя логика управления сокетами (ОСТАВЛЯЕМ КАК БЫЛО)
+    print("🔄 App lifecycle: $state");
     if (state == AppLifecycleState.resumed) {
-      print("✅ App RESUMED - calling socket service");
       SocketService().onAppResumed();
     } else if (state == AppLifecycleState.paused) {
-      print("⏸️ App PAUSED - notifying socket service");
       SocketService().onAppPaused();
     }
   }
