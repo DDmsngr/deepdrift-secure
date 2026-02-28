@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -289,8 +288,8 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _showMyProfileDialog() {
     final profile      = _storage.getMyProfile();
-    final nameCtrl     = TextEditingController(text: profile['nickname'] as String?);
-    String? currentAvatar = profile['avatarUrl'] as String?;
+    final nameCtrl     = TextEditingController(text: profile['nickname']);
+    String? currentAvatar = profile['avatarUrl'];
 
     showDialog(
       context: context,
@@ -1008,7 +1007,7 @@ class _HomeScreenState extends State<HomeScreen>
   Widget build(BuildContext context) {
     final totalUnread = _storage.getTotalUnreadCount();
     final myProfile   = _storage.getMyProfile();
-    final avatarUrl   = myProfile['avatarUrl'] as String?;
+    final avatarUrl   = myProfile['avatarUrl'];
     final hasMyAvatar = avatarUrl != null && avatarUrl.isNotEmpty && avatarUrl != 'null';
 
     return PopScope(
