@@ -43,8 +43,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _searchController = TextEditingController();
   List<Map<String, dynamic>> _searchResults = [];
 
-  final _quickIdController = TextEditingController();
-
   Timer? _statusCheckTimer;
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -71,7 +69,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _socketSub?.cancel();
     _statusCheckTimer?.cancel();
     _searchController.dispose();
-    _quickIdController.dispose();
     super.dispose();
   }
 
@@ -239,7 +236,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         'type': data['messageType'] ?? 'text',
         'fileName': data['fileName'],
         'fileSize': data['fileSize'],
-        'signatureStatus': 0, 
+        'signatureStatus': 0,
       };
       await _storage.saveMessage(senderUid, msg);
       _socket.sendReadReceipt(senderUid, msgId);
@@ -265,6 +262,59 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), backgroundColor: const Color(0xFF1A4A2E)),
     );
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // FAB меню
+  // ──────────────────────────────────────────────────────────────────────────
+
+  void _showAddMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1F3C),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 10, bottom: 8),
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.person_add, color: Colors.cyan),
+              title: const Text('Добавить контакт', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _addContact(); },
+            ),
+            ListTile(
+              leading: const Icon(Icons.group_add, color: Colors.cyan),
+              title: const Text('Создать группу', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _showCreateGroupDialog(); },
+            ),
+            ListTile(
+              leading: const Icon(Icons.qr_code_scanner, color: Colors.cyan),
+              title: const Text('Сканировать QR', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _scanQR(); },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showCreateGroupDialog() {
+    _showError('Группы в разработке');
+  }
+
+  void _scanQR() {
+    _showError('QR-сканер в разработке');
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -850,7 +900,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
     if (_chats.isEmpty) {
       return Center(
-        child: Text('Нет чатов', style: GoogleFonts.orbitron(color: Colors.white38)),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.chat_bubble_outline, size: 64, color: Colors.white12),
+            const SizedBox(height: 16),
+            Text('Нет чатов', style: GoogleFonts.orbitron(color: Colors.white38)),
+            const SizedBox(height: 8),
+            const Text(
+              'Нажми + чтобы добавить контакт',
+              style: TextStyle(color: Colors.white24, fontSize: 13),
+            ),
+          ],
+        ),
       );
     }
 
@@ -1032,19 +1094,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ],
                 ),
           actions: [
-            if (_isSearching)
-              IconButton(
-                icon: const Icon(Icons.close),
-                onPressed: () => setState(() {
-                  _isSearching = false;
-                  _searchController.clear();
-                }),
-              )
-            else ...[
-              IconButton(
-                icon: const Icon(Icons.search),
-                onPressed: () => setState(() => _isSearching = true),
-              ),
+            IconButton(
+              icon: Icon(_isSearching ? Icons.close : Icons.search),
+              onPressed: () => setState(() {
+                _isSearching = !_isSearching;
+                if (!_isSearching) _searchController.clear();
+              }),
+            ),
+            if (!_isSearching) ...[
               IconButton(
                 icon: const Icon(Icons.settings_outlined, color: Colors.white70),
                 onPressed: () => Navigator.push(
@@ -1079,72 +1136,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ],
         ),
         body: _isSearching ? _buildSearchResults() : _buildChatList(),
-        bottomNavigationBar: _isSearching
-            ? null
-            : Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: const BoxDecoration(
-                  color: Color(0xFF1A1F3C),
-                  border: Border(top: BorderSide(color: Color(0xFF00D9FF), width: 0.5)),
-                ),
-                child: SafeArea(
-                  child: Row(
-                    children: [
-                      const Icon(Icons.flash_on, color: Color(0xFF00D9FF), size: 20),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: TextField(
-                          controller: _quickIdController,
-                          style: const TextStyle(color: Colors.white, fontSize: 14),
-                          decoration: InputDecoration(
-                            hintText: 'Введи ID для быстрого чата...',
-                            hintStyle: const TextStyle(color: Colors.white38, fontSize: 13),
-                            filled: true,
-                            fillColor: const Color(0xFF0A0E27),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(20),
-                              borderSide: BorderSide.none,
-                            ),
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16, vertical: 10,
-                            ),
-                          ),
-                          onSubmitted: (value) {
-                            if (value.isNotEmpty) {
-                              _addContactWithId(value);
-                              _quickIdController.clear();
-                            }
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Container(
-                        decoration: const BoxDecoration(
-                          color: Color(0xFF00D9FF),
-                          shape: BoxShape.circle,
-                        ),
-                        child: IconButton(
-                          icon: const Icon(Icons.arrow_forward, color: Colors.black),
-                          iconSize: 20,
-                          onPressed: () {
-                            if (_quickIdController.text.isNotEmpty) {
-                              _addContactWithId(_quickIdController.text);
-                              setState(() => _quickIdController.clear());
-                            }
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-        floatingActionButton: _isSearching
-            ? null
-            : FloatingActionButton(
-                onPressed: _addContact,
-                backgroundColor: Colors.cyan,
-                child: const Icon(Icons.add, color: Colors.black),
-              ),
+        // Нижний бар удалён — только FAB
+        floatingActionButton: FloatingActionButton(
+          onPressed: _showAddMenu,
+          backgroundColor: Colors.cyan,
+          child: const Icon(Icons.add, color: Colors.black, size: 28),
+        ),
       ),
     );
   }
