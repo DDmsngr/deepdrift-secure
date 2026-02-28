@@ -34,6 +34,7 @@ dependencies:
   intl: ^0.18.1
   shared_preferences: ^2.2.2
   qr_flutter: ^4.1.0
+    mobile_scanner: ^5.0.0 
 
   # UI
   google_fonts: ^6.1.0
