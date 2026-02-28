@@ -87,6 +87,10 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _replyToText;
   String? _replyToId;
 
+  // 🔴-5 FIX: Токен upload/download, получаем из uid_assigned события
+  // Не зависим от socket_service.downloadHeaders — храним локально.
+  String? _uploadToken;
+
   bool   _keysExchanged = false;
   Timer? _keyExchangeTimeout;
 
@@ -237,8 +241,10 @@ class _ChatScreenState extends State<ChatScreen> {
         'file': await MultipartFile.fromFile(tempFile.path, filename: tempFile.path.split('/').last),
       });
       if (mounted) setState(() => _uploadProgress = 0.0);
-      // 🔴-5 FIX: Прикрепляем upload_token из SocketService
-      final options = Options(headers: _socket.downloadHeaders);
+      // 🔴-5 FIX: Прикрепляем upload_token к HTTP-запросу
+      final options = Options(
+        headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!},
+      );
       final response = await _dio.post(
         '$SERVER_HTTP_URL/upload',
         data: formData,
@@ -263,7 +269,7 @@ class _ChatScreenState extends State<ChatScreen> {
       // 🔴-5 FIX: Прикрепляем upload_token к запросу скачивания
       final response = await http.get(
         Uri.parse('$SERVER_HTTP_URL/download/$fileId'),
-        headers: _socket.downloadHeaders,
+        headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!},
       );
       if (response.statusCode != 200) return null;
       final decryptedBytes = await widget.cipher.decryptFileBytes(
@@ -347,6 +353,12 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       final type = data['type'];
       switch (type) {
+        case 'uid_assigned':
+          // Сохраняем upload_token для авторизации HTTP-запросов
+          if (data['upload_token'] != null) {
+            _uploadToken = data['upload_token'] as String;
+          }
+          break;
         case 'message':             _handleIncomingMessage(data);  break;
         case 'typing_indicator':    _handleTypingIndicator(data);  break;
         case 'public_key_response': _handlePublicKeyResponse(data); break;
