@@ -1,152 +1,201 @@
 import 'package:hive_flutter/hive_flutter.dart';
 
-/// Сервис для локального хранения данных приложения
+/// Сервис для локального хранения данных приложения.
+///
+/// КОНКУРЕНТНОСТЬ (🟡-5 FIX):
+/// Hive не thread-safe для операций read-modify-write. Паттерн
+///   `list = box.get(key); list.add(x); await box.put(key, list)`
+/// при параллельных вызовах приводит к потере данных: второй читатель
+/// видит список до первой записи, затем перезаписывает его.
+///
+/// Решение — per-key sequential future chain (_withLock). Для каждого
+/// ключа новая операция добавляется в хвост цепочки Future'ов. Это
+/// гарантирует что операции над одним chatWith выполняются строго
+/// последовательно, без блокировки других чатов.
 class StorageService {
-  static const String _msgBox       = "messages_history";
-  static const String _contactsBox  = "contacts_list";
-  static const String _settingsBox  = "settings";
-  static const String _metadataBox  = "metadata";
-  static const String _reactionsBox = "reactions";
+  static const String _msgBox       = 'messages_history';
+  static const String _contactsBox  = 'contacts_list';
+  static const String _settingsBox  = 'settings';
+  static const String _metadataBox  = 'metadata';
+  static const String _reactionsBox = 'reactions';
 
   static const int MAX_MESSAGES_PER_CHAT = 1000;
 
-  Future<void> init() async {
-    await Hive.initFlutter();
-    await Hive.openBox(_msgBox);
-    await Hive.openBox(_contactsBox);
-    await Hive.openBox(_settingsBox);
-    await Hive.openBox(_metadataBox);
-    await Hive.openBox(_reactionsBox);
+  // 🟡-5 FIX: Per-key mutex через sequential Future chain.
+  // Ключ — chatWith (или любой другой ключ операции).
+  // Значение — последняя Future в цепочке для этого ключа.
+  final _locks = <String, Future<void>>{};
+
+  /// Ставит [fn] в очередь для [key] и возвращает Future с результатом.
+  /// Ошибки в предыдущей операции не блокируют следующую (catchError на хвосте).
+  Future<T> _withLock<T>(String key, Future<T> Function() fn) {
+    final prev = _locks[key] ?? Future<void>.value();
+    // Используем Completer чтобы поймать и пробросить ошибку из fn,
+    // но при этом не сломать цепочку для следующих операций.
+    final next = prev.then<T>((_) => fn());
+    // Храним «тихий» хвост — без ошибок — чтобы следующая операция всегда запустилась
+    _locks[key] = next.then<void>((_) {}).catchError((_) {});
+    return next;
   }
 
-  // ============================================================
-  // ПРОФИЛЬ И СТАТУСЫ
-  // ============================================================
+  // ──────────────────────────────────────────────────────────────────────────
+  // Инициализация
+  // ──────────────────────────────────────────────────────────────────────────
+
+  Future<void> init() async {
+    // Hive.initFlutter() идемпотентен — повторный вызов безопасен.
+    // Вызывается и из main.dart, и здесь для гарантии (порядок запуска может меняться).
+    await Hive.initFlutter();
+    // Открываем только те боксы, которых ещё нет — isOpen guard предотвращает
+    // предупреждение «box already open».
+    if (!Hive.isBoxOpen(_msgBox))       await Hive.openBox(_msgBox);
+    if (!Hive.isBoxOpen(_contactsBox))  await Hive.openBox(_contactsBox);
+    if (!Hive.isBoxOpen(_settingsBox))  await Hive.openBox(_settingsBox);
+    if (!Hive.isBoxOpen(_metadataBox))  await Hive.openBox(_metadataBox);
+    if (!Hive.isBoxOpen(_reactionsBox)) await Hive.openBox(_reactionsBox);
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Профиль и статусы
+  // ──────────────────────────────────────────────────────────────────────────
 
   Future<void> saveMyProfile({String? nickname, String? avatarUrl}) async {
-    if (nickname != null) await saveSetting('my_nickname', nickname);
-    if (avatarUrl != null) await saveSetting('my_avatar', avatarUrl);
+    if (nickname  != null) await saveSetting('my_nickname', nickname);
+    if (avatarUrl != null) await saveSetting('my_avatar',   avatarUrl);
   }
 
-  Map<String, String?> getMyProfile() {
-    return {
-      'nickname': getSetting('my_nickname'),
-      'avatarUrl': getSetting('my_avatar'),
-    };
-  }
+  Map<String, String?> getMyProfile() => {
+    'nickname':  getSetting('my_nickname'),
+    'avatarUrl': getSetting('my_avatar'),
+  };
 
   Future<void> setContactStatus(String uid, bool isOnline, int? lastSeen) async {
-    await Hive.box(_metadataBox).put('online_$uid', isOnline);
-    if (lastSeen != null) {
-      await Hive.box(_metadataBox).put('last_seen_$uid', lastSeen);
-    }
+    final box = Hive.box(_metadataBox);
+    await box.put('online_$uid', isOnline);
+    if (lastSeen != null) await box.put('last_seen_$uid', lastSeen);
   }
 
-  bool isContactOnline(String uid) {
-    return Hive.box(_metadataBox).get('online_$uid', defaultValue: false);
-  }
+  bool isContactOnline(String uid) =>
+      Hive.box(_metadataBox).get('online_$uid',    defaultValue: false) as bool;
 
-  int getContactLastSeen(String uid) {
-    return Hive.box(_metadataBox).get('last_seen_$uid', defaultValue: 0);
-  }
+  int getContactLastSeen(String uid) =>
+      Hive.box(_metadataBox).get('last_seen_$uid', defaultValue: 0) as int;
 
-  Future<void> setContactAvatar(String uid, String avatarUrl) async {
-    await Hive.box(_contactsBox).put('avatar_$uid', avatarUrl);
-  }
+  Future<void> setContactAvatar(String uid, String avatarUrl) async =>
+      Hive.box(_contactsBox).put('avatar_$uid', avatarUrl);
 
-  String? getContactAvatar(String uid) {
-    return Hive.box(_contactsBox).get('avatar_$uid');
-  }
+  String? getContactAvatar(String uid) =>
+      Hive.box(_contactsBox).get('avatar_$uid') as String?;
 
-  // ============================================================
-  // СООБЩЕНИЯ
-  // ============================================================
+  // ──────────────────────────────────────────────────────────────────────────
+  // Сообщения
+  // ──────────────────────────────────────────────────────────────────────────
 
-  Future<void> saveMessage(String chatWith, Map<String, dynamic> msg) async {
-    var box = Hive.box(_msgBox);
-    List history = box.get(chatWith, defaultValue: []);
-    history = history.whereType<Map>().toList();
+  /// Сохраняет сообщение в историю чата.
+  ///
+  /// 🟡-5 FIX: Операция выполняется под per-chat lock — параллельные вызовы
+  /// для одного chatWith выстраиваются в очередь, исключая потерю данных.
+  Future<void> saveMessage(String chatWith, Map<String, dynamic> msg) {
+    return _withLock(chatWith, () async {
+      final box     = Hive.box(_msgBox);
+      final history = _readHistory(box, chatWith);
 
-    bool exists = history.any((m) => m['id'] == msg['id']);
-    if (exists) return;
+      // Дедупликация по id — не добавляем повторно
+      if (history.any((m) => m['id'] == msg['id'])) return;
 
-    history.add(msg);
+      history.add(Map<String, dynamic>.from(msg));
 
-    if (history.length > MAX_MESSAGES_PER_CHAT) {
-      history = history.sublist(history.length - MAX_MESSAGES_PER_CHAT);
-    }
+      // Обрезаем до MAX_MESSAGES_PER_CHAT, сохраняя самые новые
+      final trimmed = history.length > MAX_MESSAGES_PER_CHAT
+          ? history.sublist(history.length - MAX_MESSAGES_PER_CHAT)
+          : history;
 
-    await box.put(chatWith, history);
-    await _updateChatMetadata(chatWith, msg);
+      await box.put(chatWith, trimmed);
+      await _updateChatMetadataInternal(chatWith, msg);
+    });
   }
 
   bool hasMessage(String chatWith, String messageId) {
-    final history = getHistory(chatWith);
-    return history.any((m) => m is Map && m['id'] == messageId);
+    return getHistory(chatWith).any((m) => m is Map && m['id'] == messageId);
   }
 
-  List getHistory(String chatWith) {
-    final data = Hive.box(_msgBox).get(chatWith, defaultValue: []);
-    return (data is List) ? data : [];
+  /// Возвращает полную историю чата как List<Map>.
+  /// Только для чтения — не использовать как основу для записи без lock.
+  List<Map<String, dynamic>> getHistory(String chatWith) {
+    return _readHistory(Hive.box(_msgBox), chatWith);
   }
 
-  List getRecentMessages(String chatWith, {int limit = 50}) {
+  List<Map<String, dynamic>> getRecentMessages(String chatWith, {int limit = 50}) {
     final all = getHistory(chatWith);
-    if (all.isEmpty) return [];
-    if (all.length <= limit) return all;
-    return all.sublist(all.length - limit);
+    if (all.isEmpty || all.length <= limit) return List.from(all);
+    return List.from(all.sublist(all.length - limit));
   }
 
-  List getOlderMessages(String chatWith, int beforeIndex, {int limit = 50}) {
+  List<Map<String, dynamic>> getOlderMessages(
+    String chatWith,
+    int beforeIndex, {
+    int limit = 50,
+  }) {
     final all = getHistory(chatWith);
     if (beforeIndex <= 0 || all.isEmpty) return [];
     final start = (beforeIndex - limit).clamp(0, beforeIndex);
-    return all.sublist(start, beforeIndex);
+    return List.from(all.sublist(start, beforeIndex));
   }
 
-  Future<void> updateMessageStatus(String chatWith, String messageId, String status) async {
-    var box = Hive.box(_msgBox);
-    List history = getHistory(chatWith).map((e) => Map<String, dynamic>.from(e)).toList();
+  /// Обновляет статус одного сообщения под lock.
+  Future<void> updateMessageStatus(
+    String chatWith,
+    String messageId,
+    String status,
+  ) {
+    return _withLock(chatWith, () async {
+      final box     = Hive.box(_msgBox);
+      final history = _readHistory(box, chatWith);
 
-    bool updated = false;
-    for (var msg in history) {
-      if (msg['id'] == messageId) {
-        msg['status'] = status;
-        updated = true;
-        break;
+      bool updated = false;
+      for (final msg in history) {
+        if (msg['id'] == messageId) {
+          msg['status'] = status;
+          updated = true;
+          break;
+        }
       }
-    }
 
-    if (updated) {
-      await box.put(chatWith, history);
-      await _updateChatMetadata(chatWith, null);
-    }
+      if (updated) {
+        await box.put(chatWith, history);
+        await _updateChatMetadataInternal(chatWith, null);
+      }
+    });
   }
 
+  /// Удаляет всё содержимое чата включая метаданные и реакции.
   Future<void> deleteChat(String chatWith) async {
-    await Hive.box(_msgBox).delete(chatWith);
-    await _deleteChatMetadata(chatWith);
-    await Hive.box(_reactionsBox).delete(chatWith);
+    await _withLock(chatWith, () async {
+      await Hive.box(_msgBox).delete(chatWith);
+      await _deleteChatMetadata(chatWith);
+      await Hive.box(_reactionsBox).delete(chatWith);
+    });
   }
 
-  Future<void> deleteMessage(String chatWith, String messageId) async {
-    var box = Hive.box(_msgBox);
-    List history = getHistory(chatWith);
-    history.removeWhere((msg) => msg is Map && msg['id'] == messageId);
-    await box.put(chatWith, history);
+  /// Удаляет одно сообщение под lock.
+  Future<void> deleteMessage(String chatWith, String messageId) {
+    return _withLock(chatWith, () async {
+      final box     = Hive.box(_msgBox);
+      final history = _readHistory(box, chatWith);
+      history.removeWhere((msg) => msg['id'] == messageId);
+      await box.put(chatWith, history);
+    });
   }
 
-  // ============================================================
-  // РЕАКЦИИ
-  // ============================================================
+  // ──────────────────────────────────────────────────────────────────────────
+  // Реакции
+  // ──────────────────────────────────────────────────────────────────────────
 
   Map<String, Set<String>> loadReactions(String chatWith) {
-    final box = Hive.box(_reactionsBox);
-    final raw = box.get(chatWith);
+    final raw = Hive.box(_reactionsBox).get(chatWith);
     if (raw == null) return {};
     try {
-      final Map<dynamic, dynamic> stored = raw as Map;
-      return stored.map((key, value) {
+      return (raw as Map).map((key, value) {
         final set = (value as List).map((e) => e.toString()).toSet();
         return MapEntry(key.toString(), set);
       });
@@ -155,53 +204,60 @@ class StorageService {
     }
   }
 
-  Future<void> saveReactions(String chatWith, Map<String, Set<String>> reactions) async {
-    final box = Hive.box(_reactionsBox);
-    final serializable = reactions.map((key, value) => MapEntry(key, value.toList()));
-    await box.put(chatWith, serializable);
+  Future<void> saveReactions(
+    String chatWith,
+    Map<String, Set<String>> reactions,
+  ) async {
+    final serializable = reactions.map((k, v) => MapEntry(k, v.toList()));
+    await Hive.box(_reactionsBox).put(chatWith, serializable);
   }
 
   Future<void> addReaction(String chatWith, String messageId, String emoji) async {
     final reactions = loadReactions(chatWith);
-    reactions.putIfAbsent(messageId, () => {});
-    reactions[messageId]!.add(emoji);
+    reactions.putIfAbsent(messageId, () => {}).add(emoji);
     await saveReactions(chatWith, reactions);
   }
 
-  Future<void> removeReaction(String chatWith, String messageId, String emoji) async {
+  Future<void> removeReaction(
+    String chatWith,
+    String messageId,
+    String emoji,
+  ) async {
     final reactions = loadReactions(chatWith);
     reactions[messageId]?.remove(emoji);
-    if (reactions[messageId]?.isEmpty ?? false) {
-      reactions.remove(messageId);
-    }
+    if (reactions[messageId]?.isEmpty ?? false) reactions.remove(messageId);
     await saveReactions(chatWith, reactions);
   }
 
-  // ============================================================
-  // КОНТАКТЫ
-  // ============================================================
+  // ──────────────────────────────────────────────────────────────────────────
+  // Контакты
+  // ──────────────────────────────────────────────────────────────────────────
 
   Future<void> addContact(String uid, {String? displayName}) async {
-    var box = Hive.box(_contactsBox);
-    List contacts = box.get('list', defaultValue: []);
-    if (!contacts.contains(uid)) {
-      contacts.add(uid);
-      await box.put('list', contacts);
-    }
-    if (displayName != null) {
-      await setContactDisplayName(uid, displayName);
-    }
+    await _withLock('contacts_list', () async {
+      final box      = Hive.box(_contactsBox);
+      final contacts = _readContactsList(box);
+      if (!contacts.contains(uid)) {
+        contacts.add(uid);
+        await box.put('list', contacts);
+      }
+    });
+    if (displayName != null) await setContactDisplayName(uid, displayName);
   }
 
+  /// Возвращает список UID всех контактов.
   List<String> getContacts() {
-    List raw = Hive.box(_contactsBox).get('list', defaultValue: []);
-    return raw.map((e) => e.toString()).toList();
+    return _readContactsList(Hive.box(_contactsBox));
   }
 
-  /// Закреплённые вверху, затем по времени последнего сообщения
+  /// Алиас getContacts() — используется в ForwardMessage диалоге (chat_screen.dart).
+  /// Возвращает список UID в порядке добавления (не по активности).
+  List<String> getContactsList() => getContacts();
+
+  /// Закреплённые вверху, затем по времени последнего сообщения.
   List<String> getContactsSortedByActivity() {
     final contacts = getContacts();
-    final metadata = Hive.box(_metadataBox);
+    final box      = Hive.box(_metadataBox);
 
     contacts.sort((a, b) {
       final aPinned = isContactPinned(a);
@@ -210,158 +266,173 @@ class StorageService {
       if (aPinned && !bPinned) return -1;
       if (!aPinned && bPinned) return 1;
 
-      final aData = metadata.get('chat_$a');
-      final bData = metadata.get('chat_$b');
+      final aData = box.get('chat_$a');
+      final bData = box.get('chat_$b');
       if (aData == null && bData == null) return 0;
       if (aData == null) return 1;
       if (bData == null) return -1;
 
-      final aTime = _parseTime(aData['lastMessageTime']);
-      final bTime = _parseTime(bData['lastMessageTime']);
-      return bTime.compareTo(aTime);
+      return _parseTime(bData['lastMessageTime'])
+          .compareTo(_parseTime(aData['lastMessageTime']));
     });
 
     return contacts;
   }
 
   Future<void> removeContact(String uid) async {
-    var box = Hive.box(_contactsBox);
-    List contacts = box.get('list', defaultValue: []);
-    contacts.remove(uid);
-    await box.put('list', contacts);
+    await _withLock('contacts_list', () async {
+      final box      = Hive.box(_contactsBox);
+      final contacts = _readContactsList(box);
+      contacts.remove(uid);
+      await box.put('list', contacts);
+    });
     await _deleteChatMetadata(uid);
-    await Hive.box(_metadataBox).delete('pinned_$uid');
-    await Hive.box(_metadataBox).delete('muted_$uid');
+    final meta = Hive.box(_metadataBox);
+    await meta.delete('pinned_$uid');
+    await meta.delete('muted_$uid');
   }
 
-  Future<void> setContactDisplayName(String uid, String displayName) async {
-    await Hive.box(_contactsBox).put('name_$uid', displayName);
-  }
+  Future<void> setContactDisplayName(String uid, String displayName) async =>
+      Hive.box(_contactsBox).put('name_$uid', displayName);
 
-  String getContactDisplayName(String uid) {
-    return Hive.box(_contactsBox).get('name_$uid', defaultValue: uid);
-  }
+  String getContactDisplayName(String uid) =>
+      Hive.box(_contactsBox).get('name_$uid', defaultValue: uid) as String;
 
-  // ── Закрепить / открепить ────────────────────────────────────────────────
+  // ── Закрепить / открепить ─────────────────────────────────────────────────
 
-  Future<void> setContactPinned(String uid, bool pinned) async {
-    await Hive.box(_metadataBox).put('pinned_$uid', pinned);
-  }
+  Future<void> setContactPinned(String uid, bool pinned) async =>
+      Hive.box(_metadataBox).put('pinned_$uid', pinned);
 
-  bool isContactPinned(String uid) {
-    return Hive.box(_metadataBox).get('pinned_$uid', defaultValue: false);
-  }
+  bool isContactPinned(String uid) =>
+      Hive.box(_metadataBox).get('pinned_$uid', defaultValue: false) as bool;
 
-  // ── Заглушить / включить ─────────────────────────────────────────────────
+  // ── Заглушить / включить ──────────────────────────────────────────────────
 
-  Future<void> setContactMuted(String uid, bool muted) async {
-    await Hive.box(_metadataBox).put('muted_$uid', muted);
-  }
+  Future<void> setContactMuted(String uid, bool muted) async =>
+      Hive.box(_metadataBox).put('muted_$uid', muted);
 
-  bool isContactMuted(String uid) {
-    return Hive.box(_metadataBox).get('muted_$uid', defaultValue: false);
-  }
+  bool isContactMuted(String uid) =>
+      Hive.box(_metadataBox).get('muted_$uid', defaultValue: false) as bool;
 
-  // ── Очистить историю (контакт остаётся в списке) ─────────────────────────
+  // ── Очистить историю (контакт остаётся в списке) ──────────────────────────
 
   Future<void> clearChatHistory(String chatWith) async {
-    await Hive.box(_msgBox).delete(chatWith);
-    await Hive.box(_reactionsBox).delete(chatWith);
-    await Hive.box(_metadataBox).delete('chat_$chatWith');
+    await _withLock(chatWith, () async {
+      await Hive.box(_msgBox).delete(chatWith);
+      await Hive.box(_reactionsBox).delete(chatWith);
+      await Hive.box(_metadataBox).delete('chat_$chatWith');
+    });
   }
 
   // ── Непрочитанные ─────────────────────────────────────────────────────────
 
   int getUnreadCount(String chatWith) {
-    List history = getHistory(chatWith);
-    return history.where((msg) => msg is Map && msg['isMe'] == false && msg['status'] != 'read').length;
+    return getHistory(chatWith)
+        .where((m) => m['isMe'] == false && m['status'] != 'read')
+        .length;
   }
 
   int getTotalUnreadCount() {
     int total = 0;
-    for (final contact in getContacts()) {
-      total += getUnreadCount(contact);
-    }
+    for (final uid in getContacts()) total += getUnreadCount(uid);
     return total;
   }
 
-  Future<void> markAllAsRead(String chatWith) async {
-    var box = Hive.box(_msgBox);
-    List history = getHistory(chatWith).map((e) => Map<String, dynamic>.from(e)).toList();
+  /// Помечает все входящие сообщения в чате как прочитанные.
+  /// 🟡-5 FIX: Выполняется под per-chat lock.
+  Future<void> markAllAsRead(String chatWith) {
+    return _withLock(chatWith, () async {
+      final box     = Hive.box(_msgBox);
+      final history = _readHistory(box, chatWith);
 
-    bool updated = false;
-    for (var msg in history) {
-      if (msg['isMe'] == false && msg['status'] != 'read') {
-        msg['status'] = 'read';
-        updated = true;
+      bool updated = false;
+      for (final msg in history) {
+        if (msg['isMe'] == false && msg['status'] != 'read') {
+          msg['status'] = 'read';
+          updated = true;
+        }
       }
-    }
 
-    if (updated) {
-      await box.put(chatWith, history);
-      await _updateChatMetadata(chatWith, null);
-    }
+      if (updated) {
+        await box.put(chatWith, history);
+        await _updateChatMetadataInternal(chatWith, null);
+      }
+    });
   }
 
-  // ============================================================
-  // МЕТАДАННЫЕ ЧАТОВ И НАСТРОЙКИ
-  // ============================================================
+  // ──────────────────────────────────────────────────────────────────────────
+  // Метаданные чатов
+  // ──────────────────────────────────────────────────────────────────────────
 
-  Future<void> _updateChatMetadata(String chatWith, Map<String, dynamic>? lastMessage) async {
-    var box = Hive.box(_metadataBox);
-    var metadata = Map<String, dynamic>.from(box.get('chat_$chatWith', defaultValue: {}));
+  /// Внутренний метод — вызывается ТОЛЬКО внутри блока _withLock.
+  /// Не вызывать снаружи напрямую.
+  Future<void> _updateChatMetadataInternal(
+    String chatWith,
+    Map<String, dynamic>? lastMessage,
+  ) async {
+    final box      = Hive.box(_metadataBox);
+    final metadata = Map<String, dynamic>.from(
+      box.get('chat_$chatWith', defaultValue: {}) as Map,
+    );
 
     if (lastMessage != null) {
       metadata['lastMessageText'] = lastMessage['text'];
       final rawTime = lastMessage['time'];
-      if (rawTime is int) {
-        metadata['lastMessageTime'] = DateTime.fromMillisecondsSinceEpoch(rawTime).toIso8601String();
-      } else {
-        metadata['lastMessageTime'] = rawTime;
-      }
+      metadata['lastMessageTime'] = rawTime is int
+          ? DateTime.fromMillisecondsSinceEpoch(rawTime).toIso8601String()
+          : rawTime;
       metadata['lastMessageIsMe'] = lastMessage['isMe'];
     }
 
-    metadata['unreadCount'] = getUnreadCount(chatWith);
-    metadata['totalMessages'] = getHistory(chatWith).length;
+    // getUnreadCount читает историю — вызываем _readHistory напрямую
+    // чтобы не захватывать lock повторно (мы уже под ним).
+    final history = _readHistory(Hive.box(_msgBox), chatWith);
+    metadata['unreadCount']   =
+        history.where((m) => m['isMe'] == false && m['status'] != 'read').length;
+    metadata['totalMessages'] = history.length;
+
     await box.put('chat_$chatWith', metadata);
   }
 
-  Future<void> _deleteChatMetadata(String chatWith) async {
-    await Hive.box(_metadataBox).delete('chat_$chatWith');
-  }
+  Future<void> _deleteChatMetadata(String chatWith) async =>
+      Hive.box(_metadataBox).delete('chat_$chatWith');
 
   Map<String, dynamic> getChatMetadata(String chatWith) {
-    final data = Hive.box(_metadataBox).get('chat_$chatWith', defaultValue: {});
-    return Map<String, dynamic>.from(data);
+    return Map<String, dynamic>.from(
+      Hive.box(_metadataBox).get('chat_$chatWith', defaultValue: {}) as Map,
+    );
   }
 
-  Future<void> saveSetting(String key, dynamic value) async {
-    await Hive.box(_settingsBox).put(key, value);
-  }
+  // ──────────────────────────────────────────────────────────────────────────
+  // Настройки
+  // ──────────────────────────────────────────────────────────────────────────
 
-  dynamic getSetting(String key, {dynamic defaultValue}) {
-    return Hive.box(_settingsBox).get(key, defaultValue: defaultValue);
-  }
+  Future<void> saveSetting(String key, dynamic value) async =>
+      Hive.box(_settingsBox).put(key, value);
 
-  Future<void> deleteSetting(String key) async {
-    await Hive.box(_settingsBox).delete(key);
-  }
+  dynamic getSetting(String key, {dynamic defaultValue}) =>
+      Hive.box(_settingsBox).get(key, defaultValue: defaultValue);
 
-  // ── Кэш публичных ключей ─────────────────────────────────────────────────
+  Future<void> deleteSetting(String key) async =>
+      Hive.box(_settingsBox).delete(key);
 
-  Future<void> cachePublicKeys(String uid, String x25519Key, String ed25519Key) async {
-    await saveSetting('cached_x25519_$uid', x25519Key);
-    await saveSetting('cached_ed25519_$uid', ed25519Key);
+  // ── Кэш публичных ключей контактов ────────────────────────────────────────
+
+  Future<void> cachePublicKeys(
+    String uid,
+    String x25519Key,
+    String ed25519Key,
+  ) async {
+    await saveSetting('cached_x25519_$uid',    x25519Key);
+    await saveSetting('cached_ed25519_$uid',   ed25519Key);
     await saveSetting('cached_keys_time_$uid', DateTime.now().toIso8601String());
   }
 
-  String? getCachedX25519Key(String uid) => getSetting('cached_x25519_$uid');
-  String? getCachedEd25519Key(String uid) => getSetting('cached_ed25519_$uid');
+  String? getCachedX25519Key(String uid)  => getSetting('cached_x25519_$uid')  as String?;
+  String? getCachedEd25519Key(String uid) => getSetting('cached_ed25519_$uid') as String?;
 
-  bool hasCachedKeys(String uid) {
-    return getCachedX25519Key(uid) != null && getCachedEd25519Key(uid) != null;
-  }
+  bool hasCachedKeys(String uid) =>
+      getCachedX25519Key(uid) != null && getCachedEd25519Key(uid) != null;
 
   Future<void> clearCachedKeys(String uid) async {
     await deleteSetting('cached_x25519_$uid');
@@ -369,53 +440,79 @@ class StorageService {
     await deleteSetting('cached_keys_time_$uid');
   }
 
-  // ============================================================
-  // ПОИСК
-  // ============================================================
+  // ──────────────────────────────────────────────────────────────────────────
+  // Поиск
+  // ──────────────────────────────────────────────────────────────────────────
 
   List<Map<String, dynamic>> searchMessages(String query, {int limit = 100}) {
     if (query.isEmpty) return [];
-    var box = Hive.box(_msgBox);
-    List<Map<String, dynamic>> results = [];
     final lowerQuery = query.toLowerCase();
+    final results    = <Map<String, dynamic>>[];
+    final box        = Hive.box(_msgBox);
 
-    for (var chatWith in box.keys) {
+    for (final chatWith in box.keys) {
       if (results.length >= limit) break;
-      List history = getHistory(chatWith.toString());
-      for (var msg in history) {
+      for (final msg in _readHistory(box, chatWith.toString())) {
         if (results.length >= limit) break;
-        if (msg is Map && msg['text'] != null &&
-            msg['text'].toString().toLowerCase().contains(lowerQuery)) {
-          results.add({...Map<String, dynamic>.from(msg), 'chatWith': chatWith});
+        final text = msg['text']?.toString() ?? '';
+        if (text.toLowerCase().contains(lowerQuery)) {
+          results.add({...msg, 'chatWith': chatWith});
         }
       }
     }
-    results.sort((a, b) => _parseTime(b['time']).compareTo(_parseTime(a['time'])));
+
+    results.sort(
+      (a, b) => _parseTime(b['time']).compareTo(_parseTime(a['time'])),
+    );
     return results;
   }
 
-  // ============================================================
-  // ОЧИСТКА И УТИЛИТЫ
-  // ============================================================
+  // ──────────────────────────────────────────────────────────────────────────
+  // Очистка
+  // ──────────────────────────────────────────────────────────────────────────
 
   Future<void> deleteOldMessages(int olderThanDays) async {
-    final cutoffDate = DateTime.now().subtract(Duration(days: olderThanDays));
-    var box = Hive.box(_msgBox);
+    final cutoff = DateTime.now().subtract(Duration(days: olderThanDays));
+    final box    = Hive.box(_msgBox);
 
-    for (var chatWith in box.keys) {
-      List history = getHistory(chatWith.toString()).whereType<Map>().toList();
-      history.removeWhere((msg) => _parseTime(msg['time']).isBefore(cutoffDate));
-      if (history.isEmpty) {
-        await box.delete(chatWith);
-      } else {
-        await box.put(chatWith, history);
-      }
+    for (final chatWith in List.of(box.keys)) {
+      await _withLock(chatWith.toString(), () async {
+        final history = _readHistory(box, chatWith.toString());
+        history.removeWhere((msg) => _parseTime(msg['time']).isBefore(cutoff));
+        if (history.isEmpty) {
+          await box.delete(chatWith);
+        } else {
+          await box.put(chatWith, history);
+        }
+      });
     }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Приватные вспомогательные методы
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /// Читает историю чата из бокса и приводит к List<Map<String, dynamic>>.
+  /// Не async — только синхронное чтение, запись всегда под lock.
+  List<Map<String, dynamic>> _readHistory(Box box, String chatWith) {
+    final raw = box.get(chatWith, defaultValue: <dynamic>[]);
+    if (raw is! List) return [];
+    return raw
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+  }
+
+  /// Читает список контактов из бокса как List<String>.
+  List<String> _readContactsList(Box box) {
+    final raw = box.get('list', defaultValue: <dynamic>[]);
+    if (raw is! List) return [];
+    return raw.map((e) => e.toString()).toList();
   }
 
   DateTime _parseTime(dynamic raw) {
     if (raw == null) return DateTime(2000);
-    if (raw is int) return DateTime.fromMillisecondsSinceEpoch(raw);
+    if (raw is int)  return DateTime.fromMillisecondsSinceEpoch(raw);
     return DateTime.tryParse(raw.toString()) ?? DateTime(2000);
   }
 }
