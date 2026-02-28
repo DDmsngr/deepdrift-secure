@@ -500,7 +500,7 @@ class StorageService {
   List<Map<String, dynamic>> _readHistory(Box box, String chatWith) {
     final dynamic raw = box.get(chatWith);
     if (raw == null || raw is! List) return [];
-    return (raw as List)
+    return raw
         .whereType<Map>()
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
@@ -510,7 +510,7 @@ class StorageService {
   List<String> _readContactsList(Box box) {
     final dynamic raw = box.get('list');
     if (raw == null || raw is! List) return [];
-    return (raw as List).map((e) => e.toString()).toList();
+    return raw.map((e) => e.toString()).toList();
   }
 
   DateTime _parseTime(dynamic raw) {
