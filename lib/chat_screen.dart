@@ -59,49 +59,52 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   static const String SERVER_HTTP_URL = 'https://deepdrift-backend.onrender.com';
 
+  // Геттер, который определяет, открыли мы группу или личный чат
+  bool get isGroup => widget.targetUid.startsWith('g_');
+
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _messageIds = {};
   final TextEditingController _messageController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
-  final _socket  = SocketService();
-  final _storage = StorageService();
-  final _uuid    = const Uuid();
+  final _socket        = SocketService();
+  final _storage       = StorageService();
+  final _uuid          = const Uuid();
   final _imagePicker   = ImagePicker();
   final _audioRecorder = AudioRecorder();
   final _audioPlayer   = AudioPlayer();
-  final _dio = Dio();
+  final _dio           = Dio();
 
   StreamSubscription? _socketSub;
 
-  bool   _isTyping = false;
+  bool   _isTyping      = false;
   Timer? _typingTimer;
   bool   _targetIsTyping = false;
 
-  bool _isLoadingMore    = false;
-  bool _hasMoreMessages  = true;
+  bool _isLoadingMore   = false;
+  bool _hasMoreMessages = true;
 
   String? _replyToText;
   String? _replyToId;
 
-  bool   _keysExchanged = false;
+  bool   _keysExchanged     = false;
   Timer? _keyExchangeTimeout;
 
   bool _isSearching = false;
 
-  bool    _isRecording     = false;
+  bool    _isRecording      = false;
   String? _voiceTempPath;
   Timer?  _recordingTimer;
   int     _recordingDuration = 0;
 
-  bool              _isMicMode       = true;
+  bool              _isMicMode        = true;
   bool              _isVideoRecording = false;
   CameraController? _cameraController;
 
-  String?                    _editingMessageId;
-  Map<String, Set<String>>   _reactions = {};
-  String?                    _playingMessageId;
+  String?                  _editingMessageId;
+  Map<String, Set<String>> _reactions = {};
+  String?                  _playingMessageId;
 
   bool   _isSendingFile  = false;
   double _uploadProgress = 0.0;
@@ -212,7 +215,7 @@ class _ChatScreenState extends State<ChatScreen> {
             }
           }
           _hasMoreMessages = older.length == MESSAGES_PER_PAGE;
-          _isLoadingMore = false;
+          _isLoadingMore   = false;
         });
       }
     } catch (e) {
@@ -226,7 +229,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<String?> _uploadFileEncrypted(File file) async {
     try {
-      final bytes         = await file.readAsBytes();
+      final bytes          = await file.readAsBytes();
       final encryptedBytes = await widget.cipher.encryptFileBytes(bytes, targetUid: widget.targetUid);
       final tempDir  = await getTemporaryDirectory();
       final tempFile = File('${tempDir.path}/${file.path.split('/').last}.enc');
@@ -254,7 +257,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<String?> _downloadFileEncrypted(String fileId, String? fileName) async {
     try {
-      final appDir  = await getApplicationDocumentsDirectory();
+      final appDir   = await getApplicationDocumentsDirectory();
       final response = await http.get(Uri.parse('$SERVER_HTTP_URL/download/$fileId'));
       if (response.statusCode != 200) return null;
       final decryptedBytes = await widget.cipher.decryptFileBytes(
@@ -277,8 +280,8 @@ class _ChatScreenState extends State<ChatScreen> {
       final appDir   = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/deepdrift_media');
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
-      final ext  = _extensionForType(msgType, fileName);
-      final name = fileName ?? 'media_${DateTime.now().millisecondsSinceEpoch}$ext';
+      final ext     = _extensionForType(msgType, fileName);
+      final name    = fileName ?? 'media_${DateTime.now().millisecondsSinceEpoch}$ext';
       final newFile = await originalFile.copy('${mediaDir.path}/$name');
       return newFile.path;
     } catch (e) {
@@ -317,8 +320,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String _formatFileSize(dynamic sizeRaw) {
     final size = sizeRaw is int ? sizeRaw : int.tryParse(sizeRaw.toString()) ?? 0;
-    if (size < 1024)           return '$size B';
-    if (size < 1024 * 1024)   return '${(size / 1024).toStringAsFixed(1)} KB';
+    if (size < 1024)         return '$size B';
+    if (size < 1024 * 1024) return '${(size / 1024).toStringAsFixed(1)} KB';
     return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
@@ -338,14 +341,14 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       final type = data['type'];
       switch (type) {
-        case 'message':             _handleIncomingMessage(data);  break;
-        case 'typing_indicator':    _handleTypingIndicator(data);  break;
+        case 'message':             _handleIncomingMessage(data);   break;
+        case 'typing_indicator':    _handleTypingIndicator(data);   break;
         case 'public_key_response': _handlePublicKeyResponse(data); break;
-        case 'message_read':        _handleMessageRead(data);      break;
-        case 'read_receipt':        _handleReadReceipt(data);      break;
-        case 'message_deleted':     _handleMessageDeleted(data);   break;
-        case 'message_edited':      _handleMessageEdited(data);    break;
-        case 'message_reaction':    _handleMessageReaction(data);  break;
+        case 'message_read':        _handleMessageRead(data);       break;
+        case 'read_receipt':        _handleReadReceipt(data);       break;
+        case 'message_deleted':     _handleMessageDeleted(data);    break;
+        case 'message_edited':      _handleMessageEdited(data);     break;
+        case 'message_reaction':    _handleMessageReaction(data);   break;
         case 'user_status':
         case 'profile_response':
           if (data['uid'] == widget.targetUid) setState(() {});
@@ -371,12 +374,12 @@ class _ChatScreenState extends State<ChatScreen> {
         await _storage.clearCachedKeys(widget.targetUid);
         _socket.requestPublicKey(widget.targetUid);
         final errorMsg = {
-          'id': msgId,
-          'text': '⚠️ Key mismatch detected. Please ask sender to resend the message.',
-          'isMe': false,
-          'time': rawTime ?? DateTime.now().millisecondsSinceEpoch,
-          'status': 'error',
-          'type': 'text',
+          'id':              msgId,
+          'text':            '⚠️ Key mismatch detected. Please ask sender to resend the message.',
+          'isMe':            false,
+          'time':            rawTime ?? DateTime.now().millisecondsSinceEpoch,
+          'status':          'error',
+          'type':            'text',
           'signatureStatus': SignatureStatus.invalid.index,
         };
         if (mounted) {
@@ -392,12 +395,9 @@ class _ChatScreenState extends State<ChatScreen> {
       SignatureStatus sigStatus = SignatureStatus.unknown;
       if (signature != null) {
         final isValid = await widget.cipher.verifySignature(
-          decrypted,
-          signature,
-          widget.targetUid,
+          decrypted, signature, widget.targetUid,
         );
         sigStatus = isValid ? SignatureStatus.valid : SignatureStatus.invalid;
-
         if (!isValid) {
           debugPrint('⚠️ [Security] Invalid signature on message $msgId from $senderUid');
         }
@@ -411,8 +411,8 @@ class _ChatScreenState extends State<ChatScreen> {
         } else {
           localPath = await _saveMediaToDiskBase64(
             base64Data: mediaStr,
-            msgType: msgTyp,
-            fileName: data['fileName'] as String?,
+            msgType:    msgTyp,
+            fileName:   data['fileName'] as String?,
           );
         }
       }
@@ -511,14 +511,11 @@ class _ChatScreenState extends State<ChatScreen> {
       SignatureStatus sigStatus = SignatureStatus.unknown;
       if (newSignature != null) {
         final isValid = await widget.cipher.verifySignature(
-          newText,
-          newSignature as String,
-          widget.targetUid,
+          newText, newSignature as String, widget.targetUid,
         );
         sigStatus = isValid ? SignatureStatus.valid : SignatureStatus.invalid;
         if (!isValid) debugPrint('⚠️ [Security] Invalid signature on edited message $msgId');
       }
-
       if (mounted) {
         setState(() {
           final idx = _messages.indexWhere((m) => m['id'] == msgId);
@@ -591,7 +588,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _sendMessage({
     String? text,
-    String  messageType    = 'text',
+    String  messageType   = 'text',
     String? mediaData,
     String? filePath,
     String? fileName,
@@ -820,6 +817,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  // ── Шаг 1: зум 1.3x (убирает искажения краёв лица) ───────────────────────
   Future<void> _startVideoRecording() async {
     try {
       final cameras = await availableCameras();
@@ -827,17 +825,25 @@ class _ChatScreenState extends State<ChatScreen> {
         (c) => c.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
       );
+
       _cameraController = CameraController(front, ResolutionPreset.medium, enableAudio: true);
       await _cameraController!.initialize();
+
+      // Зум 1.3x — убираем искажения по краям лица
+      try {
+        final maxZoom = await _cameraController!.getMaxZoomLevel();
+        await _cameraController!.setZoomLevel(1.3.clamp(1.0, maxZoom));
+      } catch (_) {}
+
       await _cameraController!.startVideoRecording();
+
       setState(() { _isVideoRecording = true; _recordingDuration = 0; });
+
       _recordingTimer?.cancel();
-      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (mounted) setState(() => _recordingDuration++);
       });
-    } catch (e) {
-      _showError('Camera error: $e');
-    }
+    } catch (e) { _showError('Camera error: $e'); }
   }
 
   Future<void> _stopVideoRecordingAndSend() async {
@@ -950,7 +956,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Forward (пересылка сообщений)
+  // Forward
   // ──────────────────────────────────────────────────────────────────────────
 
   void _forwardMessage(Map<String, dynamic> message) {
@@ -1014,8 +1020,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }) async {
     final originalFrom = message['forwardedFrom'] as String? ??
         (message['isMe'] == true ? widget.myUid : widget.targetUid);
-
-    final displayName = _storage.getContactDisplayName(originalFrom);
+    final displayName  = _storage.getContactDisplayName(originalFrom);
     final forwardLabel = displayName.isNotEmpty ? displayName : originalFrom;
 
     if (toUid == widget.targetUid) {
@@ -1120,17 +1125,17 @@ class _ChatScreenState extends State<ChatScreen> {
   String _mimeTypeFromExtension(String fileName) {
     final ext = fileName.split('.').last.toLowerCase();
     const mimes = {
-      'pdf': 'application/pdf',
-      'doc': 'application/msword',
+      'pdf':  'application/pdf',
+      'doc':  'application/msword',
       'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'xls': 'application/vnd.ms-excel',
+      'xls':  'application/vnd.ms-excel',
       'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'ppt': 'application/vnd.ms-powerpoint',
+      'ppt':  'application/vnd.ms-powerpoint',
       'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'txt': 'text/plain',  'zip': 'application/zip',
-      'rar': 'application/x-rar-compressed', 'mp3': 'audio/mpeg',
-      'mp4': 'video/mp4',   'mov': 'video/quicktime',
-      'png': 'image/png',   'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif',
+      'txt':  'text/plain',  'zip': 'application/zip',
+      'rar':  'application/x-rar-compressed', 'mp3': 'audio/mpeg',
+      'mp4':  'video/mp4',   'mov': 'video/quicktime',
+      'png':  'image/png',   'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif',
     };
     return mimes[ext] ?? 'application/octet-stream';
   }
@@ -1141,9 +1146,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (mimeType.startsWith('audio/')) return Icons.audio_file;
     if (mimeType.startsWith('video/')) return Icons.video_file;
     if (mimeType.contains('pdf'))      return Icons.picture_as_pdf;
-    if (mimeType.contains('word') || mimeType.contains('msword')) return Icons.description;
+    if (mimeType.contains('word') || mimeType.contains('msword'))        return Icons.description;
     if (mimeType.contains('excel') || mimeType.contains('spreadsheet')) return Icons.table_chart;
-    if (mimeType.contains('zip') || mimeType.contains('rar')) return Icons.folder_zip;
+    if (mimeType.contains('zip') || mimeType.contains('rar'))           return Icons.folder_zip;
     return Icons.attach_file;
   }
 
@@ -1362,144 +1367,141 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Message bubble
+  // Шаг 3 (группы): _buildMessage с именами отправителей
   // ──────────────────────────────────────────────────────────────────────────
 
   Widget _buildMessage(Map<String, dynamic> msg, int index) {
-    final isMe      = msg['from'] == widget.myUid;
-    final msgType   = (msg['type'] as String? ?? 'text').toMsgType();
-    final reactions = _reactions[msg['id']?.toString()] ?? {};
+    final isMe    = msg['from'] == widget.myUid;
+    final msgType = (msg['type'] as String? ?? 'text').toMsgType();
+
+    // Достаём имя отправителя из локальной базы (для групп)
+    final senderId   = msg['from']?.toString() ?? 'Unknown';
+    final senderName = _storage.getContactDisplayName(senderId);
 
     return GestureDetector(
       onLongPress: () => _showMessageActions(msg),
       child: Align(
         alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
         child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 3, horizontal: 12),
+          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+          padding: msgType == MsgType.video_note
+              ? EdgeInsets.zero
+              : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: isMe ? const Color(0xFF0099CC) : const Color(0xFF1A1F3C),
+            borderRadius: BorderRadius.circular(16),
+          ),
           child: Column(
             crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
             children: [
-              Container(
-                constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  gradient: isMe
-                      ? const LinearGradient(colors: [Color(0xFF00D4FF), Color(0xFF0099CC)])
-                      : null,
-                  color: isMe ? null : const Color(0xFF1A1F3C),
-                  borderRadius: BorderRadius.only(
-                    topLeft:     const Radius.circular(12),
-                    topRight:    const Radius.circular(12),
-                    bottomLeft:  Radius.circular(isMe ? 12 : 2),
-                    bottomRight: Radius.circular(isMe ? 2 : 12),
+
+              // Имя отправителя — только для входящих сообщений в группе
+              if (isGroup && !isMe && msgType != MsgType.video_note)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    senderName,
+                    style: const TextStyle(
+                      color: Colors.cyanAccent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.2),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+
+              // Метка "Forwarded from"
+              if (msg['forwardedFrom'] != null) ...[
+                Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-
-                    // Метка "Forwarded from"
-                    if (msg['forwardedFrom'] != null) ...[
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.forward,
-                              size: 13,
-                              color: isMe ? Colors.white70 : Colors.cyanAccent.withValues(alpha: 0.8)),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              'Forwarded from ${msg['forwardedFrom']}',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontStyle: FontStyle.italic,
-                                color: isMe
-                                    ? Colors.white70
-                                    : Colors.cyanAccent.withValues(alpha: 0.8),
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
+                    Icon(Icons.forward,
+                        size: 13,
+                        color: isMe ? Colors.white70 : Colors.cyanAccent.withValues(alpha: 0.8)),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        'Forwarded from ${msg['forwardedFrom']}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontStyle: FontStyle.italic,
+                          color: isMe ? Colors.white70 : Colors.cyanAccent.withValues(alpha: 0.8),
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      const SizedBox(height: 4),
-                    ],
-
-                    // Reply preview
-                    if (msg['replyTo'] != null) ...[
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        margin:  const EdgeInsets.only(bottom: 6),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.25),
-                          borderRadius: BorderRadius.circular(8),
-                          border: const Border(left: BorderSide(color: Colors.cyanAccent, width: 3)),
-                        ),
-                        child: Text(
-                          msg['replyTo'] as String,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.65),
-                            fontSize: 12,
-                            fontStyle: FontStyle.italic,
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-
-                    // Содержимое сообщения
-                    _buildMessageContent(msg, msgType, isMe),
-                    const SizedBox(height: 4),
-
-                    // Нижняя строка: edited + время + статус + иконка подписи
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (msg['edited'] == true)
-                          const Padding(
-                            padding: EdgeInsets.only(right: 4),
-                            child: Text(
-                              'edited',
-                              style: TextStyle(
-                                color: Colors.white54,
-                                fontSize: 10,
-                                fontStyle: FontStyle.italic,
-                              ),
-                            ),
-                          ),
-                        Text(
-                          _formatTime(msg['time']),
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.5),
-                            fontSize: 11,
-                          ),
-                        ),
-                        if (isMe) ...[
-                          const SizedBox(width: 4),
-                          _buildStatusIcon(msg['status'] as String?),
-                        ],
-                        if (!isMe) ...[
-                          const SizedBox(width: 4),
-                          _buildSignatureIcon(msg),
-                        ],
-                      ],
                     ),
                   ],
                 ),
+                const SizedBox(height: 4),
+              ],
+
+              // Reply preview
+              if (msg['replyTo'] != null) ...[
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  margin:  const EdgeInsets.only(bottom: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.25),
+                    borderRadius: BorderRadius.circular(8),
+                    border: const Border(left: BorderSide(color: Colors.cyanAccent, width: 3)),
+                  ),
+                  child: Text(
+                    msg['replyTo'] as String,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.65),
+                      fontSize: 12,
+                      fontStyle: FontStyle.italic,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+
+              // Содержимое сообщения
+              _buildMessageContent(msg, msgType, isMe),
+              const SizedBox(height: 4),
+
+              // Нижняя строка: edited + время + статус + иконка подписи
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (msg['edited'] == true)
+                    const Padding(
+                      padding: EdgeInsets.only(right: 4),
+                      child: Text(
+                        'edited',
+                        style: TextStyle(
+                          color: Colors.white54,
+                          fontSize: 10,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ),
+                  Text(
+                    _formatTime(msg['time']),
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.5),
+                      fontSize: 11,
+                    ),
+                  ),
+                  if (isMe) ...[
+                    const SizedBox(width: 4),
+                    _buildStatusIcon(msg['status'] as String?),
+                  ],
+                  if (!isMe) ...[
+                    const SizedBox(width: 4),
+                    _buildSignatureIcon(msg),
+                  ],
+                ],
               ),
 
               // Реакции
-              if (reactions.isNotEmpty)
-                Padding(
+              Builder(builder: (_) {
+                final reactions = _reactions[msg['id']?.toString()] ?? {};
+                if (reactions.isEmpty) return const SizedBox.shrink();
+                return Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Wrap(
                     spacing: 4,
@@ -1508,7 +1510,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF1A1F3C),
+                          color: const Color(0xFF0A0E27),
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: Colors.cyan.withValues(alpha: 0.4)),
                         ),
@@ -1516,7 +1518,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     )).toList(),
                   ),
-                ),
+                );
+              }),
             ],
           ),
         ),
@@ -1531,9 +1534,9 @@ class _ChatScreenState extends State<ChatScreen> {
         : SignatureStatus.unknown;
 
     final (icon, color, tooltip) = switch (status) {
-      SignatureStatus.valid   => (Icons.lock, Colors.greenAccent,    'Signature verified'),
-      SignatureStatus.invalid => (Icons.warning_amber, Colors.orange, 'Signature invalid — message may have been tampered'),
-      SignatureStatus.unknown => (Icons.lock_clock, Colors.white24,   'Signature not yet verified'),
+      SignatureStatus.valid   => (Icons.lock,          Colors.greenAccent, 'Signature verified'),
+      SignatureStatus.invalid => (Icons.warning_amber,  Colors.orange,     'Signature invalid — message may have been tampered'),
+      SignatureStatus.unknown => (Icons.lock_clock,     Colors.white24,    'Signature not yet verified'),
     };
 
     return GestureDetector(
@@ -1687,10 +1690,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildStatusIcon(String? status) {
     switch (status) {
-      case 'read':      return const Icon(Icons.done_all,    size: 14, color: Colors.cyanAccent);
-      case 'delivered': return const Icon(Icons.done_all,    size: 14, color: Colors.white54);
-      case 'sent':      return const Icon(Icons.check,       size: 14, color: Colors.white54);
-      case 'pending':   return const Icon(Icons.access_time, size: 14, color: Colors.white38);
+      case 'read':      return const Icon(Icons.done_all,      size: 14, color: Colors.cyanAccent);
+      case 'delivered': return const Icon(Icons.done_all,      size: 14, color: Colors.white54);
+      case 'sent':      return const Icon(Icons.check,         size: 14, color: Colors.white54);
+      case 'pending':   return const Icon(Icons.access_time,   size: 14, color: Colors.white38);
       case 'failed':    return const Icon(Icons.error_outline, size: 14, color: Colors.redAccent);
       default:          return const SizedBox.shrink();
     }
@@ -1745,12 +1748,13 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
 
+            // ── Шаг 2: оверлей камеры перенесён наверх (top: 100) ──────────
             if (_isVideoRecording &&
                 _cameraController != null &&
                 _cameraController!.value.isInitialized)
               Positioned(
-                bottom: 90,
-                right:  20,
+                top:   100, // перенесли наверх — ближе к фронтальной камере телефона
+                right: 20,
                 child: Container(
                   width: 160, height: 160,
                   decoration: BoxDecoration(
@@ -1769,12 +1773,12 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  // ── Шаг 2 (AppBar): поддержка групп + локализация статусов ───────────────
   AppBar _buildAppBar(String displayName) {
     final isOnline = _storage.isContactOnline(widget.targetUid);
     final lastSeen = _storage.getContactLastSeen(widget.targetUid);
     final avatar   = _storage.getContactAvatar(widget.targetUid);
 
-    // Hero tag и URL аватара для полноэкранного просмотра (Шаг 3)
     final avatarUrl = avatar != null && avatar.isNotEmpty
         ? '$SERVER_HTTP_URL/download/$avatar'
         : null;
@@ -1798,7 +1802,6 @@ class _ChatScreenState extends State<ChatScreen> {
             )
           : Row(
               children: [
-                // Аватарка с Hero-анимацией и полноэкранным просмотром (Шаг 3)
                 GestureDetector(
                   onTap: () {
                     if (avatarUrl != null) _showFullScreenAvatar(heroTag, avatarUrl, displayName);
@@ -1824,15 +1827,19 @@ class _ChatScreenState extends State<ChatScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(displayName, style: GoogleFonts.orbitron(fontSize: 14)),
-                      if (_targetIsTyping)
-                        const Text('typing...', style: TextStyle(fontSize: 10, color: Colors.cyan))
+                      // Логика группы или личного чата
+                      if (isGroup)
+                        const Text('Секретная группа',
+                            style: TextStyle(fontSize: 10, color: Colors.cyan))
+                      else if (_targetIsTyping)
+                        const Text('печатает...',
+                            style: TextStyle(fontSize: 10, color: Colors.cyan))
                       else if (isOnline)
-                        const Text('online', style: TextStyle(fontSize: 10, color: Colors.green))
+                        const Text('в сети',
+                            style: TextStyle(fontSize: 10, color: Colors.green))
                       else if (lastSeen > 0)
-                        Text(
-                          'last seen ${_formatLastSeen(lastSeen)}',
-                          style: const TextStyle(fontSize: 10, color: Colors.white54),
-                        ),
+                        Text('был(а) ${_formatLastSeen(lastSeen)}',
+                            style: const TextStyle(fontSize: 10, color: Colors.white54)),
                     ],
                   ),
                 ),
@@ -1847,9 +1854,6 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Полноэкранный просмотр аватарки (Шаг 2 из home_screen upgrade)
-  // ──────────────────────────────────────────────────────────────────────────
   void _showFullScreenAvatar(String tag, String imageUrl, String name) {
     Navigator.push(context, PageRouteBuilder(
       opaque: false,
@@ -2016,20 +2020,19 @@ class _ChatScreenState extends State<ChatScreen> {
       child: SafeArea(
         child: Row(
           children: [
+            // ── Шаг 3: минималистичная скрепка (единый медиа-пикер) ─────────
             PopupMenuButton<String>(
               color: const Color(0xFF1A1F3C),
-              icon: const Icon(Icons.add_circle_outline, color: Colors.cyan),
+              icon: const Icon(Icons.attach_file, color: Colors.cyan),
               onSelected: (value) {
                 switch (value) {
-                  case 'photo_gallery': _sendPhoto(source: ImageSource.gallery); break;
-                  case 'photo_camera':  _sendPhoto(source: ImageSource.camera);  break;
-                  case 'file':          _sendFile();                              break;
+                  case 'media': _sendPhoto(source: ImageSource.gallery); break;
+                  case 'file':  _sendFile();                             break;
                 }
               },
               itemBuilder: (_) => [
-                _popupItem('photo_gallery', Icons.photo_library, 'Photo from gallery'),
-                _popupItem('photo_camera',  Icons.camera_alt,    'Take photo'),
-                _popupItem('file',          Icons.attach_file,   'Send file'),
+                _popupItem('media', Icons.photo_library,    'Галерея (Медиа)'),
+                _popupItem('file',  Icons.insert_drive_file, 'Документ / Файл'),
               ],
             ),
 
