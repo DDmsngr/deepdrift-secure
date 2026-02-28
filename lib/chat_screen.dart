@@ -369,13 +369,15 @@ class _ChatScreenState extends State<ChatScreen> {
     final rawTime   = data['time'];
 
     widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
+      // ЕСЛИ ОШИБКА АВТОРИЗАЦИИ — СБРАСЫВАЕМ КЛЮЧИ И ЗАПРАШИВАЕМ ЗАНОВО
       if (decrypted.contains('Authentication failed') || decrypted.contains('Wrong key')) {
         widget.cipher.clearSharedSecret(widget.targetUid);
         await _storage.clearCachedKeys(widget.targetUid);
         _socket.requestPublicKey(widget.targetUid);
+
         final errorMsg = {
           'id':              msgId,
-          'text':            '⚠️ Key mismatch detected. Please ask sender to resend the message.',
+          'text':            '⚠️ Ошибка ключей. Ключи обновлены, попросите переотправить сообщение.',
           'isMe':            false,
           'time':            rawTime ?? DateTime.now().millisecondsSinceEpoch,
           'status':          'error',
@@ -716,6 +718,35 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  // ── Отправка видео из галереи ─────────────────────────────────────────────
+  Future<void> _sendVideo() async {
+    try {
+      final video = await _imagePicker.pickVideo(source: ImageSource.gallery);
+      if (video == null) return;
+
+      setState(() { _isSendingFile = true; _uploadProgress = 0.0; });
+      final file   = File(video.path);
+      final fileId = await _uploadFileEncrypted(file);
+
+      if (fileId != null) {
+        final localPath = await _copyFileToMediaDir(file, MsgType.video_note, video.name);
+        await _sendMessage(
+          text:        '🎥 Видео',
+          messageType: 'video_note',
+          mediaData:   'FILE_ID:$fileId',
+          filePath:    localPath,
+          fileName:    video.name,
+          fileSize:    await file.length(),
+          mimeType:    'video/mp4',
+        );
+      }
+    } catch (e) {
+      _showError('Ошибка видео: $e');
+    } finally {
+      setState(() => _isSendingFile = false);
+    }
+  }
+
   Future<void> _sendFile() async {
     try {
       final result = await FilePicker.platform.pickFiles(
@@ -817,7 +848,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // ── Шаг 1: зум 1.3x (убирает искажения краёв лица) ───────────────────────
   Future<void> _startVideoRecording() async {
     try {
       final cameras = await availableCameras();
@@ -829,7 +859,6 @@ class _ChatScreenState extends State<ChatScreen> {
       _cameraController = CameraController(front, ResolutionPreset.medium, enableAudio: true);
       await _cameraController!.initialize();
 
-      // Зум 1.3x — убираем искажения по краям лица
       try {
         final maxZoom = await _cameraController!.getMaxZoomLevel();
         await _cameraController!.setZoomLevel(1.3.clamp(1.0, maxZoom));
@@ -1367,14 +1396,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Шаг 3 (группы): _buildMessage с именами отправителей
+  // _buildMessage с именами отправителей (для групп)
   // ──────────────────────────────────────────────────────────────────────────
 
   Widget _buildMessage(Map<String, dynamic> msg, int index) {
     final isMe    = msg['from'] == widget.myUid;
     final msgType = (msg['type'] as String? ?? 'text').toMsgType();
 
-    // Достаём имя отправителя из локальной базы (для групп)
     final senderId   = msg['from']?.toString() ?? 'Unknown';
     final senderName = _storage.getContactDisplayName(senderId);
 
@@ -1396,7 +1424,6 @@ class _ChatScreenState extends State<ChatScreen> {
             crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
             children: [
 
-              // Имя отправителя — только для входящих сообщений в группе
               if (isGroup && !isMe && msgType != MsgType.video_note)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 4),
@@ -1410,7 +1437,6 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
 
-              // Метка "Forwarded from"
               if (msg['forwardedFrom'] != null) ...[
                 Row(
                   mainAxisSize: MainAxisSize.min,
@@ -1436,7 +1462,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 const SizedBox(height: 4),
               ],
 
-              // Reply preview
               if (msg['replyTo'] != null) ...[
                 Container(
                   padding: const EdgeInsets.all(8),
@@ -1459,11 +1484,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ],
 
-              // Содержимое сообщения
               _buildMessageContent(msg, msgType, isMe),
               const SizedBox(height: 4),
 
-              // Нижняя строка: edited + время + статус + иконка подписи
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -1497,7 +1520,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
 
-              // Реакции
               Builder(builder: (_) {
                 final reactions = _reactions[msg['id']?.toString()] ?? {};
                 if (reactions.isEmpty) return const SizedBox.shrink();
@@ -1748,12 +1770,11 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
 
-            // ── Шаг 2: оверлей камеры перенесён наверх (top: 100) ──────────
             if (_isVideoRecording &&
                 _cameraController != null &&
                 _cameraController!.value.isInitialized)
               Positioned(
-                top:   100, // перенесли наверх — ближе к фронтальной камере телефона
+                top:   100,
                 right: 20,
                 child: Container(
                   width: 160, height: 160,
@@ -1773,7 +1794,6 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  // ── Шаг 2 (AppBar): поддержка групп + локализация статусов ───────────────
   AppBar _buildAppBar(String displayName) {
     final isOnline = _storage.isContactOnline(widget.targetUid);
     final lastSeen = _storage.getContactLastSeen(widget.targetUid);
@@ -1827,7 +1847,6 @@ class _ChatScreenState extends State<ChatScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(displayName, style: GoogleFonts.orbitron(fontSize: 14)),
-                      // Логика группы или личного чата
                       if (isGroup)
                         const Text('Секретная группа',
                             style: TextStyle(fontSize: 10, color: Colors.cyan))
@@ -2020,19 +2039,21 @@ class _ChatScreenState extends State<ChatScreen> {
       child: SafeArea(
         child: Row(
           children: [
-            // ── Шаг 3: минималистичная скрепка (единый медиа-пикер) ─────────
+            // ── Меню скрепки с 4 пунктами (камера, фото, видео, файл) ────────
             PopupMenuButton<String>(
               color: const Color(0xFF1A1F3C),
               icon: const Icon(Icons.attach_file, color: Colors.cyan),
               onSelected: (value) {
-                switch (value) {
-                  case 'media': _sendPhoto(source: ImageSource.gallery); break;
-                  case 'file':  _sendFile();                             break;
-                }
+                if (value == 'camera')  _sendPhoto(source: ImageSource.camera);
+                if (value == 'gallery') _sendPhoto(source: ImageSource.gallery);
+                if (value == 'video')   _sendVideo();
+                if (value == 'file')    _sendFile();
               },
               itemBuilder: (_) => [
-                _popupItem('media', Icons.photo_library,    'Галерея (Медиа)'),
-                _popupItem('file',  Icons.insert_drive_file, 'Документ / Файл'),
+                _popupItem('camera',  Icons.camera_alt,        'Камера (Фото)'),
+                _popupItem('gallery', Icons.photo_library,     'Галерея (Фото)'),
+                _popupItem('video',   Icons.video_library,     'Видео из галереи'),
+                _popupItem('file',    Icons.insert_drive_file, 'Файл / Документ'),
               ],
             ),
 
