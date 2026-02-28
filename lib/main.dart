@@ -6,44 +6,51 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'notification_service.dart';
 import 'socket_service.dart';
-import 'splash_screen.dart';
+import 'splash_screen.dart'; // Или home_screen.dart, в зависимости от того, что ты используешь на старте
 
-// ── Фоновый обработчик FCM ───────────────────────────────────────────────────
-// Должен быть top-level функцией (не методом класса) — требование Firebase.
-// Вызывается когда приложение убито или в фоне и приходит data-only push.
+// ── Фоновый обработчик FCM (DATA-ONLY PUSH) ──────────────────────────────────
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp();
-  debugPrint('📲 Background FCM received: ${message.messageId}');
+  debugPrint('📲 Background FCM received (data-only): ${message.data}');
 
-  // Показываем локальное уведомление только для data-only push —
-  // FCM-уведомления с notification-payload Android показывает сам.
-  if (message.notification == null) {
-    final plugin = FlutterLocalNotificationsPlugin();
+  // Так как мы убрали блок notification на сервере, 
+  // ОС больше не показывает пуш сама. Мы рисуем его вручную.
+  final plugin = FlutterLocalNotificationsPlugin();
 
-    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    await plugin.initialize(const InitializationSettings(android: androidInit));
+  const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+  // Если будешь собирать под iOS: const iosInit = DarwinInitializationSettings();
+  await plugin.initialize(const InitializationSettings(android: androidInit));
 
-    final fromUid = message.data['from_uid'] as String? ?? 'DDChat';
-    await plugin.show(
-      message.hashCode,
-      'DDChat: $fromUid',
-      'New encrypted message',
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'background_messages',
-          'Background Messages',
-          importance:      Importance.max,
-          priority:        Priority.high,
-          showWhen:        true,
-          color:           Color(0xFF00D9FF),
-          enableVibration: true,
-          playSound:       true,
-        ),
+  // Достаем данные из невидимого пуша
+  final fromUid = message.data['from_uid'] as String? ?? 'DDChat';
+  final senderName = message.data['sender_name'] as String? ?? fromUid;
+  final msgType = message.data['type'] as String? ?? 'new_message';
+
+  // Формируем безопасный текст
+  String bodyText = "Новое зашифрованное сообщение";
+  if (msgType == 'message_deleted') bodyText = "🚫 Сообщение удалено";
+  if (msgType == 'message_edited') bodyText = "✏️ Сообщение изменено";
+  if (msgType == 'message_reaction') bodyText = "❤️ Новая реакция";
+
+  await plugin.show(
+    message.hashCode,
+    senderName, // Имя отправителя
+    bodyText,   // Статичный безопасный текст
+    const NotificationDetails(
+      android: AndroidNotificationDetails(
+        'secure_messages_channel', // Новый ID канала, чтобы сбросить кэш настроек Android
+        'Защищенные сообщения',
+        importance:      Importance.max,
+        priority:        Priority.high,
+        showWhen:        true,
+        color:           Color(0xFF00D9FF),
+        enableVibration: true,
+        playSound:       true,
       ),
-      payload: fromUid,
-    );
-  }
+    ),
+    payload: fromUid, // Передаем UID друга, чтобы по клику открыть нужный чат
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,28 +61,24 @@ void main() async {
   // 1. Firebase
   await Firebase.initializeApp();
 
-  // 2. Запрос разрешений (Android 13+ / iOS)
+  // 2. Запрос разрешений
   await FirebaseMessaging.instance.requestPermission(
     alert: true,
     badge: true,
     sound: true,
   );
 
-  // 3. Foreground-уведомления (нужно для iOS, на Android игнорируется)
-  await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
-    alert: true,
-    badge: true,
-    sound: true,
-  );
+  // 3. Foreground-уведомления (чтобы пуши падали даже если приложение открыто)
+  FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+    // В открытом приложении мы не показываем системный пуш,
+    // так как сообщения уже приходят по WebSocket и отрисовываются в UI.
+    debugPrint('📩 Foreground FCM received: ${message.data}');
+  });
 
   // 4. Фоновый обработчик FCM
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
-  // 5. Обновление FCM-токена без удаления старого.
-  //    deleteToken() при каждом запуске убивал токен в Redis ДО регистрации
-  //    нового — push-уведомления переставали приходить на несколько минут.
-  //    onTokenRefresh срабатывает только когда Firebase действительно
-  //    обновляет токен (раз в несколько недель или после переустановки).
+  // 5. Обновление FCM-токена
   FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
     debugPrint('🔄 FCM token refreshed, re-registering...');
     SocketService().registerFcmToken(newToken);
@@ -83,9 +86,6 @@ void main() async {
 
   // 6. Инициализация локального хранилища и сервисов
   await Hive.initFlutter();
-
-  // NotificationService.init() должен вызываться ДО runApp(), чтобы
-  // getInitialMessage() успел обработать cold-start уведомление.
   await NotificationService().init();
 
   runApp(const DeepDriftApp());
@@ -137,9 +137,7 @@ class _DeepDriftAppState extends State<DeepDriftApp>
       title: 'DDChat',
       debugShowCheckedModeBanner: false,
 
-      // 🟡-2 FIX: передаём navigatorKey из NotificationService.
-      // Это позволяет навигировать к чату по тапу на уведомление
-      // без BuildContext — даже из background/killed state.
+      // Позволяет навигировать к чату по тапу на уведомление
       navigatorKey: NotificationService.navigatorKey,
 
       theme: ThemeData(
@@ -156,7 +154,7 @@ class _DeepDriftAppState extends State<DeepDriftApp>
           elevation: 0,
         ),
       ),
-      home: const SplashScreen(),
+      home: const SplashScreen(), // Если у тебя стартовый HomeScreen, замени на HomeScreen()
     );
   }
 }
