@@ -116,7 +116,7 @@ class StorageService {
   }
 
   bool hasMessage(String chatWith, String messageId) {
-    return getHistory(chatWith).any((m) => m is Map && m['id'] == messageId);
+    return getHistory(chatWith).any((m) => m['id'] == messageId);
   }
 
   /// Возвращает полную историю чата как List<Map>.
@@ -494,10 +494,13 @@ class StorageService {
 
   /// Читает историю чата из бокса и приводит к List<Map<String, dynamic>>.
   /// Не async — только синхронное чтение, запись всегда под lock.
+  ///
+  /// Намеренно не передаём defaultValue — иначе Dart inferит тип raw как
+  /// List<dynamic> и `raw is! List` становится unnecessary_type_check.
   List<Map<String, dynamic>> _readHistory(Box box, String chatWith) {
-    final raw = box.get(chatWith, defaultValue: <dynamic>[]);
-    if (raw is! List) return [];
-    return raw
+    final dynamic raw = box.get(chatWith);
+    if (raw == null || raw is! List) return [];
+    return (raw as List)
         .whereType<Map>()
         .map((e) => Map<String, dynamic>.from(e))
         .toList();
@@ -505,9 +508,9 @@ class StorageService {
 
   /// Читает список контактов из бокса как List<String>.
   List<String> _readContactsList(Box box) {
-    final raw = box.get('list', defaultValue: <dynamic>[]);
-    if (raw is! List) return [];
-    return raw.map((e) => e.toString()).toList();
+    final dynamic raw = box.get('list');
+    if (raw == null || raw is! List) return [];
+    return (raw as List).map((e) => e.toString()).toList();
   }
 
   DateTime _parseTime(dynamic raw) {
