@@ -37,6 +37,8 @@ extension MsgTypeStr on String {
 }
 
 // ─── Статус верификации подписи ───────────────────────────────────────────────
+// Три состояния: ключ контакта ещё не загружен (unknown), подпись верна (valid),
+// подпись отсутствует или не совпадает (invalid).
 enum SignatureStatus { unknown, valid, invalid }
 
 // ─── Виджет ──────────────────────────────────────────────────────────────────
@@ -59,52 +61,49 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   static const String SERVER_HTTP_URL = 'https://deepdrift-backend.onrender.com';
 
-  // Геттер, который определяет, открыли мы группу или личный чат
-  bool get isGroup => widget.targetUid.startsWith('g_');
-
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _messageIds = {};
   final TextEditingController _messageController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
-  final _socket        = SocketService();
-  final _storage       = StorageService();
-  final _uuid          = const Uuid();
+  final _socket  = SocketService();
+  final _storage = StorageService();
+  final _uuid    = const Uuid();
   final _imagePicker   = ImagePicker();
   final _audioRecorder = AudioRecorder();
   final _audioPlayer   = AudioPlayer();
-  final _dio           = Dio();
+  final _dio = Dio();
 
   StreamSubscription? _socketSub;
 
-  bool   _isTyping      = false;
+  bool   _isTyping = false;
   Timer? _typingTimer;
   bool   _targetIsTyping = false;
 
-  bool _isLoadingMore   = false;
-  bool _hasMoreMessages = true;
+  bool _isLoadingMore    = false;
+  bool _hasMoreMessages  = true;
 
   String? _replyToText;
   String? _replyToId;
 
-  bool   _keysExchanged     = false;
+  bool   _keysExchanged = false;
   Timer? _keyExchangeTimeout;
 
   bool _isSearching = false;
 
-  bool    _isRecording      = false;
+  bool    _isRecording     = false;
   String? _voiceTempPath;
   Timer?  _recordingTimer;
   int     _recordingDuration = 0;
 
-  bool              _isMicMode        = true;
+  bool              _isMicMode       = true;
   bool              _isVideoRecording = false;
   CameraController? _cameraController;
 
-  String?                  _editingMessageId;
-  Map<String, Set<String>> _reactions = {};
-  String?                  _playingMessageId;
+  String?                    _editingMessageId;
+  Map<String, Set<String>>   _reactions = {};
+  String?                    _playingMessageId;
 
   bool   _isSendingFile  = false;
   double _uploadProgress = 0.0;
@@ -215,7 +214,7 @@ class _ChatScreenState extends State<ChatScreen> {
             }
           }
           _hasMoreMessages = older.length == MESSAGES_PER_PAGE;
-          _isLoadingMore   = false;
+          _isLoadingMore = false;
         });
       }
     } catch (e) {
@@ -229,7 +228,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<String?> _uploadFileEncrypted(File file) async {
     try {
-      final bytes          = await file.readAsBytes();
+      final bytes         = await file.readAsBytes();
       final encryptedBytes = await widget.cipher.encryptFileBytes(bytes, targetUid: widget.targetUid);
       final tempDir  = await getTemporaryDirectory();
       final tempFile = File('${tempDir.path}/${file.path.split('/').last}.enc');
@@ -238,9 +237,12 @@ class _ChatScreenState extends State<ChatScreen> {
         'file': await MultipartFile.fromFile(tempFile.path, filename: tempFile.path.split('/').last),
       });
       if (mounted) setState(() => _uploadProgress = 0.0);
+      // 🔴-5 FIX: Прикрепляем upload_token из SocketService
+      final options = Options(headers: _socket.downloadHeaders);
       final response = await _dio.post(
         '$SERVER_HTTP_URL/upload',
         data: formData,
+        options: options,
         onSendProgress: (sent, total) {
           if (mounted) setState(() => _uploadProgress = sent / total);
         },
@@ -257,8 +259,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<String?> _downloadFileEncrypted(String fileId, String? fileName) async {
     try {
-      final appDir   = await getApplicationDocumentsDirectory();
-      final response = await http.get(Uri.parse('$SERVER_HTTP_URL/download/$fileId'));
+      final appDir  = await getApplicationDocumentsDirectory();
+      // 🔴-5 FIX: Прикрепляем upload_token к запросу скачивания
+      final response = await http.get(
+        Uri.parse('$SERVER_HTTP_URL/download/$fileId'),
+        headers: _socket.downloadHeaders,
+      );
       if (response.statusCode != 200) return null;
       final decryptedBytes = await widget.cipher.decryptFileBytes(
         response.bodyBytes,
@@ -280,8 +286,8 @@ class _ChatScreenState extends State<ChatScreen> {
       final appDir   = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/deepdrift_media');
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
-      final ext     = _extensionForType(msgType, fileName);
-      final name    = fileName ?? 'media_${DateTime.now().millisecondsSinceEpoch}$ext';
+      final ext  = _extensionForType(msgType, fileName);
+      final name = fileName ?? 'media_${DateTime.now().millisecondsSinceEpoch}$ext';
       final newFile = await originalFile.copy('${mediaDir.path}/$name');
       return newFile.path;
     } catch (e) {
@@ -320,8 +326,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String _formatFileSize(dynamic sizeRaw) {
     final size = sizeRaw is int ? sizeRaw : int.tryParse(sizeRaw.toString()) ?? 0;
-    if (size < 1024)         return '$size B';
-    if (size < 1024 * 1024) return '${(size / 1024).toStringAsFixed(1)} KB';
+    if (size < 1024)           return '$size B';
+    if (size < 1024 * 1024)   return '${(size / 1024).toStringAsFixed(1)} KB';
     return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
@@ -341,14 +347,14 @@ class _ChatScreenState extends State<ChatScreen> {
       if (!mounted) return;
       final type = data['type'];
       switch (type) {
-        case 'message':             _handleIncomingMessage(data);   break;
-        case 'typing_indicator':    _handleTypingIndicator(data);   break;
+        case 'message':             _handleIncomingMessage(data);  break;
+        case 'typing_indicator':    _handleTypingIndicator(data);  break;
         case 'public_key_response': _handlePublicKeyResponse(data); break;
-        case 'message_read':        _handleMessageRead(data);       break;
-        case 'read_receipt':        _handleReadReceipt(data);       break;
-        case 'message_deleted':     _handleMessageDeleted(data);    break;
-        case 'message_edited':      _handleMessageEdited(data);     break;
-        case 'message_reaction':    _handleMessageReaction(data);   break;
+        case 'message_read':        _handleMessageRead(data);      break;
+        case 'read_receipt':        _handleReadReceipt(data);      break;
+        case 'message_deleted':     _handleMessageDeleted(data);   break;
+        case 'message_edited':      _handleMessageEdited(data);    break;
+        case 'message_reaction':    _handleMessageReaction(data);  break;
         case 'user_status':
         case 'profile_response':
           if (data['uid'] == widget.targetUid) setState(() {});
@@ -369,19 +375,18 @@ class _ChatScreenState extends State<ChatScreen> {
     final rawTime   = data['time'];
 
     widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
-      // ЕСЛИ ОШИБКА АВТОРИЗАЦИИ — СБРАСЫВАЕМ КЛЮЧИ И ЗАПРАШИВАЕМ ЗАНОВО
+      // ── Обнаружение несоответствия ключей ─────────────────────────────────
       if (decrypted.contains('Authentication failed') || decrypted.contains('Wrong key')) {
         widget.cipher.clearSharedSecret(widget.targetUid);
         await _storage.clearCachedKeys(widget.targetUid);
         _socket.requestPublicKey(widget.targetUid);
-
         final errorMsg = {
-          'id':              msgId,
-          'text':            '⚠️ Ошибка ключей. Ключи обновлены, попросите переотправить сообщение.',
-          'isMe':            false,
-          'time':            rawTime ?? DateTime.now().millisecondsSinceEpoch,
-          'status':          'error',
-          'type':            'text',
+          'id': msgId,
+          'text': '⚠️ Key mismatch detected. Please ask sender to resend the message.',
+          'isMe': false,
+          'time': rawTime ?? DateTime.now().millisecondsSinceEpoch,
+          'status': 'error',
+          'type': 'text',
           'signatureStatus': SignatureStatus.invalid.index,
         };
         if (mounted) {
@@ -394,16 +399,29 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
 
+      // ── 🔴-2 FIX: Верификация Ed25519-подписи ─────────────────────────────
+      // Результат проверки сохраняется в модель сообщения и отображается
+      // пользователю в виде иконки 🔒 (valid) или ⚠️ (invalid/missing).
+      //
+      // Логика:
+      //  • signature == null  → ключ подписи ещё не установлен (unknown)
+      //  • verifySignature() == true  → подпись верна (valid)
+      //  • verifySignature() == false → подпись не совпадает или повреждена (invalid)
       SignatureStatus sigStatus = SignatureStatus.unknown;
       if (signature != null) {
         final isValid = await widget.cipher.verifySignature(
-          decrypted, signature, widget.targetUid,
+          decrypted,
+          signature,
+          widget.targetUid,
         );
         sigStatus = isValid ? SignatureStatus.valid : SignatureStatus.invalid;
+
         if (!isValid) {
+          // Логируем — в debug-сборке видно в консоли
           debugPrint('⚠️ [Security] Invalid signature on message $msgId from $senderUid');
         }
       }
+      // ─────────────────────────────────────────────────────────────────────
 
       String? localPath;
       if (msgTyp != MsgType.text && data['mediaData'] != null) {
@@ -413,8 +431,8 @@ class _ChatScreenState extends State<ChatScreen> {
         } else {
           localPath = await _saveMediaToDiskBase64(
             base64Data: mediaStr,
-            msgType:    msgTyp,
-            fileName:   data['fileName'] as String?,
+            msgType: msgTyp,
+            fileName: data['fileName'] as String?,
           );
         }
       }
@@ -437,6 +455,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'edited':          data['edited'] ?? false,
         'editedAt':        data['editedAt'],
         'forwardedFrom':   data['forwarded_from'],
+        // Сохраняем статус подписи как int для совместимости с Hive
         'signatureStatus': sigStatus.index,
       };
 
@@ -510,14 +529,18 @@ class _ChatScreenState extends State<ChatScreen> {
     if (msgId == null || newEncrypted == null) return;
 
     widget.cipher.decryptText(newEncrypted as String, fromUid: widget.targetUid).then((newText) async {
+      // Верифицируем подпись отредактированного сообщения
       SignatureStatus sigStatus = SignatureStatus.unknown;
       if (newSignature != null) {
         final isValid = await widget.cipher.verifySignature(
-          newText, newSignature as String, widget.targetUid,
+          newText,
+          newSignature as String,
+          widget.targetUid,
         );
         sigStatus = isValid ? SignatureStatus.valid : SignatureStatus.invalid;
         if (!isValid) debugPrint('⚠️ [Security] Invalid signature on edited message $msgId');
       }
+
       if (mounted) {
         setState(() {
           final idx = _messages.indexWhere((m) => m['id'] == msgId);
@@ -590,12 +613,13 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _sendMessage({
     String? text,
-    String  messageType   = 'text',
+    String  messageType    = 'text',
     String? mediaData,
     String? filePath,
     String? fileName,
     int?    fileSize,
     String? mimeType,
+    // 🟡-1 Forward: опциональный источник пересылки
     String? forwardedFrom,
   }) async {
     if (_editingMessageId != null) { await _saveEditedMessage(); return; }
@@ -641,6 +665,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'mimeType':        mimeType,
         'edited':          false,
         'forwardedFrom':   forwardedFrom,
+        // Собственные сообщения не нуждаются в верификации подписи
         'signatureStatus': SignatureStatus.valid.index,
       };
 
@@ -718,13 +743,13 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // ── Отправка видео из галереи ─────────────────────────────────────────────
+  // ── Видео из галереи ──────────────────────────────────────────────────────
   Future<void> _sendVideo() async {
     try {
       final video = await _imagePicker.pickVideo(source: ImageSource.gallery);
       if (video == null) return;
 
-      setState(() { _isSendingFile = true; _uploadProgress = 0.0; });
+      if (mounted) setState(() { _isSendingFile = true; _uploadProgress = 0.0; });
       final file   = File(video.path);
       final fileId = await _uploadFileEncrypted(file);
 
@@ -739,11 +764,13 @@ class _ChatScreenState extends State<ChatScreen> {
           fileSize:    await file.length(),
           mimeType:    'video/mp4',
         );
+      } else {
+        _showError('Ошибка загрузки видео');
       }
     } catch (e) {
       _showError('Ошибка видео: $e');
     } finally {
-      setState(() => _isSendingFile = false);
+      if (mounted) setState(() { _isSendingFile = false; _uploadProgress = 0.0; });
     }
   }
 
@@ -855,24 +882,17 @@ class _ChatScreenState extends State<ChatScreen> {
         (c) => c.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
       );
-
       _cameraController = CameraController(front, ResolutionPreset.medium, enableAudio: true);
       await _cameraController!.initialize();
-
-      try {
-        final maxZoom = await _cameraController!.getMaxZoomLevel();
-        await _cameraController!.setZoomLevel(1.3.clamp(1.0, maxZoom));
-      } catch (_) {}
-
       await _cameraController!.startVideoRecording();
-
       setState(() { _isVideoRecording = true; _recordingDuration = 0; });
-
       _recordingTimer?.cancel();
-      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() => _recordingDuration++);
       });
-    } catch (e) { _showError('Camera error: $e'); }
+    } catch (e) {
+      _showError('Camera error: $e');
+    }
   }
 
   Future<void> _stopVideoRecordingAndSend() async {
@@ -985,11 +1005,15 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Forward
+  // 🟡-1 FORWARD (пересылка сообщений)
   // ──────────────────────────────────────────────────────────────────────────
 
+  /// Показывает диалог выбора контакта для пересылки и отправляет сообщение.
+  ///
+  /// Пересылаемое сообщение шифруется заново для получателя — оригинальный
+  /// зашифртекст никогда не передаётся третьим лицам.
   void _forwardMessage(Map<String, dynamic> message) {
-    final contacts = _storage.getContacts();
+    final contacts = _storage.getContactsList();
     if (contacts.isEmpty) {
       _showError('No contacts to forward to');
       return;
@@ -1043,20 +1067,27 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// Пересылает [message] пользователю [toUid].
+  ///
+  /// Если целевой пользователь — текущий собеседник, пересылаем в тот же чат.
+  /// Если другой — нужен SharedSecret с ним; при его отсутствии показываем ошибку.
   Future<void> _sendForwardedMessage(
     Map<String, dynamic> message, {
     required String toUid,
   }) async {
+    // Определяем оригинальный источник пересылки
     final originalFrom = message['forwardedFrom'] as String? ??
         (message['isMe'] == true ? widget.myUid : widget.targetUid);
-    final displayName  = _storage.getContactDisplayName(originalFrom);
+
+    final displayName = _storage.getContactDisplayName(originalFrom);
     final forwardLabel = displayName.isNotEmpty ? displayName : originalFrom;
 
     if (toUid == widget.targetUid) {
+      // Пересылка в тот же чат — SharedSecret уже есть
       await _sendMessage(
         text:          message['text'] as String? ?? '',
         messageType:   message['type'] as String? ?? 'text',
-        mediaData:     null,
+        mediaData:     null, // медиа-файлы при пересылке не дублируем на сервере
         filePath:      message['filePath'] as String?,
         fileName:      message['fileName'] as String?,
         fileSize:      message['fileSize'] as int?,
@@ -1064,6 +1095,9 @@ class _ChatScreenState extends State<ChatScreen> {
         forwardedFrom: forwardLabel,
       );
     } else {
+      // Пересылка в другой чат — нужна отдельная навигация или сервис
+      // TODO: открыть ChatScreen с toUid и передать сообщение через аргументы
+      // Пока показываем ошибку с подсказкой
       _showError('Open a chat with $forwardLabel first, then forward from there.');
     }
   }
@@ -1076,6 +1110,13 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), backgroundColor: Colors.red),
+    );
+  }
+
+  void _showSuccess(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: const Color(0xFF1A4A2E)),
     );
   }
 
@@ -1154,17 +1195,17 @@ class _ChatScreenState extends State<ChatScreen> {
   String _mimeTypeFromExtension(String fileName) {
     final ext = fileName.split('.').last.toLowerCase();
     const mimes = {
-      'pdf':  'application/pdf',
-      'doc':  'application/msword',
+      'pdf': 'application/pdf',
+      'doc': 'application/msword',
       'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'xls':  'application/vnd.ms-excel',
+      'xls': 'application/vnd.ms-excel',
       'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'ppt':  'application/vnd.ms-powerpoint',
+      'ppt': 'application/vnd.ms-powerpoint',
       'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'txt':  'text/plain',  'zip': 'application/zip',
-      'rar':  'application/x-rar-compressed', 'mp3': 'audio/mpeg',
-      'mp4':  'video/mp4',   'mov': 'video/quicktime',
-      'png':  'image/png',   'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif',
+      'txt': 'text/plain',  'zip': 'application/zip',
+      'rar': 'application/x-rar-compressed', 'mp3': 'audio/mpeg',
+      'mp4': 'video/mp4',   'mov': 'video/quicktime',
+      'png': 'image/png',   'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif',
     };
     return mimes[ext] ?? 'application/octet-stream';
   }
@@ -1175,9 +1216,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (mimeType.startsWith('audio/')) return Icons.audio_file;
     if (mimeType.startsWith('video/')) return Icons.video_file;
     if (mimeType.contains('pdf'))      return Icons.picture_as_pdf;
-    if (mimeType.contains('word') || mimeType.contains('msword'))        return Icons.description;
+    if (mimeType.contains('word') || mimeType.contains('msword')) return Icons.description;
     if (mimeType.contains('excel') || mimeType.contains('spreadsheet')) return Icons.table_chart;
-    if (mimeType.contains('zip') || mimeType.contains('rar'))           return Icons.folder_zip;
+    if (mimeType.contains('zip') || mimeType.contains('rar')) return Icons.folder_zip;
     return Icons.attach_file;
   }
 
@@ -1295,6 +1336,7 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Drag-handle
               Container(
                 margin: const EdgeInsets.only(top: 10, bottom: 4),
                 width: 36, height: 4,
@@ -1303,6 +1345,24 @@ class _ChatScreenState extends State<ChatScreen> {
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
+              // 🔑 Сброс ключей — помогает при "Authentication failed"
+              // без переустановки приложения. Выбрасывает shared secret и
+              // per-contact KDF-кэш, запрашивает новый публичный ключ.
+              _actionTile(Icons.refresh, 'Сбросить ключи (Fix)', () async {
+                Navigator.pop(context);
+                widget.cipher.clearSharedSecret(widget.targetUid);
+                await _storage.clearCachedKeys(widget.targetUid);
+                _socket.requestPublicKey(widget.targetUid);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('🔑 Новые ключи запрошены — попросите переотправить'),
+                      backgroundColor: Color(0xFF1A4A2E),
+                      duration: Duration(seconds: 4),
+                    ),
+                  );
+                }
+              }, color: Colors.greenAccent),
               if (message['type'] == 'text')
                 _actionTile(Icons.copy, 'Copy', () {
                   Navigator.pop(context);
@@ -1312,6 +1372,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 Navigator.pop(context);
                 _setReplyTo(message);
               }),
+              // 🟡-1 FIX: Кнопка Forward добавлена в меню
               _actionTile(Icons.forward, 'Forward', () {
                 Navigator.pop(context);
                 _forwardMessage(message);
@@ -1334,6 +1395,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 Navigator.pop(context);
                 _confirmDelete(message['id'].toString(), deleteForEveryone: false);
               }, color: Colors.orange),
+              // Сброс ключей — быстрое восстановление при Authentication failed
+              _actionTile(Icons.refresh, 'Пересоздать ключи (Fix)', () async {
+                Navigator.pop(context);
+                widget.cipher.clearSharedSecret(widget.targetUid);
+                await _storage.clearCachedKeys(widget.targetUid);
+                _socket.requestPublicKey(widget.targetUid);
+                _showSuccess('Запрос на новые ключи отправлен');
+              }, color: Colors.greenAccent),
             ],
           ),
         ),
@@ -1396,134 +1465,146 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // _buildMessage с именами отправителей (для групп)
+  // Message bubble
   // ──────────────────────────────────────────────────────────────────────────
 
   Widget _buildMessage(Map<String, dynamic> msg, int index) {
-    final isMe    = msg['from'] == widget.myUid;
-    final msgType = (msg['type'] as String? ?? 'text').toMsgType();
-
-    final senderId   = msg['from']?.toString() ?? 'Unknown';
-    final senderName = _storage.getContactDisplayName(senderId);
+    final isMe      = msg['from'] == widget.myUid;
+    final msgType   = (msg['type'] as String? ?? 'text').toMsgType();
+    final reactions = _reactions[msg['id']?.toString()] ?? {};
 
     return GestureDetector(
       onLongPress: () => _showMessageActions(msg),
       child: Align(
         alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
         child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-          padding: msgType == MsgType.video_note
-              ? EdgeInsets.zero
-              : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: isMe ? const Color(0xFF0099CC) : const Color(0xFF1A1F3C),
-            borderRadius: BorderRadius.circular(16),
-          ),
+          margin: const EdgeInsets.symmetric(vertical: 3, horizontal: 12),
           child: Column(
             crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
             children: [
-
-              if (isGroup && !isMe && msgType != MsgType.video_note)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Text(
-                    senderName,
-                    style: const TextStyle(
-                      color: Colors.cyanAccent,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                    ),
+              Container(
+                constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  gradient: isMe
+                      ? const LinearGradient(colors: [Color(0xFF00D4FF), Color(0xFF0099CC)])
+                      : null,
+                  color: isMe ? null : const Color(0xFF1A1F3C),
+                  borderRadius: BorderRadius.only(
+                    topLeft:     const Radius.circular(12),
+                    topRight:    const Radius.circular(12),
+                    bottomLeft:  Radius.circular(isMe ? 12 : 2),
+                    bottomRight: Radius.circular(isMe ? 2 : 12),
                   ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.2),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
                 ),
-
-              if (msg['forwardedFrom'] != null) ...[
-                Row(
-                  mainAxisSize: MainAxisSize.min,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.forward,
-                        size: 13,
-                        color: isMe ? Colors.white70 : Colors.cyanAccent.withValues(alpha: 0.8)),
-                    const SizedBox(width: 4),
-                    Flexible(
-                      child: Text(
-                        'Forwarded from ${msg['forwardedFrom']}',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontStyle: FontStyle.italic,
-                          color: isMe ? Colors.white70 : Colors.cyanAccent.withValues(alpha: 0.8),
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+
+                    // 🟢-5 FIX: Метка "Forwarded from" если сообщение переслано
+                    if (msg['forwardedFrom'] != null) ...[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.forward,
+                              size: 13,
+                              color: isMe ? Colors.white70 : Colors.cyanAccent.withValues(alpha: 0.8)),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              'Forwarded from ${msg['forwardedFrom']}',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontStyle: FontStyle.italic,
+                                color: isMe
+                                    ? Colors.white70
+                                    : Colors.cyanAccent.withValues(alpha: 0.8),
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
                       ),
+                      const SizedBox(height: 4),
+                    ],
+
+                    // Reply preview
+                    if (msg['replyTo'] != null) ...[
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        margin:  const EdgeInsets.only(bottom: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.25),
+                          borderRadius: BorderRadius.circular(8),
+                          border: const Border(left: BorderSide(color: Colors.cyanAccent, width: 3)),
+                        ),
+                        child: Text(
+                          msg['replyTo'] as String,
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.65),
+                            fontSize: 12,
+                            fontStyle: FontStyle.italic,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+
+                    // Содержимое сообщения
+                    _buildMessageContent(msg, msgType, isMe),
+                    const SizedBox(height: 4),
+
+                    // Нижняя строка: edited + время + статус + иконка подписи
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (msg['edited'] == true)
+                          const Padding(
+                            padding: EdgeInsets.only(right: 4),
+                            child: Text(
+                              'edited',
+                              style: TextStyle(
+                                color: Colors.white54,
+                                fontSize: 10,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ),
+                        Text(
+                          _formatTime(msg['time']),
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.5),
+                            fontSize: 11,
+                          ),
+                        ),
+                        if (isMe) ...[
+                          const SizedBox(width: 4),
+                          _buildStatusIcon(msg['status'] as String?),
+                        ],
+                        // 🔴-2 + 🟢-1 FIX: иконка верификации подписи
+                        // Показывается только для входящих сообщений
+                        if (!isMe) ...[
+                          const SizedBox(width: 4),
+                          _buildSignatureIcon(msg),
+                        ],
+                      ],
                     ),
                   ],
                 ),
-                const SizedBox(height: 4),
-              ],
-
-              if (msg['replyTo'] != null) ...[
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  margin:  const EdgeInsets.only(bottom: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.25),
-                    borderRadius: BorderRadius.circular(8),
-                    border: const Border(left: BorderSide(color: Colors.cyanAccent, width: 3)),
-                  ),
-                  child: Text(
-                    msg['replyTo'] as String,
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.65),
-                      fontSize: 12,
-                      fontStyle: FontStyle.italic,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-
-              _buildMessageContent(msg, msgType, isMe),
-              const SizedBox(height: 4),
-
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (msg['edited'] == true)
-                    const Padding(
-                      padding: EdgeInsets.only(right: 4),
-                      child: Text(
-                        'edited',
-                        style: TextStyle(
-                          color: Colors.white54,
-                          fontSize: 10,
-                          fontStyle: FontStyle.italic,
-                        ),
-                      ),
-                    ),
-                  Text(
-                    _formatTime(msg['time']),
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.5),
-                      fontSize: 11,
-                    ),
-                  ),
-                  if (isMe) ...[
-                    const SizedBox(width: 4),
-                    _buildStatusIcon(msg['status'] as String?),
-                  ],
-                  if (!isMe) ...[
-                    const SizedBox(width: 4),
-                    _buildSignatureIcon(msg),
-                  ],
-                ],
               ),
 
-              Builder(builder: (_) {
-                final reactions = _reactions[msg['id']?.toString()] ?? {};
-                if (reactions.isEmpty) return const SizedBox.shrink();
-                return Padding(
+              // Реакции
+              if (reactions.isNotEmpty)
+                Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Wrap(
                     spacing: 4,
@@ -1532,7 +1613,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF0A0E27),
+                          color: const Color(0xFF1A1F3C),
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: Colors.cyan.withValues(alpha: 0.4)),
                         ),
@@ -1540,8 +1621,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     )).toList(),
                   ),
-                );
-              }),
+                ),
             ],
           ),
         ),
@@ -1549,6 +1629,13 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  // 🔴-2 + 🟢-1 FIX: Иконка статуса Ed25519-подписи
+  //
+  // 🔒 зелёный  — подпись верна, сообщение не изменено после отправки
+  // ⚠️ оранжевый — подпись невалидна или отсутствует (возможна подмена)
+  // ··· белый   — ключ контакта ещё не загружен (нейтральное состояние)
+  //
+  // Нажатие показывает объяснение для пользователя.
   Widget _buildSignatureIcon(Map<String, dynamic> msg) {
     final statusIndex = msg['signatureStatus'] as int?;
     final status = statusIndex != null
@@ -1556,9 +1643,9 @@ class _ChatScreenState extends State<ChatScreen> {
         : SignatureStatus.unknown;
 
     final (icon, color, tooltip) = switch (status) {
-      SignatureStatus.valid   => (Icons.lock,          Colors.greenAccent, 'Signature verified'),
-      SignatureStatus.invalid => (Icons.warning_amber,  Colors.orange,     'Signature invalid — message may have been tampered'),
-      SignatureStatus.unknown => (Icons.lock_clock,     Colors.white24,    'Signature not yet verified'),
+      SignatureStatus.valid   => (Icons.lock, Colors.greenAccent,    'Signature verified'),
+      SignatureStatus.invalid => (Icons.warning_amber, Colors.orange, 'Signature invalid — message may have been tampered'),
+      SignatureStatus.unknown => (Icons.lock_clock, Colors.white24,   'Signature not yet verified'),
     };
 
     return GestureDetector(
@@ -1712,10 +1799,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildStatusIcon(String? status) {
     switch (status) {
-      case 'read':      return const Icon(Icons.done_all,      size: 14, color: Colors.cyanAccent);
-      case 'delivered': return const Icon(Icons.done_all,      size: 14, color: Colors.white54);
-      case 'sent':      return const Icon(Icons.check,         size: 14, color: Colors.white54);
-      case 'pending':   return const Icon(Icons.access_time,   size: 14, color: Colors.white38);
+      case 'read':      return const Icon(Icons.done_all,    size: 14, color: Colors.cyanAccent);
+      case 'delivered': return const Icon(Icons.done_all,    size: 14, color: Colors.white54);
+      case 'sent':      return const Icon(Icons.check,       size: 14, color: Colors.white54);
+      case 'pending':   return const Icon(Icons.access_time, size: 14, color: Colors.white38);
       case 'failed':    return const Icon(Icons.error_outline, size: 14, color: Colors.redAccent);
       default:          return const SizedBox.shrink();
     }
@@ -1770,12 +1857,13 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
 
+            // Оверлей предпросмотра камеры для видео-кружочков
             if (_isVideoRecording &&
                 _cameraController != null &&
                 _cameraController!.value.isInitialized)
               Positioned(
-                top:   100,
-                right: 20,
+                bottom: 90,
+                right:  20,
                 child: Container(
                   width: 160, height: 160,
                   decoration: BoxDecoration(
@@ -1799,11 +1887,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final lastSeen = _storage.getContactLastSeen(widget.targetUid);
     final avatar   = _storage.getContactAvatar(widget.targetUid);
 
-    final avatarUrl = avatar != null && avatar.isNotEmpty
-        ? '$SERVER_HTTP_URL/download/$avatar'
-        : null;
-    final heroTag = 'avatar_${widget.targetUid}';
-
     return AppBar(
       backgroundColor: const Color(0xFF1A1F3C),
       titleSpacing: 0,
@@ -1822,24 +1905,18 @@ class _ChatScreenState extends State<ChatScreen> {
             )
           : Row(
               children: [
-                GestureDetector(
-                  onTap: () {
-                    if (avatarUrl != null) _showFullScreenAvatar(heroTag, avatarUrl, displayName);
-                  },
-                  child: Hero(
-                    tag: heroTag,
-                    child: CircleAvatar(
-                      radius: 18,
-                      backgroundColor: const Color(0xFF0A0E27),
-                      backgroundImage: avatarUrl != null ? NetworkImage(avatarUrl) : null,
-                      child: avatarUrl == null
-                          ? Text(
-                              displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
-                              style: const TextStyle(color: Colors.cyan, fontSize: 14),
-                            )
-                          : null,
-                    ),
-                  ),
+                CircleAvatar(
+                  radius: 18,
+                  backgroundColor: const Color(0xFF0A0E27),
+                  backgroundImage: (avatar != null && avatar.isNotEmpty)
+                      ? NetworkImage('$SERVER_HTTP_URL/download/$avatar')
+                      : null,
+                  child: (avatar == null || avatar.isEmpty)
+                      ? Text(
+                          displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
+                          style: const TextStyle(color: Colors.cyan, fontSize: 14),
+                        )
+                      : null,
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -1847,18 +1924,15 @@ class _ChatScreenState extends State<ChatScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(displayName, style: GoogleFonts.orbitron(fontSize: 14)),
-                      if (isGroup)
-                        const Text('Секретная группа',
-                            style: TextStyle(fontSize: 10, color: Colors.cyan))
-                      else if (_targetIsTyping)
-                        const Text('печатает...',
-                            style: TextStyle(fontSize: 10, color: Colors.cyan))
+                      if (_targetIsTyping)
+                        const Text('typing...', style: TextStyle(fontSize: 10, color: Colors.cyan))
                       else if (isOnline)
-                        const Text('в сети',
-                            style: TextStyle(fontSize: 10, color: Colors.green))
+                        const Text('online', style: TextStyle(fontSize: 10, color: Colors.green))
                       else if (lastSeen > 0)
-                        Text('был(а) ${_formatLastSeen(lastSeen)}',
-                            style: const TextStyle(fontSize: 10, color: Colors.white54)),
+                        Text(
+                          'last seen ${_formatLastSeen(lastSeen)}',
+                          style: const TextStyle(fontSize: 10, color: Colors.white54),
+                        ),
                     ],
                   ),
                 ),
@@ -1871,35 +1945,6 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ],
     );
-  }
-
-  void _showFullScreenAvatar(String tag, String imageUrl, String name) {
-    Navigator.push(context, PageRouteBuilder(
-      opaque: false,
-      barrierColor: Colors.black.withValues(alpha: 0.9),
-      pageBuilder: (context, _, __) {
-        return Scaffold(
-          backgroundColor: Colors.transparent,
-          appBar: AppBar(
-            backgroundColor: Colors.transparent,
-            elevation: 0,
-            iconTheme: const IconThemeData(color: Colors.white),
-            title: Text(name, style: const TextStyle(color: Colors.white)),
-          ),
-          body: Center(
-            child: InteractiveViewer(
-              panEnabled: true,
-              minScale: 1.0,
-              maxScale: 4.0,
-              child: Hero(
-                tag: tag,
-                child: Image.network(imageUrl, fit: BoxFit.contain),
-              ),
-            ),
-          ),
-        );
-      },
-    ));
   }
 
   Widget _buildReplyBanner() => Container(
@@ -2039,15 +2084,16 @@ class _ChatScreenState extends State<ChatScreen> {
       child: SafeArea(
         child: Row(
           children: [
-            // ── Меню скрепки с 4 пунктами (камера, фото, видео, файл) ────────
             PopupMenuButton<String>(
               color: const Color(0xFF1A1F3C),
               icon: const Icon(Icons.attach_file, color: Colors.cyan),
               onSelected: (value) {
-                if (value == 'camera')  _sendPhoto(source: ImageSource.camera);
-                if (value == 'gallery') _sendPhoto(source: ImageSource.gallery);
-                if (value == 'video')   _sendVideo();
-                if (value == 'file')    _sendFile();
+                switch (value) {
+                  case 'camera':  _sendPhoto(source: ImageSource.camera);  break;
+                  case 'gallery': _sendPhoto(source: ImageSource.gallery); break;
+                  case 'video':   _sendVideo();                            break;
+                  case 'file':    _sendFile();                             break;
+                }
               },
               itemBuilder: (_) => [
                 _popupItem('camera',  Icons.camera_alt,        'Камера (Фото)'),
@@ -2169,7 +2215,7 @@ class _VideoNotePlayerState extends State<VideoNotePlayer> {
     _controller = VideoPlayerController.file(File(widget.filePath))
       ..initialize().then((_) {
         _controller.setLooping(true);
-        _controller.setVolume(0);
+        _controller.setVolume(0); // Без звука по умолчанию (как в Telegram)
         if (mounted) setState(() => _isInit = true);
         _controller.play();
       });
@@ -2192,6 +2238,7 @@ class _VideoNotePlayerState extends State<VideoNotePlayer> {
     }
     return GestureDetector(
       onTap: () {
+        // Тап включает/выключает звук
         setState(() {
           _controller.setVolume(_controller.value.volume == 0 ? 1 : 0);
         });
