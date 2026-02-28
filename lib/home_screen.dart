@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -20,28 +21,31 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
-  String? _myUid;
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+
+  String?      _myUid;
   List<String> _chats = [];
-  bool _isConnected = false;
-  bool _isReady = false;
-  String _connectionStatus = 'ОФФЛАЙН';
+  bool         _isConnected     = false;
+  bool         _isReady         = false;
+  String       _connectionStatus = 'ОФФЛАЙН';
   StreamSubscription? _socketSub;
 
-  final _idService = IdentityService();
-  final _storage = StorageService();
-  final _socket = SocketService();
-  final _cipher = SecureCipher();
+  final _idService   = IdentityService();
+  final _storage     = StorageService();
+  final _socket      = SocketService();
+  final _cipher      = SecureCipher();
   final _imagePicker = ImagePicker();
 
-  final _idController = TextEditingController();
+  final _idController     = TextEditingController();
   final _serverController = TextEditingController(
     text: 'wss://deepdrift-backend.onrender.com/ws',
   );
 
-  bool _isSearching = false;
-  final _searchController = TextEditingController();
+  bool   _isSearching = false;
+  final  _searchController = TextEditingController();
   List<Map<String, dynamic>> _searchResults = [];
+
 
   Timer? _statusCheckTimer;
 
@@ -54,6 +58,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
+    // 🟡-2 FIX: регистрируем callback навигации по нотификациям.
+    // NotificationService вызовет _openChatWithUid() при тапе на уведомление.
+    // Если при запуске уже есть _pendingUid (cold start), callback выполнится
+    // немедленно через addPostFrameCallback — после завершения initState.
     NotificationService().setOpenChatCallback(_openChatWithUid);
 
     _setup();
@@ -64,7 +72,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    // 🟡-2 FIX: снимаем callback чтобы не держать ссылку на мёртвый State
     NotificationService().clearOpenChatCallback();
+
     WidgetsBinding.instance.removeObserver(this);
     _socketSub?.cancel();
     _statusCheckTimer?.cancel();
@@ -81,18 +91,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Навигация к чату по uid (из нотификации)
+  // 🟡-2 FIX: Навигация к чату по uid (из нотификации)
   // ──────────────────────────────────────────────────────────────────────────
 
+  /// Открывает чат с [fromUid]. Вызывается NotificationService при тапе
+  /// на push-уведомление во всех трёх сценариях: foreground, background, cold start.
+  ///
+  /// Если пользователь ещё не авторизован (_myUid == null) или приложение
+  /// ещё не готово (_isReady == false) — uid добавляется как контакт и чат
+  /// откроется когда _setup() завершится.
   void _openChatWithUid(String fromUid) {
     if (!mounted) return;
 
+    // Добавляем контакт если ещё нет (может прийти уведомление от нового пользователя)
     if (!_chats.contains(fromUid)) {
       _socket.getProfile(fromUid);
       _storage.addContact(fromUid, displayName: fromUid);
       if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
     }
 
+    // Если приложение ещё инициализируется — ждём следующего кадра
     if (!_isReady || _myUid == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _openChatWithUid(fromUid));
       return;
@@ -103,9 +121,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       context,
       MaterialPageRoute(
         builder: (_) => ChatScreen(
-          myUid: _myUid!,
+          myUid:     _myUid!,
           targetUid: fromUid,
-          cipher: _cipher,
+          cipher:    _cipher,
         ),
       ),
     ).then((_) {
@@ -136,10 +154,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     try {
       setState(() => _connectionStatus = 'ПОДКЛЮЧЕНИЕ...');
 
-      final savedPassword = _storage.getSetting('user_password');
-      final savedSalt = _storage.getSetting('user_salt');
-      final authToken = _storage.getSetting('auth_token');
-      final savedX25519Key = _storage.getSetting('encrypted_x25519_key');
+      final savedPassword   = _storage.getSetting('user_password');
+      final savedSalt       = _storage.getSetting('user_salt');
+      final authToken       = _storage.getSetting('auth_token');
+      final savedX25519Key  = _storage.getSetting('encrypted_x25519_key');
       final savedEd25519Key = _storage.getSetting('encrypted_ed25519_key');
 
       if (savedPassword == null || savedSalt == null) {
@@ -150,14 +168,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       await _cipher.init(
         savedPassword,
         savedSalt,
-        encryptedX25519Key: savedX25519Key,
+        encryptedX25519Key:  savedX25519Key,
         encryptedEd25519Key: savedEd25519Key,
       );
 
       if (savedX25519Key == null || savedEd25519Key == null) {
         final exportedKeys = await _cipher.exportBothKeys(savedPassword);
-        await _storage.saveSetting('encrypted_x25519_key', exportedKeys['x25519']);
-        await _storage.saveSetting('encrypted_ed25519_key', exportedKeys['ed25519']);
+        await _storage.saveSetting('encrypted_x25519_key', exportedKeys['x25519']!);
+        await _storage.saveSetting('encrypted_ed25519_key', exportedKeys['ed25519']!);
       }
 
       _socket.init(_cipher);
@@ -174,7 +192,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         }
         if (type == 'connection_status') {
           setState(() {
-            _isConnected = data['connected'] ?? false;
+            _isConnected     = data['connected'] as bool? ?? false;
             _connectionStatus = _isConnected ? 'В СЕТИ' : 'ОФФЛАЙН';
           });
         }
@@ -183,9 +201,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         }
         if (type == 'user_status') {
           _storage.setContactStatus(
-            data['uid'],
+            data['uid'] as String,
             data['status'] == 'online',
-            data['last_seen'],
+            data['last_seen'] as int?,
           );
           if (mounted) setState(() {});
         }
@@ -198,7 +216,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
       setState(() {
         _isReady = true;
-        _chats = _storage.getContactsSortedByActivity();
+        _chats   = _storage.getContactsSortedByActivity();
       });
     } catch (e) {
       setState(() { _connectionStatus = 'ОШИБКА'; _isReady = true; });
@@ -207,42 +225,43 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _registerPublicKeysOnServer() async {
     try {
-      final x25519Key = await _cipher.getMyPublicKey();
+      final x25519Key  = await _cipher.getMyPublicKey();
       final ed25519Key = await _cipher.getMySigningKey();
       _socket.registerPublicKeys(x25519Key, ed25519Key);
     } catch (e) {
-      debugPrint('Failed to register public keys: $e');
+      debugPrint('Failed to register public keys: $e'); // 🟢-3 FIX
     }
   }
 
   Future<void> _handleIncomingMessageQuietly(Map<String, dynamic> data) async {
-    final senderUid = data['from_uid'];
-    final msgId = data['id']?.toString();
+    final senderUid = data['from_uid'] as String?;
+    final msgId     = data['id']?.toString();
     if (senderUid == null || msgId == null) return;
     if (_storage.hasMessage(senderUid, msgId)) return;
     try {
       final decrypted = await _cipher.decryptText(
-        data['encrypted_text'],
+        data['encrypted_text'] as String,
         fromUid: senderUid,
       );
       final msg = {
-        'id': msgId,
-        'text': decrypted,
-        'isMe': false,
-        'time': data['time'] ?? DateTime.now().millisecondsSinceEpoch,
-        'from': senderUid,
-        'to': _myUid,
-        'status': 'delivered',
-        'type': data['messageType'] ?? 'text',
+        'id':       msgId,
+        'text':     decrypted,
+        'isMe':     false,
+        'time':     data['time'] ?? DateTime.now().millisecondsSinceEpoch,
+        'from':     senderUid,
+        'to':       _myUid,
+        'status':   'delivered',
+        'type':     data['messageType'] ?? 'text',
         'fileName': data['fileName'],
         'fileSize': data['fileSize'],
-        'signatureStatus': 0,
+        // Подпись не верифицируем в тихом режиме — сделает ChatScreen при открытии
+        'signatureStatus': SignatureStatus.unknown.index,
       };
       await _storage.saveMessage(senderUid, msg);
       _socket.sendReadReceipt(senderUid, msgId);
       if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
     } catch (e) {
-      debugPrint('Quiet save error: $e');
+      debugPrint('Quiet save error: $e'); // 🟢-3 FIX
     }
   }
 
@@ -265,66 +284,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // FAB меню
-  // ──────────────────────────────────────────────────────────────────────────
-
-  void _showAddMenu() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1A1F3C),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              margin: const EdgeInsets.only(top: 10, bottom: 8),
-              width: 36, height: 4,
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.person_add, color: Colors.cyan),
-              title: const Text('Добавить контакт', style: TextStyle(color: Colors.white)),
-              onTap: () { Navigator.pop(ctx); _addContact(); },
-            ),
-            ListTile(
-              leading: const Icon(Icons.group_add, color: Colors.cyan),
-              title: const Text('Создать группу', style: TextStyle(color: Colors.white)),
-              onTap: () { Navigator.pop(ctx); _showCreateGroupDialog(); },
-            ),
-            ListTile(
-              leading: const Icon(Icons.qr_code_scanner, color: Colors.cyan),
-              title: const Text('Сканировать QR', style: TextStyle(color: Colors.white)),
-              onTap: () { Navigator.pop(ctx); _scanQR(); },
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showCreateGroupDialog() {
-    _showError('Группы в разработке');
-  }
-
-  void _scanQR() {
-    _showError('QR-сканер в разработке');
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
   // Диалоги
   // ──────────────────────────────────────────────────────────────────────────
 
   void _showMyProfileDialog() {
-    final profile = _storage.getMyProfile();
-    final nameCtrl = TextEditingController(text: profile['nickname']);
-    String? currentAvatar = profile['avatarUrl'];
+    final profile      = _storage.getMyProfile();
+    final nameCtrl     = TextEditingController(text: profile['nickname'] as String?);
+    String? currentAvatar = profile['avatarUrl'] as String?;
 
     showDialog(
       context: context,
@@ -373,6 +339,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ),
                   ),
                   const SizedBox(height: 16),
+
+                  // QR-код для добавления контакта
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
@@ -393,6 +361,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     style: TextStyle(color: Colors.white54, fontSize: 11),
                   ),
                   const SizedBox(height: 16),
+
                   TextField(
                     controller: nameCtrl,
                     style: const TextStyle(color: Colors.white),
@@ -417,10 +386,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     avatarUrl: currentAvatar,
                   );
                   _socket.updateProfile(nameCtrl.text.trim(), currentAvatar);
-                  if (context.mounted) {
-                    Navigator.pop(context);
-                    setState(() {});
-                  }
+                  Navigator.pop(context);
+                  setState(() {});
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.cyan,
@@ -436,7 +403,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _showPasswordSetupDialog() async {
-    final pwdCtrl = TextEditingController();
+    final pwdCtrl  = TextEditingController();
     final confCtrl = TextEditingController();
     return showDialog(
       context: context,
@@ -486,12 +453,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               final keys = await _cipher.exportBothKeys(pwdCtrl.text);
               await _storage.saveSetting('user_password', pwdCtrl.text);
               await _storage.saveSetting('user_salt', salt);
-              await _storage.saveSetting('encrypted_x25519_key', keys['x25519']);
-              await _storage.saveSetting('encrypted_ed25519_key', keys['ed25519']);
-              if (context.mounted) {
-                Navigator.pop(context);
-                _autoConnect();
-              }
+              await _storage.saveSetting('encrypted_x25519_key', keys['x25519']!);
+              await _storage.saveSetting('encrypted_ed25519_key', keys['ed25519']!);
+              Navigator.pop(context);
+              _autoConnect();
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.cyan, foregroundColor: Colors.black,
@@ -515,7 +480,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'Придумай себе номер (по этому номеру тебя будут искать друзья)',
+              'Придумай себе номер из 6 цифр.\nПо нему тебя будут находить друзья!',
               style: TextStyle(color: Colors.white70, fontSize: 13),
               textAlign: TextAlign.center,
             ),
@@ -541,10 +506,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             onPressed: () async {
               if (_idController.text.length == 6) {
                 await _idService.saveUID(_idController.text);
-                if (context.mounted) {
-                  Navigator.pop(context);
-                  _setup();
-                }
+                Navigator.pop(context);
+                _setup();
               } else {
                 _showError('Номер должен состоять ровно из 6 цифр');
               }
@@ -561,7 +524,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   void _addContact() {
     final targetC = TextEditingController();
-    final nameC = TextEditingController();
+    final nameC   = TextEditingController();
     showDialog(
       context: context,
       builder: (c) => AlertDialog(
@@ -605,10 +568,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   targetC.text,
                   displayName: nameC.text.trim().isNotEmpty ? nameC.text.trim() : null,
                 );
-                if (context.mounted) {
-                  Navigator.pop(context);
-                  setState(() => _chats = _storage.getContactsSortedByActivity());
-                }
+                Navigator.pop(context);
+                setState(() => _chats = _storage.getContactsSortedByActivity());
               } else {
                 _showError('Неверный ID');
               }
@@ -620,30 +581,49 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _addContactWithId(String contactId) {
-    if (!_isReady) return;
-    contactId = contactId.trim();
-    if (contactId.isEmpty || contactId == _myUid) {
-      _showError('Неверный ID контакта');
-      return;
-    }
-    if (!_chats.contains(contactId)) {
-      _socket.getProfile(contactId);
-      _storage.addContact(contactId, displayName: contactId);
-      setState(() => _chats = _storage.getContactsSortedByActivity());
-    }
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ChatScreen(
-          myUid: _myUid!,
-          targetUid: contactId,
-          cipher: _cipher,
+  // ──────────────────────────────────────────────────────────────────────────
+  // FAB меню
+  // ──────────────────────────────────────────────────────────────────────────
+
+  void _showAddMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1F3C),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 10, bottom: 8),
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.person_add, color: Colors.cyan),
+              title: const Text('Добавить контакт', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _addContact(); },
+            ),
+            ListTile(
+              leading: const Icon(Icons.group_add, color: Colors.cyan),
+              title: const Text('Создать группу', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _showError('Группы в разработке'); },
+            ),
+            ListTile(
+              leading: const Icon(Icons.qr_code_scanner, color: Colors.cyan),
+              title: const Text('Сканировать QR', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _showError('QR-сканер в разработке'); },
+            ),
+            const SizedBox(height: 8),
+          ],
         ),
       ),
-    ).then((_) {
-      if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
-    });
+    );
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -651,9 +631,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // ──────────────────────────────────────────────────────────────────────────
 
   void _showContactOptions(String uid) {
-    final name = _storage.getContactDisplayName(uid);
+    final name     = _storage.getContactDisplayName(uid);
     final isPinned = _storage.isContactPinned(uid);
-    final isMuted = _storage.isContactMuted(uid);
+    final isMuted  = _storage.isContactMuted(uid);
 
     showModalBottomSheet(
       context: context,
@@ -665,6 +645,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Шапка
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
               child: Row(
@@ -694,6 +675,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ),
             const Divider(color: Colors.white12, height: 1),
 
+            // Закрепить / открепить
             ListTile(
               leading: Icon(
                 isPinned ? Icons.push_pin : Icons.push_pin_outlined,
@@ -711,6 +693,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               },
             ),
 
+            // Переименовать
             ListTile(
               leading: const Icon(Icons.edit_outlined, color: Colors.white70),
               title: const Text('Переименовать', style: TextStyle(color: Colors.white)),
@@ -720,6 +703,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               },
             ),
 
+            // Заглушить
             ListTile(
               leading: Icon(
                 isMuted ? Icons.volume_up_outlined : Icons.volume_off_outlined,
@@ -737,6 +721,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               },
             ),
 
+            // Скопировать ID
             ListTile(
               leading: const Icon(Icons.copy_outlined, color: Colors.white70),
               title: const Text('Скопировать ID', style: TextStyle(color: Colors.white)),
@@ -747,6 +732,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               },
             ),
 
+            // Очистить историю
             ListTile(
               leading: const Icon(Icons.cleaning_services_outlined, color: Colors.orange),
               title: const Text('Очистить историю', style: TextStyle(color: Colors.orange)),
@@ -756,6 +742,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               },
             ),
 
+            // Удалить контакт
             ListTile(
               leading: const Icon(Icons.person_remove_outlined, color: Colors.red),
               title: Text('Удалить "$name"', style: const TextStyle(color: Colors.red)),
@@ -800,11 +787,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               final newName = ctrl.text.trim();
               if (newName.isEmpty) return;
               await _storage.setContactDisplayName(uid, newName);
-              if (context.mounted) {
-                Navigator.pop(context);
-                setState(() => _chats = _storage.getContactsSortedByActivity());
-                _showSuccess('Переименован в "$newName"');
-              }
+              Navigator.pop(context);
+              setState(() => _chats = _storage.getContactsSortedByActivity());
+              _showSuccess('Переименован в "$newName"');
             },
             child: const Text('СОХРАНИТЬ'),
           ),
@@ -900,33 +885,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
     if (_chats.isEmpty) {
       return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.chat_bubble_outline, size: 64, color: Colors.white12),
-            const SizedBox(height: 16),
-            Text('Нет чатов', style: GoogleFonts.orbitron(color: Colors.white38)),
-            const SizedBox(height: 8),
-            const Text(
-              'Нажми + чтобы добавить контакт',
-              style: TextStyle(color: Colors.white24, fontSize: 13),
-            ),
-          ],
-        ),
+        child: Text('Нет чатов', style: GoogleFonts.orbitron(color: Colors.white38)),
       );
     }
 
     return ListView.builder(
       itemCount: _chats.length,
       itemBuilder: (c, i) {
-        final uid = _chats[i];
-        final name = _storage.getContactDisplayName(uid);
-        final avatar = _storage.getContactAvatar(uid);
-        final meta = _storage.getChatMetadata(uid);
-        final unread = meta['unreadCount'] as int? ?? 0;
+        final uid      = _chats[i];
+        final name     = _storage.getContactDisplayName(uid);
+        final avatar   = _storage.getContactAvatar(uid);
+        final meta     = _storage.getChatMetadata(uid);
+        final unread   = meta['unreadCount'] as int? ?? 0;
         final isOnline = _storage.isContactOnline(uid);
         final isPinned = _storage.isContactPinned(uid);
-        final isMuted = _storage.isContactMuted(uid);
+        final isMuted  = _storage.isContactMuted(uid);
         final hasAvatar = avatar != null && avatar.isNotEmpty && avatar != 'null';
 
         return ListTile(
@@ -1012,9 +985,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               context,
               MaterialPageRoute(
                 builder: (_) => ChatScreen(
-                  myUid: _myUid!,
+                  myUid:     _myUid!,
                   targetUid: uid,
-                  cipher: _cipher,
+                  cipher:    _cipher,
                 ),
               ),
             ).then((_) {
@@ -1034,8 +1007,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final totalUnread = _storage.getTotalUnreadCount();
-    final myProfile = _storage.getMyProfile();
-    final avatarUrl = myProfile['avatarUrl'];
+    final myProfile   = _storage.getMyProfile();
+    final avatarUrl   = myProfile['avatarUrl'] as String?;
     final hasMyAvatar = avatarUrl != null && avatarUrl.isNotEmpty && avatarUrl != 'null';
 
     return PopScope(
@@ -1094,14 +1067,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ],
                 ),
           actions: [
-            IconButton(
-              icon: Icon(_isSearching ? Icons.close : Icons.search),
-              onPressed: () => setState(() {
-                _isSearching = !_isSearching;
-                if (!_isSearching) _searchController.clear();
-              }),
-            ),
-            if (!_isSearching) ...[
+            if (_isSearching)
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => setState(() {
+                  _isSearching = false;
+                  _searchController.clear();
+                }),
+              )
+            else ...[
+              IconButton(
+                icon: const Icon(Icons.search),
+                onPressed: () => setState(() => _isSearching = true),
+              ),
               IconButton(
                 icon: const Icon(Icons.settings_outlined, color: Colors.white70),
                 onPressed: () => Navigator.push(
@@ -1109,8 +1087,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   MaterialPageRoute(
                     builder: (_) => SettingsScreen(
                       storage: _storage,
-                      cipher: _cipher,
-                      myUid: _myUid ?? '',
+                      cipher:  _cipher,
+                      myUid:   _myUid ?? '',
                     ),
                   ),
                 ),
@@ -1136,12 +1114,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ],
         ),
         body: _isSearching ? _buildSearchResults() : _buildChatList(),
-        // Нижний бар удалён — только FAB
-        floatingActionButton: FloatingActionButton(
-          onPressed: _showAddMenu,
-          backgroundColor: Colors.cyan,
-          child: const Icon(Icons.add, color: Colors.black, size: 28),
-        ),
+        floatingActionButton: _isSearching
+            ? null
+            : FloatingActionButton(
+                onPressed: _showAddMenu,
+                backgroundColor: Colors.cyan,
+                child: const Icon(Icons.add, color: Colors.black, size: 28),
+              ),
       ),
     );
   }
@@ -1153,8 +1132,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     return ListView.builder(
       itemCount: _searchResults.length,
       itemBuilder: (c, i) {
-        final r = _searchResults[i];
-        final name = _storage.getContactDisplayName(r['chatWith']);
+        final r    = _searchResults[i];
+        final name = _storage.getContactDisplayName(r['chatWith'] as String);
         return ListTile(
           leading: CircleAvatar(
             backgroundColor: const Color(0xFF1A1F3C),
@@ -1176,9 +1155,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               context,
               MaterialPageRoute(
                 builder: (_) => ChatScreen(
-                  myUid: _myUid!,
-                  targetUid: r['chatWith'],
-                  cipher: _cipher,
+                  myUid:     _myUid!,
+                  targetUid: r['chatWith'] as String,
+                  cipher:    _cipher,
                 ),
               ),
             ).then((_) {
