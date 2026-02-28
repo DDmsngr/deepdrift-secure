@@ -37,8 +37,6 @@ extension MsgTypeStr on String {
 }
 
 // ─── Статус верификации подписи ───────────────────────────────────────────────
-// Три состояния: ключ контакта ещё не загружен (unknown), подпись верна (valid),
-// подпись отсутствует или не совпадает (invalid).
 enum SignatureStatus { unknown, valid, invalid }
 
 // ─── Виджет ──────────────────────────────────────────────────────────────────
@@ -368,7 +366,6 @@ class _ChatScreenState extends State<ChatScreen> {
     final rawTime   = data['time'];
 
     widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
-      // ── Обнаружение несоответствия ключей ─────────────────────────────────
       if (decrypted.contains('Authentication failed') || decrypted.contains('Wrong key')) {
         widget.cipher.clearSharedSecret(widget.targetUid);
         await _storage.clearCachedKeys(widget.targetUid);
@@ -392,14 +389,6 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
 
-      // ── 🔴-2 FIX: Верификация Ed25519-подписи ─────────────────────────────
-      // Результат проверки сохраняется в модель сообщения и отображается
-      // пользователю в виде иконки 🔒 (valid) или ⚠️ (invalid/missing).
-      //
-      // Логика:
-      //  • signature == null  → ключ подписи ещё не установлен (unknown)
-      //  • verifySignature() == true  → подпись верна (valid)
-      //  • verifySignature() == false → подпись не совпадает или повреждена (invalid)
       SignatureStatus sigStatus = SignatureStatus.unknown;
       if (signature != null) {
         final isValid = await widget.cipher.verifySignature(
@@ -410,11 +399,9 @@ class _ChatScreenState extends State<ChatScreen> {
         sigStatus = isValid ? SignatureStatus.valid : SignatureStatus.invalid;
 
         if (!isValid) {
-          // Логируем — в debug-сборке видно в консоли
           debugPrint('⚠️ [Security] Invalid signature on message $msgId from $senderUid');
         }
       }
-      // ─────────────────────────────────────────────────────────────────────
 
       String? localPath;
       if (msgTyp != MsgType.text && data['mediaData'] != null) {
@@ -448,7 +435,6 @@ class _ChatScreenState extends State<ChatScreen> {
         'edited':          data['edited'] ?? false,
         'editedAt':        data['editedAt'],
         'forwardedFrom':   data['forwarded_from'],
-        // Сохраняем статус подписи как int для совместимости с Hive
         'signatureStatus': sigStatus.index,
       };
 
@@ -522,7 +508,6 @@ class _ChatScreenState extends State<ChatScreen> {
     if (msgId == null || newEncrypted == null) return;
 
     widget.cipher.decryptText(newEncrypted as String, fromUid: widget.targetUid).then((newText) async {
-      // Верифицируем подпись отредактированного сообщения
       SignatureStatus sigStatus = SignatureStatus.unknown;
       if (newSignature != null) {
         final isValid = await widget.cipher.verifySignature(
@@ -612,7 +597,6 @@ class _ChatScreenState extends State<ChatScreen> {
     String? fileName,
     int?    fileSize,
     String? mimeType,
-    // 🟡-1 Forward: опциональный источник пересылки
     String? forwardedFrom,
   }) async {
     if (_editingMessageId != null) { await _saveEditedMessage(); return; }
@@ -658,7 +642,6 @@ class _ChatScreenState extends State<ChatScreen> {
         'mimeType':        mimeType,
         'edited':          false,
         'forwardedFrom':   forwardedFrom,
-        // Собственные сообщения не нуждаются в верификации подписи
         'signatureStatus': SignatureStatus.valid.index,
       };
 
@@ -967,13 +950,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // 🟡-1 FORWARD (пересылка сообщений)
+  // Forward (пересылка сообщений)
   // ──────────────────────────────────────────────────────────────────────────
 
-  /// Показывает диалог выбора контакта для пересылки и отправляет сообщение.
-  ///
-  /// Пересылаемое сообщение шифруется заново для получателя — оригинальный
-  /// зашифртекст никогда не передаётся третьим лицам.
   void _forwardMessage(Map<String, dynamic> message) {
     final contacts = _storage.getContacts();
     if (contacts.isEmpty) {
@@ -1029,15 +1008,10 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  /// Пересылает [message] пользователю [toUid].
-  ///
-  /// Если целевой пользователь — текущий собеседник, пересылаем в тот же чат.
-  /// Если другой — нужен SharedSecret с ним; при его отсутствии показываем ошибку.
   Future<void> _sendForwardedMessage(
     Map<String, dynamic> message, {
     required String toUid,
   }) async {
-    // Определяем оригинальный источник пересылки
     final originalFrom = message['forwardedFrom'] as String? ??
         (message['isMe'] == true ? widget.myUid : widget.targetUid);
 
@@ -1045,11 +1019,10 @@ class _ChatScreenState extends State<ChatScreen> {
     final forwardLabel = displayName.isNotEmpty ? displayName : originalFrom;
 
     if (toUid == widget.targetUid) {
-      // Пересылка в тот же чат — SharedSecret уже есть
       await _sendMessage(
         text:          message['text'] as String? ?? '',
         messageType:   message['type'] as String? ?? 'text',
-        mediaData:     null, // медиа-файлы при пересылке не дублируем на сервере
+        mediaData:     null,
         filePath:      message['filePath'] as String?,
         fileName:      message['fileName'] as String?,
         fileSize:      message['fileSize'] as int?,
@@ -1057,9 +1030,6 @@ class _ChatScreenState extends State<ChatScreen> {
         forwardedFrom: forwardLabel,
       );
     } else {
-      // Пересылка в другой чат — нужна отдельная навигация или сервис
-      // TODO: открыть ChatScreen с toUid и передать сообщение через аргументы
-      // Пока показываем ошибку с подсказкой
       _showError('Open a chat with $forwardLabel first, then forward from there.');
     }
   }
@@ -1291,7 +1261,6 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Drag-handle
               Container(
                 margin: const EdgeInsets.only(top: 10, bottom: 4),
                 width: 36, height: 4,
@@ -1309,7 +1278,6 @@ class _ChatScreenState extends State<ChatScreen> {
                 Navigator.pop(context);
                 _setReplyTo(message);
               }),
-              // 🟡-1 FIX: Кнопка Forward добавлена в меню
               _actionTile(Icons.forward, 'Forward', () {
                 Navigator.pop(context);
                 _forwardMessage(message);
@@ -1437,7 +1405,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
 
-                    // 🟢-5 FIX: Метка "Forwarded from" если сообщение переслано
+                    // Метка "Forwarded from"
                     if (msg['forwardedFrom'] != null) ...[
                       Row(
                         mainAxisSize: MainAxisSize.min,
@@ -1519,8 +1487,6 @@ class _ChatScreenState extends State<ChatScreen> {
                           const SizedBox(width: 4),
                           _buildStatusIcon(msg['status'] as String?),
                         ],
-                        // 🔴-2 + 🟢-1 FIX: иконка верификации подписи
-                        // Показывается только для входящих сообщений
                         if (!isMe) ...[
                           const SizedBox(width: 4),
                           _buildSignatureIcon(msg),
@@ -1558,13 +1524,6 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  // 🔴-2 + 🟢-1 FIX: Иконка статуса Ed25519-подписи
-  //
-  // 🔒 зелёный  — подпись верна, сообщение не изменено после отправки
-  // ⚠️ оранжевый — подпись невалидна или отсутствует (возможна подмена)
-  // ··· белый   — ключ контакта ещё не загружен (нейтральное состояние)
-  //
-  // Нажатие показывает объяснение для пользователя.
   Widget _buildSignatureIcon(Map<String, dynamic> msg) {
     final statusIndex = msg['signatureStatus'] as int?;
     final status = statusIndex != null
@@ -1786,7 +1745,6 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
 
-            // Оверлей предпросмотра камеры для видео-кружочков
             if (_isVideoRecording &&
                 _cameraController != null &&
                 _cameraController!.value.isInitialized)
@@ -1816,6 +1774,12 @@ class _ChatScreenState extends State<ChatScreen> {
     final lastSeen = _storage.getContactLastSeen(widget.targetUid);
     final avatar   = _storage.getContactAvatar(widget.targetUid);
 
+    // Hero tag и URL аватара для полноэкранного просмотра (Шаг 3)
+    final avatarUrl = avatar != null && avatar.isNotEmpty
+        ? '$SERVER_HTTP_URL/download/$avatar'
+        : null;
+    final heroTag = 'avatar_${widget.targetUid}';
+
     return AppBar(
       backgroundColor: const Color(0xFF1A1F3C),
       titleSpacing: 0,
@@ -1834,18 +1798,25 @@ class _ChatScreenState extends State<ChatScreen> {
             )
           : Row(
               children: [
-                CircleAvatar(
-                  radius: 18,
-                  backgroundColor: const Color(0xFF0A0E27),
-                  backgroundImage: (avatar != null && avatar.isNotEmpty)
-                      ? NetworkImage('$SERVER_HTTP_URL/download/$avatar')
-                      : null,
-                  child: (avatar == null || avatar.isEmpty)
-                      ? Text(
-                          displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
-                          style: const TextStyle(color: Colors.cyan, fontSize: 14),
-                        )
-                      : null,
+                // Аватарка с Hero-анимацией и полноэкранным просмотром (Шаг 3)
+                GestureDetector(
+                  onTap: () {
+                    if (avatarUrl != null) _showFullScreenAvatar(heroTag, avatarUrl, displayName);
+                  },
+                  child: Hero(
+                    tag: heroTag,
+                    child: CircleAvatar(
+                      radius: 18,
+                      backgroundColor: const Color(0xFF0A0E27),
+                      backgroundImage: avatarUrl != null ? NetworkImage(avatarUrl) : null,
+                      child: avatarUrl == null
+                          ? Text(
+                              displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
+                              style: const TextStyle(color: Colors.cyan, fontSize: 14),
+                            )
+                          : null,
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -1874,6 +1845,38 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ],
     );
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Полноэкранный просмотр аватарки (Шаг 2 из home_screen upgrade)
+  // ──────────────────────────────────────────────────────────────────────────
+  void _showFullScreenAvatar(String tag, String imageUrl, String name) {
+    Navigator.push(context, PageRouteBuilder(
+      opaque: false,
+      barrierColor: Colors.black.withValues(alpha: 0.9),
+      pageBuilder: (context, _, __) {
+        return Scaffold(
+          backgroundColor: Colors.transparent,
+          appBar: AppBar(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            iconTheme: const IconThemeData(color: Colors.white),
+            title: Text(name, style: const TextStyle(color: Colors.white)),
+          ),
+          body: Center(
+            child: InteractiveViewer(
+              panEnabled: true,
+              minScale: 1.0,
+              maxScale: 4.0,
+              child: Hero(
+                tag: tag,
+                child: Image.network(imageUrl, fit: BoxFit.contain),
+              ),
+            ),
+          ),
+        );
+      },
+    ));
   }
 
   Widget _buildReplyBanner() => Container(
@@ -2142,7 +2145,7 @@ class _VideoNotePlayerState extends State<VideoNotePlayer> {
     _controller = VideoPlayerController.file(File(widget.filePath))
       ..initialize().then((_) {
         _controller.setLooping(true);
-        _controller.setVolume(0); // Без звука по умолчанию (как в Telegram)
+        _controller.setVolume(0);
         if (mounted) setState(() => _isInit = true);
         _controller.play();
       });
@@ -2165,7 +2168,6 @@ class _VideoNotePlayerState extends State<VideoNotePlayer> {
     }
     return GestureDetector(
       onTap: () {
-        // Тап включает/выключает звук
         setState(() {
           _controller.setVolume(_controller.value.volume == 0 ? 1 : 0);
         });
