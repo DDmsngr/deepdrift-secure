@@ -129,26 +129,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (dialogContext) => StatefulBuilder(
         builder: (dialogContext, setDialogState) => AlertDialog(
           backgroundColor: const Color(0xFF1A1F3C),
-          title: Text('Change password', style: GoogleFonts.orbitron(fontSize: 14)),
+          title: Text('Смена пароля', style: GoogleFonts.orbitron(fontSize: 14)),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                '⚠️ After changing, all sessions on other devices will need the new password.',
+                '⚠️ После смены пароля все сессии на других устройствах потребуют новый пароль.',
                 style: TextStyle(color: Colors.orange, fontSize: 11),
               ),
               const SizedBox(height: 16),
-              _passField(oldCtrl,     'Current password'),
+              _passField(oldCtrl,     'Текущий пароль'),
               const SizedBox(height: 10),
-              _passField(newCtrl,     'New password'),
+              _passField(newCtrl,     'Новый пароль'),
               const SizedBox(height: 10),
-              _passField(confirmCtrl, 'Confirm new password'),
+              _passField(confirmCtrl, 'Повтори новый пароль'),
             ],
           ),
           actions: [
             TextButton(
               onPressed: isLoading ? null : () => Navigator.pop(dialogContext),
-              child: const Text('CANCEL'),
+              child: const Text('ОТМЕНА'),
             ),
             ElevatedButton(
               onPressed: isLoading
@@ -157,15 +157,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       // ── Валидация ──────────────────────────────────────
                       final savedPwd = widget.storage.getSetting('user_password') as String?;
                       if (oldCtrl.text != savedPwd) {
-                        _showError('Current password is incorrect');
+                        _showError('Неверный текущий пароль');
                         return;
                       }
                       if (newCtrl.text.length < 8) {
-                        _showError('New password must be at least 8 characters');
+                        _showError('Новый пароль должен быть не менее 8 символов');
                         return;
                       }
                       if (newCtrl.text != confirmCtrl.text) {
-                        _showError('New passwords do not match');
+                        _showError('Новые пароли не совпадают');
                         return;
                       }
 
@@ -181,10 +181,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         await widget.storage.saveSetting('encrypted_ed25519_key', newKeys['ed25519']!);
 
                         if (mounted) Navigator.pop(dialogContext);
-                        _showSuccess('Password changed successfully');
+                        _showSuccess('Пароль успешно изменён');
                       } catch (e) {
                         setDialogState(() => isLoading = false);
-                        _showError('Error changing password: $e');
+                        _showError('Ошибка смены пароля: $e');
                       }
                     },
               style: ElevatedButton.styleFrom(
@@ -196,7 +196,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       width: 16, height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
                     )
-                  : const Text('CHANGE'),
+                  : const Text('СМЕНИТЬ'),
             ),
           ],
         ),
@@ -232,14 +232,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             const Icon(Icons.fingerprint, color: Colors.cyan, size: 20),
             const SizedBox(width: 8),
-            Text('Identity fingerprint', style: GoogleFonts.orbitron(fontSize: 13)),
+            Text('Отпечаток устройства', style: GoogleFonts.orbitron(fontSize: 13)),
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'This is your device identity. Share it via another channel so your contacts can verify they\'re talking to the real you — not an impostor.',
+              'Это идентификатор твоего устройства. Поделись им через другой канал, чтобы контакты могли убедиться, что общаются именно с тобой.',
               style: TextStyle(color: Colors.white70, fontSize: 12),
               textAlign: TextAlign.center,
             ),
@@ -253,7 +253,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 border: Border.all(color: Colors.cyan.withValues(alpha: 0.2)),
               ),
               child: const Text(
-                '💡 To verify a specific chat session (MITM check), use the Security Code in that chat instead.',
+                '💡 Для проверки конкретного чата (защита от MITM) используй Код безопасности в том чате.',
                 style: TextStyle(color: Colors.white54, fontSize: 11),
                 textAlign: TextAlign.center,
               ),
@@ -276,7 +276,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 12),
             Text(
-              'Your ID: ${widget.myUid}',
+              'Мой ID: ${widget.myUid}',
               style: const TextStyle(color: Colors.white38, fontSize: 12),
             ),
           ],
@@ -285,14 +285,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           TextButton(
             onPressed: () {
               Clipboard.setData(ClipboardData(text: _myPublicKeyFingerprint ?? ''));
-              _showSuccess('Fingerprint copied');
+              _showSuccess('Отпечаток скопирован');
               Navigator.pop(context);
             },
-            child: const Text('COPY'),
+            child: const Text('КОПИРОВАТЬ'),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('CLOSE'),
+            child: const Text('ЗАКРЫТЬ'),
           ),
         ],
       ),
@@ -309,7 +309,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       backgroundColor: const Color(0xFF0A0E27),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: Text('Settings', style: GoogleFonts.orbitron(fontSize: 16)),
+        title: Text('Настройки', style: GoogleFonts.orbitron(fontSize: 16)),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new, size: 18),
           onPressed: () => Navigator.pop(context),
@@ -320,12 +320,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
 
           // ── УВЕДОМЛЕНИЯ ────────────────────────────────────────────────────
-          _sectionHeader('NOTIFICATIONS'),
+          _sectionHeader('УВЕДОМЛЕНИЯ'),
 
           _switchTile(
             icon:     Icons.volume_up_outlined,
-            title:    'Sound',
-            subtitle: 'Play sound for incoming messages',
+            title:    'Звук',
+            subtitle: 'Воспроизводить звук для входящих сообщений',
             value:    _notificationsSound,
             onChanged: (val) async {
               setState(() => _notificationsSound = val);
@@ -334,12 +334,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           // ── МЕДИА ──────────────────────────────────────────────────────────
-          _sectionHeader('MEDIA'),
+          _sectionHeader('МЕДИА'),
 
           _switchTile(
             icon:     Icons.save_alt_outlined,
-            title:    'Auto-save photos',
-            subtitle: 'Automatically save incoming photos to gallery',
+            title:    'Автосохранение фото',
+            subtitle: 'Автоматически сохранять входящие фото в галерею',
             value:    _autoSavePhotos,
             onChanged: (val) async {
               setState(() => _autoSavePhotos = val);
@@ -348,49 +348,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           // ── БЕЗОПАСНОСТЬ ───────────────────────────────────────────────────
-          _sectionHeader('SECURITY'),
+          _sectionHeader('БЕЗОПАСНОСТЬ'),
 
           _actionTile(
             icon:     Icons.lock_outline,
-            title:    'Change encryption password',
-            subtitle: 'Re-encrypt your keys with a new password',
+            title:    'Сменить пароль шифрования',
+            subtitle: 'Перешифровать ключи новым паролем',
             onTap:    _showChangePasswordDialog,
           ),
 
           _actionTile(
             icon:      Icons.fingerprint,
             iconColor: Colors.cyan,
-            title:     'Identity fingerprint',
+            title:     'Отпечаток устройства',
             subtitle:  _loadingFingerprint
-                ? 'Loading...'
+                ? 'Загрузка...'
                 : (_myPublicKeyFingerprint != null
                     ? '${_myPublicKeyFingerprint!.substring(0, 11)}...'
-                    : 'Tap to view'),
+                    : 'Нажми для просмотра'),
             onTap: _loadingFingerprint ? null : _showFingerprintDialog,
           ),
 
           // ── О ПРИЛОЖЕНИИ ───────────────────────────────────────────────────
-          _sectionHeader('ABOUT'),
+          _sectionHeader('О ПРИЛОЖЕНИИ'),
 
           _infoTile(
             icon:  Icons.badge_outlined,
-            title: 'My ID',
+            title: 'Мой ID',
             value: widget.myUid,
             onTap: () {
               Clipboard.setData(ClipboardData(text: widget.myUid));
-              _showSuccess('ID copied');
+              _showSuccess('ID скопирован');
             },
           ),
 
           _infoTile(
             icon:  Icons.info_outline,
-            title: 'Version',
+            title: 'Версия',
             value: 'DDChat 1.0.0',
           ),
 
           _infoTile(
             icon:  Icons.security,
-            title: 'Encryption',
+            title: 'Шифрование',
             value: 'X25519 + Ed25519 + ChaCha20',
           ),
 
