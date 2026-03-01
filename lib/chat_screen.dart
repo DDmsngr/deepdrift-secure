@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
@@ -19,7 +18,6 @@ import 'package:camera/camera.dart';
 import 'crypto_service.dart';
 import 'socket_service.dart';
 import 'storage_service.dart';
-import 'providers/app_providers.dart';
 import 'models/chat_models.dart';
 import 'widgets/message_bubble.dart';
 
