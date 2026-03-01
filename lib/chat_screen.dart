@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
@@ -20,27 +21,13 @@ import 'package:video_player/video_player.dart';
 import 'crypto_service.dart';
 import 'socket_service.dart';
 import 'storage_service.dart';
+import 'providers/app_providers.dart';
+import 'models/chat_models.dart';
+import 'widgets/message_bubble.dart';
+import 'widgets/video_players.dart';
 
-// ─── Типы сообщений ──────────────────────────────────────────────────────────
-enum MsgType { text, image, voice, file, video_note, video_gallery }
-
-extension MsgTypeStr on String {
-  MsgType toMsgType() {
-    switch (this) {
-      case 'image':         return MsgType.image;
-      case 'voice':         return MsgType.voice;
-      case 'file':          return MsgType.file;
-      case 'video_note':    return MsgType.video_note;
-      case 'video_gallery': return MsgType.video_gallery;
-      default:              return MsgType.text;
-    }
-  }
-}
-
-// ─── Статус верификации подписи ───────────────────────────────────────────────
-// Три состояния: ключ контакта ещё не загружен (unknown), подпись верна (valid),
-// подпись отсутствует или не совпадает (invalid).
-enum SignatureStatus { unknown, valid, invalid }
+// Типы MsgType, SignatureStatus и утилиты (formatMessageTime и др.)
+// перенесены в lib/models/chat_models.dart
 
 // ─── Виджет ──────────────────────────────────────────────────────────────────
 class ChatScreen extends StatefulWidget {
@@ -68,6 +55,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
+  // Синглтоны — напрямую (совпадают с тем что в провайдерах)
   final _socket  = SocketService();
   final _storage = StorageService();
   final _uuid    = const Uuid();
@@ -75,6 +63,10 @@ class _ChatScreenState extends State<ChatScreen> {
   final _audioRecorder = AudioRecorder();
   final _audioPlayer   = AudioPlayer();
   final _dio = Dio();
+
+  // Удобные алиасы для доступа через провайдер — инициализируются в didChangeDependencies
+  late SocketProvider  _socketProvider;
+  late StorageProvider _storageProvider;
 
   StreamSubscription? _socketSub;
 
@@ -119,6 +111,13 @@ class _ChatScreenState extends State<ChatScreen> {
   // ──────────────────────────────────────────────────────────────────────────
   // Lifecycle
   // ──────────────────────────────────────────────────────────────────────────
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _socketProvider  = context.read<SocketProvider>();
+    _storageProvider = context.read<StorageProvider>();
+  }
 
   @override
   void initState() {
@@ -321,16 +320,8 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  String _extensionForType(MsgType type, String? fileName) {
-    if (fileName != null && fileName.contains('.')) return '.${fileName.split('.').last}';
-    switch (type) {
-      case MsgType.image:      return '.jpg';
-      case MsgType.voice:      return '.m4a';
-      case MsgType.video_note:    return '.mp4';
-      case MsgType.video_gallery: return '.mp4';
-      default:                    return '';
-    }
-  }
+  String _extensionForType(MsgType type, String? fileName) =>
+      extensionForType(type, fileName);
 
   String _formatFileSize(dynamic sizeRaw) {
     final size = sizeRaw is int ? sizeRaw : int.tryParse(sizeRaw.toString()) ?? 0;
@@ -1158,31 +1149,15 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  String _formatTime(dynamic timestamp) {
-    if (timestamp == null) return '';
-    final dt = timestamp is int
-        ? DateTime.fromMillisecondsSinceEpoch(timestamp)
-        : DateTime.tryParse(timestamp.toString()) ?? DateTime.now();
-    return DateFormat.Hm().format(dt);
-  }
+  // Утилиты форматирования перенесены в models/chat_models.dart
+  String _formatTime(dynamic ts)           => formatMessageTime(ts);
+  String _formatLastSeen(int ts)           => formatLastSeen(ts);
+  String _formatFileSize(dynamic s)        => formatFileSize(s);
+  String _formatRecordingTime(int s)       => formatRecordingTime(s);
+  String _mimeTypeFromExtension(String f)  => mimeTypeFromExtension(f);
+  IconData _iconForMime(String? m)         => iconForMime(m);
 
-  String _formatLastSeen(int timestamp) {
-    if (timestamp == 0) return 'offline';
-    final dt   = DateTime.fromMillisecondsSinceEpoch(timestamp);
-    final now  = DateTime.now();
-    final diff = now.difference(dt);
-    if (diff.inMinutes < 1)    return 'just now';
-    if (diff.inMinutes < 60)   return '${diff.inMinutes} min ago';
-    if (dt.day == now.day)     return 'today at ${DateFormat.Hm().format(dt)}';
-    if (dt.day == now.day - 1) return 'yesterday at ${DateFormat.Hm().format(dt)}';
-    return DateFormat('dd MMM, HH:mm').format(dt);
-  }
 
-  String _formatRecordingTime(int seconds) {
-    final m = (seconds ~/ 60).toString().padLeft(2, '0');
-    final s = (seconds % 60).toString().padLeft(2, '0');
-    return '$m:$s';
-  }
 
   void _setReplyTo(Map<String, dynamic> message) {
     setState(() {
@@ -1211,36 +1186,6 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!_isSearching || _searchController.text.isEmpty) return _messages;
     final q = _searchController.text.toLowerCase();
     return _messages.where((m) => (m['text'] ?? '').toLowerCase().contains(q)).toList();
-  }
-
-  String _mimeTypeFromExtension(String fileName) {
-    final ext = fileName.split('.').last.toLowerCase();
-    const mimes = {
-      'pdf': 'application/pdf',
-      'doc': 'application/msword',
-      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'xls': 'application/vnd.ms-excel',
-      'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'ppt': 'application/vnd.ms-powerpoint',
-      'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'txt': 'text/plain',  'zip': 'application/zip',
-      'rar': 'application/x-rar-compressed', 'mp3': 'audio/mpeg',
-      'mp4': 'video/mp4',   'mov': 'video/quicktime',
-      'png': 'image/png',   'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif',
-    };
-    return mimes[ext] ?? 'application/octet-stream';
-  }
-
-  IconData _iconForMime(String? mimeType) {
-    if (mimeType == null) return Icons.attach_file;
-    if (mimeType.startsWith('image/')) return Icons.image;
-    if (mimeType.startsWith('audio/')) return Icons.audio_file;
-    if (mimeType.startsWith('video/')) return Icons.video_file;
-    if (mimeType.contains('pdf'))      return Icons.picture_as_pdf;
-    if (mimeType.contains('word') || mimeType.contains('msword')) return Icons.description;
-    if (mimeType.contains('excel') || mimeType.contains('spreadsheet')) return Icons.table_chart;
-    if (mimeType.contains('zip') || mimeType.contains('rar')) return Icons.folder_zip;
-    return Icons.attach_file;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1280,41 +1225,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Заглушка для медиа, которое не удалось загрузить автоматически
-  Widget _buildRetryMediaButton(Map<String, dynamic> msg, IconData icon, String label) {
-    return GestureDetector(
-      onTap: () => _retryDownloadMedia(msg),
-      child: Container(
-        width: 180,
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
-        decoration: BoxDecoration(
-          color: Colors.black26,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.cyan.withValues(alpha: 0.4)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: Colors.cyan, size: 28),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
-                  const Text(
-                    'Нажми для загрузки',
-                    style: TextStyle(color: Colors.cyan, fontSize: 11),
-                  ),
-                ],
-              ),
-            ),
-            const Icon(Icons.download_rounded, color: Colors.cyan, size: 20),
-          ],
-        ),
-      ),
-    );
-  }
 
   /// Открывает фото профиля контакта на весь экран с Hero-анимацией и pinch-to-zoom.
   void _showContactProfilePhoto(String displayName, String? avatarId) {
@@ -1608,359 +1518,26 @@ class _ChatScreenState extends State<ChatScreen> {
   // Message bubble
   // ──────────────────────────────────────────────────────────────────────────
 
+  // ─── Рендер одного сообщения ─────────────────────────────────────────────
+  // Логика отображения вынесена в lib/widgets/message_bubble.dart.
+  // _ChatScreenState остаётся ответственным только за колбэки (действия).
   Widget _buildMessage(Map<String, dynamic> msg, int index) {
-    final isMe      = msg['from'] == widget.myUid;
-    final msgType   = (msg['type'] as String? ?? 'text').toMsgType();
-    final reactions = _reactions[msg['id']?.toString()] ?? {};
-
-    return GestureDetector(
-      onLongPress: () => _showMessageActions(msg),
-      child: Align(
-        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-        child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 3, horizontal: 12),
-          child: Column(
-            crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-            children: [
-              Container(
-                constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  gradient: isMe
-                      ? const LinearGradient(colors: [Color(0xFF00D4FF), Color(0xFF0099CC)])
-                      : null,
-                  color: isMe ? null : const Color(0xFF1A1F3C),
-                  borderRadius: BorderRadius.only(
-                    topLeft:     const Radius.circular(12),
-                    topRight:    const Radius.circular(12),
-                    bottomLeft:  Radius.circular(isMe ? 12 : 2),
-                    bottomRight: Radius.circular(isMe ? 2 : 12),
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.2),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-
-                    // 🟢-5 FIX: Метка "Forwarded from" если сообщение переслано
-                    if (msg['forwardedFrom'] != null) ...[
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.forward,
-                              size: 13,
-                              color: isMe ? Colors.white70 : Colors.cyanAccent.withValues(alpha: 0.8)),
-                          const SizedBox(width: 4),
-                          Flexible(
-                            child: Text(
-                              'Forwarded from ${msg['forwardedFrom']}',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontStyle: FontStyle.italic,
-                                color: isMe
-                                    ? Colors.white70
-                                    : Colors.cyanAccent.withValues(alpha: 0.8),
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                    ],
-
-                    // Reply preview
-                    if (msg['replyTo'] != null) ...[
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        margin:  const EdgeInsets.only(bottom: 6),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.25),
-                          borderRadius: BorderRadius.circular(8),
-                          border: const Border(left: BorderSide(color: Colors.cyanAccent, width: 3)),
-                        ),
-                        child: Text(
-                          msg['replyTo'] as String,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.65),
-                            fontSize: 12,
-                            fontStyle: FontStyle.italic,
-                          ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-
-                    // Содержимое сообщения
-                    _buildMessageContent(msg, msgType, isMe),
-                    const SizedBox(height: 4),
-
-                    // Нижняя строка: edited + время + статус + иконка подписи
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (msg['edited'] == true)
-                          const Padding(
-                            padding: EdgeInsets.only(right: 4),
-                            child: Text(
-                              'edited',
-                              style: TextStyle(
-                                color: Colors.white54,
-                                fontSize: 10,
-                                fontStyle: FontStyle.italic,
-                              ),
-                            ),
-                          ),
-                        Text(
-                          _formatTime(msg['time']),
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.5),
-                            fontSize: 11,
-                          ),
-                        ),
-                        if (isMe) ...[
-                          const SizedBox(width: 4),
-                          _buildStatusIcon(msg['status'] as String?),
-                        ],
-                        // 🔴-2 + 🟢-1 FIX: иконка верификации подписи
-                        // Показывается только для входящих сообщений
-                        if (!isMe) ...[
-                          const SizedBox(width: 4),
-                          _buildSignatureIcon(msg),
-                        ],
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-
-              // Реакции
-              if (reactions.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Wrap(
-                    spacing: 4,
-                    children: reactions.map((emoji) => GestureDetector(
-                      onTap: () => _removeReaction(msg['id'].toString(), emoji),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF1A1F3C),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.cyan.withValues(alpha: 0.4)),
-                        ),
-                        child: Text(emoji, style: const TextStyle(fontSize: 14)),
-                      ),
-                    )).toList(),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
+    return MessageBubble(
+      msg:             msg,
+      myUid:           widget.myUid,
+      playingMessageId: _playingMessageId,
+      reactions:       _reactions,
+      onLongPress:     _showMessageActions,
+      onRetryDownload: _retryDownloadMedia,
+      onPlayVoice:     _playVoiceMessage,
+      onOpenImage:     _showFullImageFromFile,
+      onOpenFile:      (path, name) => _openFile(path, name),
+      onRemoveReaction: _removeReaction,
     );
   }
 
-  // 🔴-2 + 🟢-1 FIX: Иконка статуса Ed25519-подписи
-  //
-  // 🔒 зелёный  — подпись верна, сообщение не изменено после отправки
-  // ⚠️ оранжевый — подпись невалидна или отсутствует (возможна подмена)
-  // ··· белый   — ключ контакта ещё не загружен (нейтральное состояние)
-  //
-  // Нажатие показывает объяснение для пользователя.
-  Widget _buildSignatureIcon(Map<String, dynamic> msg) {
-    final statusIndex = msg['signatureStatus'] as int?;
-    final status = statusIndex != null
-        ? SignatureStatus.values[statusIndex]
-        : SignatureStatus.unknown;
 
-    final (icon, color, tooltip) = switch (status) {
-      SignatureStatus.valid   => (Icons.lock, Colors.greenAccent,    'Signature verified'),
-      SignatureStatus.invalid => (Icons.warning_amber, Colors.orange, 'Signature invalid — message may have been tampered'),
-      SignatureStatus.unknown => (Icons.lock_clock, Colors.white24,   'Signature not yet verified'),
-    };
-
-    return GestureDetector(
-      onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(tooltip),
-          backgroundColor: status == SignatureStatus.invalid ? Colors.orange : Colors.blueGrey,
-          duration: const Duration(seconds: 3),
-        ),
-      ),
-      child: Icon(icon, size: 12, color: color),
-    );
-  }
-
-  Widget _buildMessageContent(Map<String, dynamic> msg, MsgType msgType, bool isMe) {
-    switch (msgType) {
-      case MsgType.image:
-        return _buildImageContent(msg);
-      case MsgType.voice:
-        return _buildVoiceContent(msg, isMe);
-      case MsgType.file:
-        return _buildFileContent(msg, isMe);
-      case MsgType.video_note:
-        return (msg['filePath'] != null)
-            ? VideoNotePlayer(filePath: msg['filePath'] as String)
-            : _buildRetryMediaButton(msg, Icons.videocam_rounded, 'Видеокружок');
-      case MsgType.video_gallery:
-        return (msg['filePath'] != null)
-            ? VideoGalleryPlayer(filePath: msg['filePath'] as String)
-            : _buildRetryMediaButton(msg, Icons.video_file_rounded, 'Видео из галереи');
-      default:
-        return Text(msg['text'] as String? ?? '', style: const TextStyle(color: Colors.white, fontSize: 15));
-    }
-  }
-
-  Widget _buildImageContent(Map<String, dynamic> msg) {
-    final localPath = msg['filePath'] as String?;
-    if (localPath != null && File(localPath).existsSync()) {
-      return GestureDetector(
-        onTap: () => _showFullImageFromFile(localPath),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Image.file(
-            File(localPath),
-            width: 200,
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => _imagePlaceholder(msg['fileName'] as String?),
-          ),
-        ),
-      );
-    }
-    // Файл отсутствует — предлагаем повторно скачать
-    if (msg['mediaData'] != null) {
-      return _buildRetryMediaButton(msg, Icons.image_rounded, 'Изображение');
-    }
-    return _imagePlaceholder(msg['fileName'] as String?);
-  }
-
-  Widget _imagePlaceholder(String? name) => Container(
-    width: 200, height: 120,
-    decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(8)),
-    child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        const Icon(Icons.broken_image, color: Colors.white38, size: 40),
-        if (name != null) Text(name, style: const TextStyle(color: Colors.white38, fontSize: 11)),
-      ],
-    ),
-  );
-
-  Widget _buildVoiceContent(Map<String, dynamic> msg, bool isMe) {
-    final localPath = msg['filePath'] as String?;
-    // Файл голосового сообщения не загружен — предлагаем повторить
-    if ((localPath == null || !File(localPath).existsSync()) &&
-        msg['mediaData'] != null) {
-      return _buildRetryMediaButton(msg, Icons.mic_rounded, 'Голосовое сообщение');
-    }
-    final msgId     = msg['id']?.toString();
-    final isPlaying = _playingMessageId == msgId;
-    return GestureDetector(
-      onTap: () => _playVoiceMessage(msg),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            isPlaying ? Icons.pause_circle : Icons.play_circle,
-            color: isMe ? Colors.white : Colors.cyanAccent,
-            size: 36,
-          ),
-          const SizedBox(width: 8),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Голосовое', style: TextStyle(color: Colors.white, fontSize: 14)),
-              if (msg['fileSize'] != null)
-                Text(
-                  _formatFileSize(msg['fileSize']),
-                  style: const TextStyle(color: Colors.white54, fontSize: 11),
-                ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFileContent(Map<String, dynamic> msg, bool isMe) {
-    final fileName = msg['fileName'] as String? ?? 'file';
-    final mimeType = msg['mimeType'] as String?;
-    final fileSize = msg['fileSize'];
-    final filePath = msg['filePath'] as String?;
-    return GestureDetector(
-      onTap: () => _openFile(filePath, fileName),
-      child: Container(
-        constraints: const BoxConstraints(minWidth: 180),
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.2),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: (isMe ? Colors.white : Colors.cyan).withValues(alpha: 0.3),
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 44, height: 44,
-              decoration: BoxDecoration(
-                color: Colors.cyan.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(_iconForMime(mimeType), color: Colors.cyanAccent, size: 26),
-            ),
-            const SizedBox(width: 10),
-            Flexible(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    fileName,
-                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  if (fileSize != null)
-                    Text(_formatFileSize(fileSize), style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                  Text(
-                    filePath != null && File(filePath).existsSync() ? 'Tap to open' : 'File unavailable',
-                    style: TextStyle(
-                      color: filePath != null && File(filePath).existsSync()
-                          ? Colors.cyanAccent
-                          : Colors.white30,
-                      fontSize: 11,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStatusIcon(String? status) {
-    switch (status) {
-      case 'read':      return const Icon(Icons.done_all,    size: 14, color: Colors.cyanAccent);
-      case 'delivered': return const Icon(Icons.done_all,    size: 14, color: Colors.white54);
-      case 'sent':      return const Icon(Icons.check,       size: 14, color: Colors.white54);
-      case 'pending':   return const Icon(Icons.access_time, size: 14, color: Colors.white38);
-      case 'failed':    return const Icon(Icons.error_outline, size: 14, color: Colors.redAccent);
-      default:          return const SizedBox.shrink();
-    }
-  }
+  // Bubble widgets перенесены в lib/widgets/message_bubble.dart
 
   // ──────────────────────────────────────────────────────────────────────────
   // Build
@@ -2360,182 +1937,4 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
 }
-
-// ─── ВИДЖЕТ ПЛЕЕРА ДЛЯ КРУЖОЧКОВ ────────────────────────────────────────────
-class VideoNotePlayer extends StatefulWidget {
-  final String filePath;
-  const VideoNotePlayer({super.key, required this.filePath});
-
-  @override
-  State<VideoNotePlayer> createState() => _VideoNotePlayerState();
-}
-
-class _VideoNotePlayerState extends State<VideoNotePlayer> {
-  late VideoPlayerController _controller;
-  bool _isInit = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = VideoPlayerController.file(File(widget.filePath))
-      ..initialize().then((_) {
-        _controller.setLooping(true);
-        _controller.setVolume(0); // Без звука по умолчанию (как в Telegram)
-        if (mounted) setState(() => _isInit = true);
-        _controller.play();
-      });
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!_isInit) {
-      return SizedBox(
-        width: 220, height: 220,
-        child: DecoratedBox(
-          decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.black26),
-          child: const Center(child: CircularProgressIndicator(color: Colors.cyan)),
-        ),
-      );
-    }
-    return GestureDetector(
-      onTap: () {
-        // Тап включает/выключает звук
-        setState(() {
-          _controller.setVolume(_controller.value.volume == 0 ? 1 : 0);
-        });
-      },
-      child: SizedBox(
-        // Фиксируем КВАДРАТ 220×220 — это исключает растяжение в овал
-        // независимо от того, какой maxWidth задаёт родительский контейнер-пузырь.
-        width: 220, height: 220,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            DecoratedBox(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.cyan.withValues(alpha: 0.3), width: 3),
-              ),
-              child: ClipOval(
-                // AspectRatio(1) внутри ClipOval гарантирует квадратный crop видео
-                child: AspectRatio(
-                  aspectRatio: 1.0,
-                  child: FittedBox(
-                    fit: BoxFit.cover,
-                    child: SizedBox(
-                      width:  _controller.value.size.width,
-                      height: _controller.value.size.height,
-                      child:  VideoPlayer(_controller),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            if (_controller.value.volume > 0)
-              const Positioned(
-                bottom: 20,
-                child: Icon(Icons.volume_up, color: Colors.white, size: 20),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ─── Прямоугольный плеер для видео из галереи ────────────────────────────────
-class VideoGalleryPlayer extends StatefulWidget {
-  final String filePath;
-  const VideoGalleryPlayer({super.key, required this.filePath});
-
-  @override
-  State<VideoGalleryPlayer> createState() => _VideoGalleryPlayerState();
-}
-
-class _VideoGalleryPlayerState extends State<VideoGalleryPlayer> {
-  late VideoPlayerController _controller;
-  bool _isInit    = false;
-  bool _isPlaying = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = VideoPlayerController.file(File(widget.filePath))
-      ..initialize().then((_) {
-        _controller.setLooping(false);
-        if (mounted) setState(() => _isInit = true);
-      });
-    _controller.addListener(() {
-      if (mounted) setState(() => _isPlaying = _controller.value.isPlaying);
-    });
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!_isInit) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          width: 220, height: 140,
-          color: Colors.black26,
-          child: const Center(child: CircularProgressIndicator(color: Colors.cyan)),
-        ),
-      );
-    }
-
-    final aspect = _controller.value.aspectRatio;
-    return GestureDetector(
-      onTap: () {
-        setState(() {
-          _isPlaying ? _controller.pause() : _controller.play();
-        });
-      },
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            AspectRatio(
-              aspectRatio: aspect,
-              child: VideoPlayer(_controller),
-            ),
-            if (!_isPlaying)
-              Container(
-                decoration: const BoxDecoration(
-                  color: Colors.black38,
-                  shape: BoxShape.circle,
-                ),
-                padding: const EdgeInsets.all(10),
-                child: const Icon(Icons.play_arrow, color: Colors.white, size: 36),
-              ),
-            // Прогресс-бар внизу
-            Positioned(
-              bottom: 0, left: 0, right: 0,
-              child: VideoProgressIndicator(
-                _controller,
-                allowScrubbing: true,
-                colors: const VideoProgressColors(
-                  playedColor: Colors.cyan,
-                  bufferedColor: Colors.white24,
-                  backgroundColor: Colors.black26,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
+// VideoNotePlayer и VideoGalleryPlayer перенесены в lib/widgets/video_players.dart
