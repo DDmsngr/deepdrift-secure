@@ -6,6 +6,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:provider/provider.dart';
 
 import 'identity_service.dart';
 import 'chat_screen.dart';
@@ -14,6 +15,7 @@ import 'socket_service.dart';
 import 'crypto_service.dart';
 import 'notification_service.dart';
 import 'settings_screen.dart';
+import 'providers/app_providers.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -32,9 +34,9 @@ class _HomeScreenState extends State<HomeScreen>
   StreamSubscription? _socketSub;
 
   final _idService   = IdentityService();
-  final _storage     = StorageService();
-  final _socket      = SocketService();
-  final _cipher      = SecureCipher();
+  final _storage     = StorageService();  // singleton
+  final _socket      = SocketService();   // singleton
+  late  SecureCipher _cipher;             // получаем из CipherProvider
   final _imagePicker = ImagePicker();
 
   final _idController     = TextEditingController();
@@ -52,6 +54,14 @@ class _HomeScreenState extends State<HomeScreen>
   // ──────────────────────────────────────────────────────────────────────────
   // Lifecycle
   // ──────────────────────────────────────────────────────────────────────────
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Получаем единственный экземпляр SecureCipher из дерева провайдеров.
+    // didChangeDependencies вызывается до build, поэтому _cipher всегда готов.
+    _cipher = context.read<CipherProvider>().cipher;
+  }
 
   @override
   void initState() {
