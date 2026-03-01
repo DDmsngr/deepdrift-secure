@@ -3,10 +3,13 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:provider/provider.dart';
 
 import 'notification_service.dart';
 import 'socket_service.dart';
-import 'splash_screen.dart'; // Или home_screen.dart, в зависимости от того, что ты используешь на старте
+import 'crypto_service.dart';
+import 'providers/app_providers.dart';
+import 'splash_screen.dart';
 
 // ── Фоновый обработчик FCM (DATA-ONLY PUSH) ──────────────────────────────────
 @pragma('vm:entry-point')
@@ -133,28 +136,38 @@ class _DeepDriftAppState extends State<DeepDriftApp>
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'DDChat',
-      debugShowCheckedModeBanner: false,
+    return MultiProvider(
+      providers: [
+        // SocketService и StorageService — синглтоны, оборачиваем как есть.
+        // ChangeNotifierProvider создаёт и управляет жизненным циклом.
+        ChangeNotifierProvider(create: (_) => SocketProvider()),
+        ChangeNotifierProvider(create: (_) => StorageProvider()),
+        // SecureCipher — один экземпляр на приложение, создаётся здесь.
+        ChangeNotifierProvider(create: (_) => CipherProvider(SecureCipher())),
+      ],
+      child: MaterialApp(
+        title: 'DDChat',
+        debugShowCheckedModeBanner: false,
 
-      // Позволяет навигировать к чату по тапу на уведомление
-      navigatorKey: NotificationService.navigatorKey,
+        // Позволяет навигировать к чату по тапу на уведомление
+        navigatorKey: NotificationService.navigatorKey,
 
-      theme: ThemeData(
-        brightness:              Brightness.dark,
-        primaryColor:            const Color(0xFF00D9FF),
-        scaffoldBackgroundColor: const Color(0xFF0A0E1A),
-        colorScheme: const ColorScheme.dark(
-          primary:   Color(0xFF00D9FF),
-          secondary: Color(0xFF00D9FF),
-          surface:   Color(0xFF151B2D),
+        theme: ThemeData(
+          brightness:              Brightness.dark,
+          primaryColor:            const Color(0xFF00D9FF),
+          scaffoldBackgroundColor: const Color(0xFF0A0E1A),
+          colorScheme: const ColorScheme.dark(
+            primary:   Color(0xFF00D9FF),
+            secondary: Color(0xFF00D9FF),
+            surface:   Color(0xFF151B2D),
+          ),
+          appBarTheme: const AppBarTheme(
+            backgroundColor: Color(0xFF0A0E1A),
+            elevation: 0,
+          ),
         ),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF0A0E1A),
-          elevation: 0,
-        ),
+        home: const SplashScreen(),
       ),
-      home: const SplashScreen(), // Если у тебя стартовый HomeScreen, замени на HomeScreen()
     );
   }
 }
