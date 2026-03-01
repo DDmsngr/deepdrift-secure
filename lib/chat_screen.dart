@@ -22,16 +22,17 @@ import 'socket_service.dart';
 import 'storage_service.dart';
 
 // ─── Типы сообщений ──────────────────────────────────────────────────────────
-enum MsgType { text, image, voice, file, video_note }
+enum MsgType { text, image, voice, file, video_note, video_gallery }
 
 extension MsgTypeStr on String {
   MsgType toMsgType() {
     switch (this) {
-      case 'image':      return MsgType.image;
-      case 'voice':      return MsgType.voice;
-      case 'file':       return MsgType.file;
-      case 'video_note': return MsgType.video_note;
-      default:           return MsgType.text;
+      case 'image':         return MsgType.image;
+      case 'voice':         return MsgType.voice;
+      case 'file':          return MsgType.file;
+      case 'video_note':    return MsgType.video_note;
+      case 'video_gallery': return MsgType.video_gallery;
+      default:              return MsgType.text;
     }
   }
 }
@@ -325,8 +326,9 @@ class _ChatScreenState extends State<ChatScreen> {
     switch (type) {
       case MsgType.image:      return '.jpg';
       case MsgType.voice:      return '.m4a';
-      case MsgType.video_note: return '.mp4';
-      default:                 return '';
+      case MsgType.video_note:    return '.mp4';
+      case MsgType.video_gallery: return '.mp4';
+      default:                    return '';
     }
   }
 
@@ -766,10 +768,10 @@ class _ChatScreenState extends State<ChatScreen> {
       final fileId = await _uploadFileEncrypted(file);
 
       if (fileId != null) {
-        final localPath = await _copyFileToMediaDir(file, MsgType.video_note, video.name);
+        final localPath = await _copyFileToMediaDir(file, MsgType.video_gallery, video.name);
         await _sendMessage(
-          text:        '🎥 Видео',
-          messageType: 'video_note',
+          text:        '🎬 Видео из галереи',
+          messageType: 'video_gallery',
           mediaData:   'FILE_ID:$fileId',
           filePath:    localPath,
           fileName:    video.name,
@@ -896,6 +898,12 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       _cameraController = CameraController(front, ResolutionPreset.medium, enableAudio: true);
       await _cameraController!.initialize();
+      // Программный зум 1.25x — убирает эффект «рыбьего глаза» фронтальной камеры
+      try {
+        final maxZoom = await _cameraController!.getMaxZoomLevel();
+        final zoom    = 1.25.clamp(1.0, maxZoom);
+        await _cameraController!.setZoomLevel(zoom);
+      } catch (_) {/* не все устройства поддерживают zoom */}
       await _cameraController!.startVideoRecording();
       setState(() { _isVideoRecording = true; _recordingDuration = 0; });
       _recordingTimer?.cancel();
@@ -1237,6 +1245,64 @@ class _ChatScreenState extends State<ChatScreen> {
   // ──────────────────────────────────────────────────────────────────────────
   // Просмотр и сохранение файлов
   // ──────────────────────────────────────────────────────────────────────────
+
+  /// Открывает фото профиля контакта на весь экран с Hero-анимацией и pinch-to-zoom.
+  void _showContactProfilePhoto(String displayName, String? avatarId) {
+    final hasPhoto = avatarId != null && avatarId.isNotEmpty;
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        opaque: false,
+        barrierColor: Colors.black87,
+        pageBuilder: (_, __, ___) => GestureDetector(
+          onTap: () => Navigator.of(context).pop(),
+          child: Scaffold(
+            backgroundColor: Colors.transparent,
+            appBar: AppBar(
+              backgroundColor: Colors.black54,
+              leading: IconButton(
+                icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+              title: Text(displayName,
+                  style: const TextStyle(color: Colors.white, fontSize: 16)),
+            ),
+            body: Center(
+              child: Hero(
+                tag: 'contact_avatar_${widget.targetUid}',
+                child: InteractiveViewer(
+                  panEnabled:  true,
+                  minScale:    0.5,
+                  maxScale:    4.0,
+                  child: hasPhoto
+                      ? Image.network(
+                          '$SERVER_HTTP_URL/download/$avatarId',
+                          fit: BoxFit.contain,
+                          loadingBuilder: (_, child, progress) {
+                            if (progress == null) return child;
+                            return const CircularProgressIndicator(color: Colors.cyan);
+                          },
+                          errorBuilder: (_, __, ___) => _avatarFallback(displayName),
+                        )
+                      : _avatarFallback(displayName),
+                ),
+              ),
+            ),
+          ),
+        ),
+        transitionsBuilder: (_, anim, __, child) =>
+            FadeTransition(opacity: anim, child: child),
+      ),
+    );
+  }
+
+  Widget _avatarFallback(String displayName) => CircleAvatar(
+    radius: 80,
+    backgroundColor: const Color(0xFF0A0E27),
+    child: Text(
+      displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
+      style: const TextStyle(color: Colors.cyan, fontSize: 60),
+    ),
+  );
 
   void _showFullImageFromFile(String filePath) {
     showDialog(
@@ -1684,6 +1750,10 @@ class _ChatScreenState extends State<ChatScreen> {
         return (msg['filePath'] != null)
             ? VideoNotePlayer(filePath: msg['filePath'] as String)
             : const Text('[Video Note Error]', style: TextStyle(color: Colors.white54));
+      case MsgType.video_gallery:
+        return (msg['filePath'] != null)
+            ? VideoGalleryPlayer(filePath: msg['filePath'] as String)
+            : const Text('[Video Error]', style: TextStyle(color: Colors.white54));
       default:
         return Text(msg['text'] as String? ?? '', style: const TextStyle(color: Colors.white, fontSize: 15));
     }
@@ -1874,8 +1944,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 _cameraController != null &&
                 _cameraController!.value.isInitialized)
               Positioned(
-                bottom: 90,
-                right:  20,
+                // Вверху экрана — максимально близко к физическому глазку камеры,
+                // чтобы пользователь смотрел в объектив, а не вниз
+                top:   80,
+                right: 16,
                 child: Container(
                   width: 160, height: 160,
                   decoration: BoxDecoration(
@@ -1917,18 +1989,24 @@ class _ChatScreenState extends State<ChatScreen> {
             )
           : Row(
               children: [
-                CircleAvatar(
-                  radius: 18,
-                  backgroundColor: const Color(0xFF0A0E27),
-                  backgroundImage: (avatar != null && avatar.isNotEmpty)
-                      ? NetworkImage('$SERVER_HTTP_URL/download/$avatar')
-                      : null,
-                  child: (avatar == null || avatar.isEmpty)
-                      ? Text(
-                          displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
-                          style: const TextStyle(color: Colors.cyan, fontSize: 14),
-                        )
-                      : null,
+                GestureDetector(
+                  onTap: () => _showContactProfilePhoto(displayName, avatar),
+                  child: Hero(
+                    tag: 'contact_avatar_${widget.targetUid}',
+                    child: CircleAvatar(
+                      radius: 18,
+                      backgroundColor: const Color(0xFF0A0E27),
+                      backgroundImage: (avatar != null && avatar.isNotEmpty)
+                          ? NetworkImage('$SERVER_HTTP_URL/download/$avatar')
+                          : null,
+                      child: (avatar == null || avatar.isEmpty)
+                          ? Text(
+                              displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
+                              style: const TextStyle(color: Colors.cyan, fontSize: 14),
+                            )
+                          : null,
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -2101,17 +2179,20 @@ class _ChatScreenState extends State<ChatScreen> {
               icon: const Icon(Icons.attach_file, color: Colors.cyan),
               onSelected: (value) {
                 switch (value) {
-                  case 'camera':  _sendPhoto(source: ImageSource.camera);  break;
-                  case 'gallery': _sendPhoto(source: ImageSource.gallery); break;
-                  case 'video':   _sendVideo();                            break;
-                  case 'file':    _sendFile();                             break;
+                  case 'photo_camera':  _sendPhoto(source: ImageSource.camera);  break;
+                  case 'photo_gallery': _sendPhoto(source: ImageSource.gallery); break;
+                  case 'video':         _sendVideo();                            break;
+                  case 'file':          _sendFile();                             break;
                 }
               },
               itemBuilder: (_) => [
-                _popupItem('camera',  Icons.camera_alt,        'Камера (Фото)'),
-                _popupItem('gallery', Icons.photo_library,     'Галерея (Фото)'),
-                _popupItem('video',   Icons.video_library,     'Видео из галереи'),
-                _popupItem('file',    Icons.insert_drive_file, 'Файл / Документ'),
+                // ── Медиа (фото) ──────────────────────────────────────────────
+                _popupItem('photo_camera',  Icons.camera_alt,        'Сфотографировать'),
+                _popupItem('photo_gallery', Icons.photo_library,     'Фото из галереи'),
+                // ── Видео ──────────────────────────────────────────────────────
+                _popupItem('video',         Icons.video_library,     'Видео из галереи'),
+                // ── Файлы ─────────────────────────────────────────────────────
+                _popupItem('file',          Icons.insert_drive_file, 'Файл / Документ'),
               ],
             ),
 
@@ -2242,10 +2323,12 @@ class _VideoNotePlayerState extends State<VideoNotePlayer> {
   @override
   Widget build(BuildContext context) {
     if (!_isInit) {
-      return Container(
-        width: 200, height: 200,
-        decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.black26),
-        child: const Center(child: CircularProgressIndicator(color: Colors.cyan)),
+      return SizedBox(
+        width: 220, height: 220,
+        child: DecoratedBox(
+          decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.black26),
+          child: const Center(child: CircularProgressIndicator(color: Colors.cyan)),
+        ),
       );
     }
     return GestureDetector(
@@ -2255,25 +2338,131 @@ class _VideoNotePlayerState extends State<VideoNotePlayer> {
           _controller.setVolume(_controller.value.volume == 0 ? 1 : 0);
         });
       },
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Container(
-            width: 220, height: 220,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.cyan.withValues(alpha: 0.3), width: 3),
+      child: SizedBox(
+        // Фиксируем КВАДРАТ 220×220 — это исключает растяжение в овал
+        // независимо от того, какой maxWidth задаёт родительский контейнер-пузырь.
+        width: 220, height: 220,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            DecoratedBox(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.cyan.withValues(alpha: 0.3), width: 3),
+              ),
+              child: ClipOval(
+                // AspectRatio(1) внутри ClipOval гарантирует квадратный crop видео
+                child: AspectRatio(
+                  aspectRatio: 1.0,
+                  child: FittedBox(
+                    fit: BoxFit.cover,
+                    child: SizedBox(
+                      width:  _controller.value.size.width,
+                      height: _controller.value.size.height,
+                      child:  VideoPlayer(_controller),
+                    ),
+                  ),
+                ),
+              ),
             ),
-            child: ClipOval(
-              child: AspectRatio(aspectRatio: 1, child: VideoPlayer(_controller)),
+            if (_controller.value.volume > 0)
+              const Positioned(
+                bottom: 20,
+                child: Icon(Icons.volume_up, color: Colors.white, size: 20),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Прямоугольный плеер для видео из галереи ────────────────────────────────
+class VideoGalleryPlayer extends StatefulWidget {
+  final String filePath;
+  const VideoGalleryPlayer({super.key, required this.filePath});
+
+  @override
+  State<VideoGalleryPlayer> createState() => _VideoGalleryPlayerState();
+}
+
+class _VideoGalleryPlayerState extends State<VideoGalleryPlayer> {
+  late VideoPlayerController _controller;
+  bool _isInit    = false;
+  bool _isPlaying = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = VideoPlayerController.file(File(widget.filePath))
+      ..initialize().then((_) {
+        _controller.setLooping(false);
+        if (mounted) setState(() => _isInit = true);
+      });
+    _controller.addListener(() {
+      if (mounted) setState(() => _isPlaying = _controller.value.isPlaying);
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isInit) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          width: 220, height: 140,
+          color: Colors.black26,
+          child: const Center(child: CircularProgressIndicator(color: Colors.cyan)),
+        ),
+      );
+    }
+
+    final aspect = _controller.value.aspectRatio;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _isPlaying ? _controller.pause() : _controller.play();
+        });
+      },
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            AspectRatio(
+              aspectRatio: aspect,
+              child: VideoPlayer(_controller),
             ),
-          ),
-          if (_controller.value.volume > 0)
-            const Positioned(
-              bottom: 20,
-              child: Icon(Icons.volume_up, color: Colors.white, size: 20),
+            if (!_isPlaying)
+              Container(
+                decoration: const BoxDecoration(
+                  color: Colors.black38,
+                  shape: BoxShape.circle,
+                ),
+                padding: const EdgeInsets.all(10),
+                child: const Icon(Icons.play_arrow, color: Colors.white, size: 36),
+              ),
+            // Прогресс-бар внизу
+            Positioned(
+              bottom: 0, left: 0, right: 0,
+              child: VideoProgressIndicator(
+                _controller,
+                allowScrubbing: true,
+                colors: const VideoProgressColors(
+                  playedColor: Colors.cyan,
+                  bufferedColor: Colors.white24,
+                  backgroundColor: Colors.black26,
+                ),
+              ),
             ),
-        ],
+          ],
+        ),
       ),
     );
   }
