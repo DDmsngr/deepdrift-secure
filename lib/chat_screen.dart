@@ -463,6 +463,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'replyToId':       data['replyToId'],
         'type':            data['messageType'] ?? 'text',
         'filePath':        localPath,
+        'mediaData':       data['mediaData'], // ← сохраняем для повторной загрузки
         'fileName':        data['fileName'],
         'fileSize':        data['fileSize'],
         'mimeType':        data['mimeType'],
@@ -1051,7 +1052,7 @@ class _ChatScreenState extends State<ChatScreen> {
           Padding(
             padding: const EdgeInsets.all(16),
             child: Text(
-              'Forward to...',
+              'Переслать...',
               style: GoogleFonts.orbitron(color: Colors.white, fontSize: 14),
             ),
           ),
@@ -1245,6 +1246,75 @@ class _ChatScreenState extends State<ChatScreen> {
   // ──────────────────────────────────────────────────────────────────────────
   // Просмотр и сохранение файлов
   // ──────────────────────────────────────────────────────────────────────────
+
+  /// Повторная загрузка медиафайла для сообщений, у которых filePath == null
+  /// (первая загрузка упала при получении — нет связи, ключи ещё не подгружены и т.п.)
+  Future<void> _retryDownloadMedia(Map<String, dynamic> msg) async {
+    final mediaData = msg['mediaData'] as String?;
+    if (mediaData == null || !mediaData.startsWith('FILE_ID:')) {
+      _showError('Данные файла недоступны — попросите собеседника переотправить');
+      return;
+    }
+
+    if (mounted) setState(() => _isSendingFile = true);
+    try {
+      final fileId   = mediaData.substring(8);
+      final fileName = msg['fileName'] as String?;
+      final newPath  = await _downloadFileEncrypted(fileId, fileName);
+
+      if (newPath != null) {
+        // Обновляем в памяти
+        final idx = _messages.indexWhere((m) => m['id'] == msg['id']);
+        if (idx != -1 && mounted) {
+          setState(() => _messages[idx]['filePath'] = newPath);
+        }
+        // Обновляем в Hive через пересохранение обновлённого сообщения
+        final updated = Map<String, dynamic>.from(msg)..['filePath'] = newPath;
+        await _storage.saveMessage(widget.targetUid, updated);
+        _showSuccess('Файл загружен');
+      } else {
+        _showError('Не удалось загрузить файл — проверь подключение');
+      }
+    } finally {
+      if (mounted) setState(() => _isSendingFile = false);
+    }
+  }
+
+  /// Заглушка для медиа, которое не удалось загрузить автоматически
+  Widget _buildRetryMediaButton(Map<String, dynamic> msg, IconData icon, String label) {
+    return GestureDetector(
+      onTap: () => _retryDownloadMedia(msg),
+      child: Container(
+        width: 180,
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+        decoration: BoxDecoration(
+          color: Colors.black26,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.cyan.withValues(alpha: 0.4)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: Colors.cyan, size: 28),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
+                  const Text(
+                    'Нажми для загрузки',
+                    style: TextStyle(color: Colors.cyan, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.download_rounded, color: Colors.cyan, size: 20),
+          ],
+        ),
+      ),
+    );
+  }
 
   /// Открывает фото профиля контакта на весь экран с Hero-анимацией и pinch-to-zoom.
   void _showContactProfilePhoto(String displayName, String? avatarId) {
@@ -1442,45 +1512,37 @@ class _ChatScreenState extends State<ChatScreen> {
                 }
               }, color: Colors.greenAccent),
               if (message['type'] == 'text')
-                _actionTile(Icons.copy, 'Copy', () {
+                _actionTile(Icons.copy, 'Копировать', () {
                   Navigator.pop(context);
                   _copyMessageText(message['text'] as String? ?? '');
                 }),
-              _actionTile(Icons.reply, 'Reply', () {
+              _actionTile(Icons.reply, 'Ответить', () {
                 Navigator.pop(context);
                 _setReplyTo(message);
               }),
               // 🟡-1 FIX: Кнопка Forward добавлена в меню
-              _actionTile(Icons.forward, 'Forward', () {
+              _actionTile(Icons.forward, 'Переслать', () {
                 Navigator.pop(context);
                 _forwardMessage(message);
               }),
-              _actionTile(Icons.emoji_emotions, 'React', () {
+              _actionTile(Icons.emoji_emotions, 'Реакция', () {
                 Navigator.pop(context);
                 _showReactionPicker(message['id'].toString());
               }),
               if (isMe && message['type'] == 'text')
-                _actionTile(Icons.edit, 'Edit', () {
+                _actionTile(Icons.edit, 'Редактировать', () {
                   Navigator.pop(context);
                   _startEditingMessage(message);
                 }),
               if (isMe)
-                _actionTile(Icons.delete, 'Delete for everyone', () {
+                _actionTile(Icons.delete, 'Удалить для всех', () {
                   Navigator.pop(context);
                   _confirmDelete(message['id'].toString(), deleteForEveryone: true);
                 }, color: Colors.red),
-              _actionTile(Icons.delete_outline, 'Delete for me', () {
+              _actionTile(Icons.delete_outline, 'Удалить у себя', () {
                 Navigator.pop(context);
                 _confirmDelete(message['id'].toString(), deleteForEveryone: false);
               }, color: Colors.orange),
-              // Сброс ключей — быстрое восстановление при Authentication failed
-              _actionTile(Icons.refresh, 'Пересоздать ключи (Fix)', () async {
-                Navigator.pop(context);
-                widget.cipher.clearSharedSecret(widget.targetUid);
-                await _storage.clearCachedKeys(widget.targetUid);
-                _socket.requestPublicKey(widget.targetUid);
-                _showSuccess('Запрос на новые ключи отправлен');
-              }, color: Colors.greenAccent),
             ],
           ),
         ),
@@ -1749,11 +1811,11 @@ class _ChatScreenState extends State<ChatScreen> {
       case MsgType.video_note:
         return (msg['filePath'] != null)
             ? VideoNotePlayer(filePath: msg['filePath'] as String)
-            : const Text('[Video Note Error]', style: TextStyle(color: Colors.white54));
+            : _buildRetryMediaButton(msg, Icons.videocam_rounded, 'Видеокружок');
       case MsgType.video_gallery:
         return (msg['filePath'] != null)
             ? VideoGalleryPlayer(filePath: msg['filePath'] as String)
-            : const Text('[Video Error]', style: TextStyle(color: Colors.white54));
+            : _buildRetryMediaButton(msg, Icons.video_file_rounded, 'Видео из галереи');
       default:
         return Text(msg['text'] as String? ?? '', style: const TextStyle(color: Colors.white, fontSize: 15));
     }
@@ -1775,6 +1837,10 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       );
     }
+    // Файл отсутствует — предлагаем повторно скачать
+    if (msg['mediaData'] != null) {
+      return _buildRetryMediaButton(msg, Icons.image_rounded, 'Изображение');
+    }
     return _imagePlaceholder(msg['fileName'] as String?);
   }
 
@@ -1791,6 +1857,12 @@ class _ChatScreenState extends State<ChatScreen> {
   );
 
   Widget _buildVoiceContent(Map<String, dynamic> msg, bool isMe) {
+    final localPath = msg['filePath'] as String?;
+    // Файл голосового сообщения не загружен — предлагаем повторить
+    if ((localPath == null || !File(localPath).existsSync()) &&
+        msg['mediaData'] != null) {
+      return _buildRetryMediaButton(msg, Icons.mic_rounded, 'Голосовое сообщение');
+    }
     final msgId     = msg['id']?.toString();
     final isPlaying = _playingMessageId == msgId;
     return GestureDetector(
@@ -1807,7 +1879,7 @@ class _ChatScreenState extends State<ChatScreen> {
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Voice message', style: TextStyle(color: Colors.white, fontSize: 14)),
+              const Text('Голосовое', style: TextStyle(color: Colors.white, fontSize: 14)),
               if (msg['fileSize'] != null)
                 Text(
                   _formatFileSize(msg['fileSize']),
