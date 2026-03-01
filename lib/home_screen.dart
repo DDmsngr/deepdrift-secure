@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 import 'identity_service.dart';
 import 'chat_screen.dart';
@@ -267,6 +268,82 @@ class _HomeScreenState extends State<HomeScreen>
   // ──────────────────────────────────────────────────────────────────────────
   // Хелперы
   // ──────────────────────────────────────────────────────────────────────────
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // QR-сканер: считывает UID контакта и сразу открывает с ним чат
+  // ──────────────────────────────────────────────────────────────────────────
+  void _openQrScanner() {
+    final MobileScannerController scannerCtrl = MobileScannerController();
+    bool _handled = false; // Флаг: не обрабатываем второй скан после pop
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.black,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SizedBox(
+        height: MediaQuery.of(context).size.height * 0.75,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  const Icon(Icons.qr_code_scanner, color: Colors.cyan),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Наведи камеру на QR-код контакта',
+                      style: TextStyle(color: Colors.white, fontSize: 14),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white54),
+                    onPressed: () {
+                      scannerCtrl.dispose();
+                      Navigator.pop(ctx);
+                    },
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: MobileScanner(
+                  controller: scannerCtrl,
+                  onDetect: (capture) {
+                    if (_handled) return;
+                    final barcode = capture.barcodes.firstOrNull;
+                    final rawValue = barcode?.rawValue;
+                    if (rawValue == null || rawValue.isEmpty) return;
+
+                    // UID — строка без пробелов. Отфильтруем случайные URL/мусор.
+                    final uid = rawValue.trim();
+                    if (uid.contains(' ') || uid.length < 4) return;
+
+                    _handled = true;
+                    scannerCtrl.dispose();
+                    Navigator.pop(ctx); // Закрываем сканер
+
+                    // Добавляем контакт и открываем чат
+                    _storage.addContact(uid, displayName: uid);
+                    _socket.getProfile(uid);
+                    setState(() => _chats = _storage.getContactsSortedByActivity());
+                    _openChatWithUid(uid);
+                    _showSuccess('Контакт добавлен: $uid');
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    ).whenComplete(() => scannerCtrl.dispose());
+  }
 
   void _showError(String message) {
     if (!mounted) return;
@@ -616,7 +693,7 @@ class _HomeScreenState extends State<HomeScreen>
             ListTile(
               leading: const Icon(Icons.qr_code_scanner, color: Colors.cyan),
               title: const Text('Сканировать QR', style: TextStyle(color: Colors.white)),
-              onTap: () { Navigator.pop(ctx); _showError('QR-сканер в разработке'); },
+              onTap: () { Navigator.pop(ctx); _openQrScanner(); },
             ),
             const SizedBox(height: 8),
           ],
