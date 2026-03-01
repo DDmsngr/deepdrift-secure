@@ -42,7 +42,7 @@ class SocketProvider extends ChangeNotifier {
   void getProfile(String targetUid) =>
       _service.getProfile(targetUid);
 
-  Stream<Map<String, dynamic>> get messageStream => _service.messageStream;
+  Stream<Map<String, dynamic>> get messageStream => _service.messages;
 }
 
 // ── StorageProvider ───────────────────────────────────────────────────────────
