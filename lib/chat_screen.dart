@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
-import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -16,7 +15,6 @@ import 'package:http/http.dart' as http;
 import 'package:dio/dio.dart';
 import 'package:gal/gal.dart';
 import 'package:camera/camera.dart';
-import 'package:video_player/video_player.dart';
 
 import 'crypto_service.dart';
 import 'socket_service.dart';
@@ -24,7 +22,6 @@ import 'storage_service.dart';
 import 'providers/app_providers.dart';
 import 'models/chat_models.dart';
 import 'widgets/message_bubble.dart';
-import 'widgets/video_players.dart';
 
 // Типы MsgType, SignatureStatus и утилиты (formatMessageTime и др.)
 // перенесены в lib/models/chat_models.dart
@@ -63,10 +60,6 @@ class _ChatScreenState extends State<ChatScreen> {
   final _audioRecorder = AudioRecorder();
   final _audioPlayer   = AudioPlayer();
   final _dio = Dio();
-
-  // Удобные алиасы для доступа через провайдер — инициализируются в didChangeDependencies
-  late SocketProvider  _socketProvider;
-  late StorageProvider _storageProvider;
 
   StreamSubscription? _socketSub;
 
@@ -111,13 +104,6 @@ class _ChatScreenState extends State<ChatScreen> {
   // ──────────────────────────────────────────────────────────────────────────
   // Lifecycle
   // ──────────────────────────────────────────────────────────────────────────
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _socketProvider  = context.read<SocketProvider>();
-    _storageProvider = context.read<StorageProvider>();
-  }
 
   @override
   void initState() {
@@ -323,12 +309,6 @@ class _ChatScreenState extends State<ChatScreen> {
   String _extensionForType(MsgType type, String? fileName) =>
       extensionForType(type, fileName);
 
-  String _formatFileSize(dynamic sizeRaw) {
-    final size = sizeRaw is int ? sizeRaw : int.tryParse(sizeRaw.toString()) ?? 0;
-    if (size < 1024)           return '$size B';
-    if (size < 1024 * 1024)   return '${(size / 1024).toStringAsFixed(1)} KB';
-    return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
-  }
 
   void _cleanTempVoiceFile() {
     if (_voiceTempPath != null) {
@@ -1149,14 +1129,10 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  // Утилиты форматирования перенесены в models/chat_models.dart
-  String _formatTime(dynamic ts)           => formatMessageTime(ts);
-  String _formatLastSeen(int ts)           => formatLastSeen(ts);
-  String _formatFileSize(dynamic s)        => formatFileSize(s);
-  String _formatRecordingTime(int s)       => formatRecordingTime(s);
-  String _mimeTypeFromExtension(String f)  => mimeTypeFromExtension(f);
-  IconData _iconForMime(String? m)         => iconForMime(m);
-
+  // Делегаты к утилитам из models/chat_models.dart
+  String _formatLastSeen(int ts)          => formatLastSeen(ts);
+  String _formatRecordingTime(int s)      => formatRecordingTime(s);
+  String _mimeTypeFromExtension(String f) => mimeTypeFromExtension(f);
 
 
   void _setReplyTo(Map<String, dynamic> message) {
