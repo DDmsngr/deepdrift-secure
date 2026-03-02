@@ -82,6 +82,10 @@ class _ChatScreenState extends State<ChatScreen> {
   // Хранят raw socket-payload и будут дешифрованы как только ключ будет готов.
   final List<Map<String, dynamic>> _pendingMessages = [];
 
+  // FILE_ID'ы для которых сервер вернул 404 — не ретраим бесконечно.
+  // Показываем плейсхолдер "файл удалён / недоступен".
+  final Set<String> _failedDownloads = {};
+
   bool _isSearching = false;
 
   bool    _isRecording     = false;
@@ -273,13 +277,21 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<String?> _downloadFileEncrypted(String fileId, String? fileName) async {
+    // Не пытаемся скачать файл, если он уже помечен как недоступный
+    if (_failedDownloads.contains(fileId)) return null;
     try {
       final appDir  = await getApplicationDocumentsDirectory();
-      // 🔴-5 FIX: Прикрепляем upload_token к запросу скачивания
       final response = await http.get(
         Uri.parse('$SERVER_HTTP_URL/download/$fileId'),
         headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!},
       );
+      if (response.statusCode == 404) {
+        // Файл удалён с сервера (истёк срок, или был на ephemeral диске).
+        // Помечаем как недоступный — больше не ретраим.
+        _failedDownloads.add(fileId);
+        debugPrint('📭 File permanently unavailable: $fileId');
+        return null;
+      }
       if (response.statusCode != 200) return null;
       final decryptedBytes = await widget.cipher.decryptFileBytes(
         response.bodyBytes,
@@ -396,13 +408,47 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Сбрасывает буфер: дешифрует все сообщения, накопленные до получения ключа.
+  /// Также перешифровывает сообщения с status='pending_decrypt' из Hive —
+  /// они были сохранены HomeScreen'ом до того как ключи были загружены.
   void _flushPendingMessages() {
-    if (_pendingMessages.isEmpty) return;
-    debugPrint('📬 [Keys] Flushing ${_pendingMessages.length} buffered messages');
-    final toProcess = List<Map<String, dynamic>>.from(_pendingMessages);
-    _pendingMessages.clear();
-    for (final data in toProcess) {
-      _decryptAndShowMessage(data);
+    // 1. Сбрасываем socket-буфер
+    if (_pendingMessages.isNotEmpty) {
+      debugPrint('📬 [Keys] Flushing ${_pendingMessages.length} buffered messages');
+      final toProcess = List<Map<String, dynamic>>.from(_pendingMessages);
+      _pendingMessages.clear();
+      for (final data in toProcess) {
+        _decryptAndShowMessage(data);
+      }
+    }
+
+    // 2. Перешифровываем pending_decrypt сообщения из истории
+    final pendingInHistory = _messages
+        .where((m) => m['status'] == 'pending_decrypt' && m['encrypted_text'] != null)
+        .toList();
+
+    if (pendingInHistory.isNotEmpty) {
+      debugPrint('🔓 [Keys] Re-decrypting ${pendingInHistory.length} pending messages from history');
+      for (final msg in pendingInHistory) {
+        final encrypted = msg['encrypted_text'] as String;
+        final msgId     = msg['id']?.toString();
+        if (msgId == null) continue;
+
+        widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
+          if (decrypted.startsWith('[⚠️') || decrypted.startsWith('[❌')) return;
+
+          final idx = _messages.indexWhere((m) => m['id']?.toString() == msgId);
+          if (idx == -1 || !mounted) return;
+
+          final updated = Map<String, dynamic>.from(_messages[idx])
+            ..['text']   = decrypted
+            ..['status'] = 'delivered';
+          // Убираем encrypted_text — больше не нужен
+          updated.remove('encrypted_text');
+
+          setState(() => _messages[idx] = updated);
+          await _storage.saveMessage(widget.targetUid, updated);
+        });
+      }
     }
   }
 
@@ -1255,6 +1301,75 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
 
+  /// Сохраняет медиафайл из сообщения в галерею устройства.
+  Future<void> _saveToGallery(Map<String, dynamic> msg) async {
+    final filePath = msg['filePath'] as String?;
+    final msgType  = (msg['type'] as String? ?? 'text').toMsgType();
+    final fileName = msg['fileName'] as String? ?? 'ddchat_file';
+
+    if (filePath == null || !File(filePath).existsSync()) {
+      // Файл не скачан — пробуем скачать сначала
+      if (msg['mediaData'] != null) {
+        if (mounted) setState(() => _isSendingFile = true);
+        await _retryDownloadMedia(msg);
+        if (mounted) setState(() => _isSendingFile = false);
+        // Перечитываем путь после скачивания
+        final idx = _messages.indexWhere((m) => m['id'] == msg['id']);
+        final updatedPath = idx != -1 ? _messages[idx]['filePath'] as String? : null;
+        if (updatedPath == null || !File(updatedPath).existsSync()) {
+          if (mounted) _showError('Файл недоступен — возможно истёк срок хранения');
+          return;
+        }
+        await _saveToGallery(_messages[idx]);
+        return;
+      }
+      if (mounted) _showError('Файл не найден на устройстве');
+      return;
+    }
+
+    try {
+      final hasAccess = await Gal.hasAccess();
+      if (!hasAccess) {
+        final granted = await Gal.requestAccess();
+        if (!granted) {
+          if (mounted) _showError('Нет разрешения на сохранение в галерею');
+          return;
+        }
+      }
+
+      if (msgType == MsgType.image) {
+        await Gal.putImage(filePath, album: 'DDChat');
+      } else if (msgType == MsgType.video) {
+        await Gal.putVideo(filePath, album: 'DDChat');
+      } else {
+        // Для файлов (аудио, документы) — копируем в Downloads
+        if (Platform.isAndroid) {
+          final dir = Directory('/storage/emulated/0/Download/DDChat');
+          if (!await dir.exists()) await dir.create(recursive: true);
+          await File(filePath).copy('${dir.path}/$fileName');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('✅ Сохранено: Download/DDChat/$fileName')),
+            );
+          }
+          return;
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Сохранено в галерею'),
+            backgroundColor: Color(0xFF1A4A2E),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Save to gallery error: $e');
+      if (mounted) _showError('Ошибка сохранения: $e');
+    }
+  }
+
   /// Открывает фото профиля контакта на весь экран с Hero-анимацией и pinch-to-zoom.
   void _showContactProfilePhoto(String displayName, String? avatarId) {
     final hasPhoto = avatarId != null && avatarId.isNotEmpty;
@@ -1455,6 +1570,12 @@ class _ChatScreenState extends State<ChatScreen> {
                   Navigator.pop(context);
                   _copyMessageText(message['text'] as String? ?? '');
                 }),
+              // Сохранить фото/видео в галерею (только для медиа-сообщений)
+              if (message['type'] != 'text' && message['filePath'] != null)
+                _actionTile(Icons.save_alt, 'Сохранить в галерею', () async {
+                  Navigator.pop(context);
+                  await _saveToGallery(message);
+                }, color: Colors.greenAccent),
               _actionTile(Icons.reply, 'Ответить', () {
                 Navigator.pop(context);
                 _setReplyTo(message);
