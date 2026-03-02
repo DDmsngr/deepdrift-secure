@@ -16,6 +16,7 @@ import 'crypto_service.dart';
 import 'notification_service.dart';
 import 'settings_screen.dart';
 import 'providers/app_providers.dart';
+import 'package:share_plus/share_plus.dart';
 import 'models/chat_models.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -151,7 +152,8 @@ class _HomeScreenState extends State<HomeScreen>
       await _storage.init();
       final uid = await _idService.getStoredUID();
       if (uid == null) {
-        if (mounted) _showRegistrationDialog();
+        // Первый запуск — полный onboarding
+        if (mounted) await _showOnboarding();
       } else {
         setState(() => _myUid = uid);
         await _autoConnect();
@@ -190,6 +192,22 @@ class _HomeScreenState extends State<HomeScreen>
       }
 
       _socket.init(_cipher);
+
+      // Устанавливаем callback для auth_failed ДО connect()
+      _socket.onAuthFailed = (reason) {
+        if (!mounted) return;
+        String msg;
+        if (reason == 'uid_taken') {
+          msg = 'Этот ID занят другим устройством. Импортируйте файл ключей.';
+        } else {
+          msg = 'Ошибка аутентификации: $reason. Импортируйте файл ключей.';
+        }
+        _showError(msg);
+        setState(() { _connectionStatus = 'ОШИБКА АВТОРИЗАЦИИ'; _isReady = true; });
+        // Показываем экран импорта ключей
+        _showImportKeysDialog();
+      };
+
       _socket.connect(_serverController.text, _myUid!, authToken: authToken);
 
       _socketSub = _socket.messages.listen((data) {
@@ -200,6 +218,8 @@ class _HomeScreenState extends State<HomeScreen>
           setState(() { _isConnected = true; _connectionStatus = 'В СЕТИ'; });
           _registerPublicKeysOnServer();
           _socket.checkStatuses(_storage.getContacts());
+          // Регистрируем pubkey при каждом подключении (сервер идемпотентен)
+          _registerAccountOnServer();
         }
         if (type == 'connection_status') {
           setState(() {
@@ -240,7 +260,20 @@ class _HomeScreenState extends State<HomeScreen>
       final ed25519Key = await _cipher.getMySigningKey();
       _socket.registerPublicKeys(x25519Key, ed25519Key);
     } catch (e) {
-      debugPrint('Failed to register public keys: $e'); // 🟢-3 FIX
+      debugPrint('Failed to register public keys: $e');
+    }
+  }
+
+  /// Отправляет команду register с Ed25519 pubkey.
+  /// Сервер сохраняет привязку uid → pubkey (идемпотентно).
+  /// После этого при каждом подключении сервер будет отправлять auth_challenge.
+  Future<void> _registerAccountOnServer() async {
+    if (_myUid == null) return;
+    try {
+      final ed25519Key = await _cipher.getMySigningKey();
+      _socket.registerNewAccount(_myUid!, ed25519Key);
+    } catch (e) {
+      debugPrint('Failed to register account: $e');
     }
   }
 
@@ -489,7 +522,457 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // ONBOARDING — первый запуск
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /// Полный onboarding: UID → пароль → бэкап ключей → регистрация на сервере.
+  /// Вызывается один раз при первом запуске.
+  Future<void> _showOnboarding() async {
+    // Шаг 1: выбрать UID
+    final uid = await _showStep1ChooseUid();
+    if (uid == null || !mounted) return;
+
+    // Шаг 2: создать пароль
+    final password = await _showStep2CreatePassword();
+    if (password == null || !mounted) return;
+
+    // Генерируем ключи
+    final salt = SecureCipher.generateSalt();
+    await _cipher.init(password, salt);
+    final keys = await _cipher.exportBothKeys(password);
+
+    // Сохраняем всё локально
+    await _idService.saveUID(uid);
+    await _storage.saveSetting('user_password', password);
+    await _storage.saveSetting('user_salt', salt);
+    await _storage.saveSetting('encrypted_x25519_key', keys['x25519']!);
+    await _storage.saveSetting('encrypted_ed25519_key', keys['ed25519']!);
+    if (mounted) setState(() => _myUid = uid);
+
+    // Шаг 3: критический экран бэкапа
+    if (mounted) await _showStep3KeyBackup(uid, password, keys);
+    if (!mounted) return;
+
+    // Подключаемся и регистрируем аккаунт на сервере
+    await _autoConnect();
+  }
+
+  Future<String?> _showStep1ChooseUid() async {
+    final uidCtrl = TextEditingController();
+    String? result;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1F3C),
+          title: Text('ДОБРО ПОЖАЛОВАТЬ',
+              style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 15)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Придумай свой ID из 6 цифр.
+По нему тебя будут находить в DDChat.',
+                style: TextStyle(color: Colors.white70, fontSize: 13),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              TextField(
+                controller: uidCtrl,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                style: const TextStyle(
+                  color: Colors.white, fontSize: 28,
+                  letterSpacing: 8, fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+                decoration: const InputDecoration(
+                  hintText: '000000',
+                  hintStyle: TextStyle(color: Colors.white24),
+                  filled: true, fillColor: Color(0xFF0A0E27),
+                  counterStyle: TextStyle(color: Colors.white38),
+                  border: OutlineInputBorder(
+                    borderSide: BorderSide(color: Color(0xFF00D9FF)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () {
+                if (uidCtrl.text.length == 6) {
+                  result = uidCtrl.text;
+                  Navigator.pop(ctx);
+                } else {
+                  _showError('ID должен состоять ровно из 6 цифр');
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00D9FF),
+                foregroundColor: Colors.black,
+              ),
+              child: const Text('ДАЛЕЕ →', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+    return result;
+  }
+
+  Future<String?> _showStep2CreatePassword() async {
+    final pwdCtrl  = TextEditingController();
+    final confCtrl = TextEditingController();
+    String? result;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(
+        builder: (ctx, setS) {
+          bool obscure1 = true;
+          bool obscure2 = true;
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1A1F3C),
+            title: Text('СОЗДАЙ ПАРОЛЬ',
+                style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 15)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0A0E27),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.withOpacity(0.5)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.lock_outline, color: Colors.orange, size: 16),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Пароль шифрует твои ключи. Запомни его — без него восстановление невозможно.',
+                          style: TextStyle(color: Colors.orange, fontSize: 11),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: pwdCtrl,
+                  obscureText: obscure1,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    labelText: 'Пароль (минимум 8 символов)',
+                    labelStyle: const TextStyle(color: Colors.white54),
+                    filled: true, fillColor: const Color(0xFF0A0E27),
+                    suffixIcon: IconButton(
+                      icon: Icon(obscure1 ? Icons.visibility_off : Icons.visibility,
+                          color: Colors.white38),
+                      onPressed: () => setS(() => obscure1 = !obscure1),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: confCtrl,
+                  obscureText: obscure2,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    labelText: 'Повтори пароль',
+                    labelStyle: const TextStyle(color: Colors.white54),
+                    filled: true, fillColor: const Color(0xFF0A0E27),
+                    suffixIcon: IconButton(
+                      icon: Icon(obscure2 ? Icons.visibility_off : Icons.visibility,
+                          color: Colors.white38),
+                      onPressed: () => setS(() => obscure2 = !obscure2),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () {
+                  if (pwdCtrl.text.length < 8) {
+                    _showError('Минимум 8 символов');
+                    return;
+                  }
+                  if (pwdCtrl.text != confCtrl.text) {
+                    _showError('Пароли не совпадают');
+                    return;
+                  }
+                  result = pwdCtrl.text;
+                  Navigator.pop(ctx);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00D9FF),
+                  foregroundColor: Colors.black,
+                ),
+                child: const Text('ДАЛЕЕ →', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    return result;
+  }
+
+  /// Шаг 3: критический экран бэкапа ключей.
+  /// Пользователь ОБЯЗАН сохранить файл перед продолжением.
+  Future<void> _showStep3KeyBackup(
+    String uid,
+    String password,
+    Map<String, String> encryptedKeys,
+  ) async {
+    bool savedConfirmed = false;
+
+    // Формируем JSON файл восстановления
+    final backupJson = jsonEncode({
+      'app':        'DDChat',
+      'version':    '1.0',
+      'uid':        uid,
+      'created_at': DateTime.now().toIso8601String(),
+      'note':       'Keep this file secret. You need your password to restore.',
+      'x25519_encrypted':  encryptedKeys['x25519'],
+      'ed25519_encrypted': encryptedKeys['ed25519'],
+    });
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(
+        builder: (ctx, setS) => WillPopScope(
+          onWillPop: () async => false, // нельзя закрыть кнопкой "назад"
+          child: AlertDialog(
+            backgroundColor: const Color(0xFF1A1F3C),
+            title: Row(
+              children: [
+                const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 22),
+                const SizedBox(width: 8),
+                Text('СОХРАНИ КЛЮЧИ',
+                    style: GoogleFonts.orbitron(color: Colors.red, fontSize: 14)),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1A0A0A),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.red.withOpacity(0.6)),
+                    ),
+                    child: const Text(
+                      '⚠️  Твой аккаунт ни к чему не привязан.
+
+'
+                      'Если ты потеряешь телефон без файла восстановления — '
+                      'аккаунт и вся переписка будут утрачены навсегда.
+
+'
+                      'Сохрани файл прямо сейчас.',
+                      style: TextStyle(color: Colors.red, fontSize: 12, height: 1.5),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // Кнопка сохранения в файлы / отправки на почту
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        await _shareKeyBackupFile(uid, backupJson);
+                        setS(() => savedConfirmed = true);
+                      },
+                      icon: const Icon(Icons.save_alt, color: Color(0xFF00D9FF)),
+                      label: const Text(
+                        'Сохранить / отправить файл ключей',
+                        style: TextStyle(color: Color(0xFF00D9FF)),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Color(0xFF00D9FF)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                  if (savedConfirmed) ...[
+                    const SizedBox(height: 8),
+                    const Row(
+                      children: [
+                        Icon(Icons.check_circle, color: Colors.green, size: 16),
+                        SizedBox(width: 6),
+                        Text('Файл открыт для сохранения',
+                            style: TextStyle(color: Colors.green, fontSize: 12)),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Text(
+                    'Файл зашифрован твоим паролем. Без пароля он бесполезен.',
+                    style: TextStyle(color: Colors.white38, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              if (savedConfirmed)
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('Я СОХРАНИЛ ✓', style: TextStyle(fontWeight: FontWeight.bold)),
+                )
+              else
+                TextButton(
+                  onPressed: () {
+                    _showError('Сначала сохрани файл ключей!');
+                  },
+                  child: const Text('Продолжить',
+                      style: TextStyle(color: Colors.white30)),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Генерирует файл бэкапа и открывает системный share sheet.
+  /// Пользователь может: сохранить в "Файлы", отправить на email,
+  /// в Telegram "Избранное" и т.д.
+  Future<void> _shareKeyBackupFile(String uid, String backupJson) async {
+    try {
+      final dir      = await getTemporaryDirectory();
+      final fileName = 'ddchat_backup_$uid.json';
+      final file     = File('${dir.path}/$fileName');
+      await file.writeAsString(backupJson);
+
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'application/json')],
+        subject: 'DDChat — файл восстановления аккаунта $uid',
+        text: 'Это зашифрованный файл ключей DDChat. '
+              'Храни его в безопасном месте. '
+              'Для восстановления нужен этот файл + твой пароль.',
+      );
+    } catch (e) {
+      _showError('Ошибка при создании файла: $e');
+    }
+  }
+
+  /// Диалог импорта ключей — для восстановления на новом устройстве
+  /// или при ошибке аутентификации.
+  Future<void> _showImportKeysDialog() async {
+    final pwdCtrl = TextEditingController();
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1F3C),
+        title: Text('ВОССТАНОВИТЬ АККАУНТ',
+            style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 14)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Выбери файл восстановления (ddchat_backup_XXXXXX.json) '
+              'и введи пароль, которым он был зашифрован.',
+              style: TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final result = await FilePicker.platform.pickFiles(
+                    type: FileType.custom,
+                    allowedExtensions: ['json'],
+                  );
+                  if (result != null && result.files.single.path != null) {
+                    Navigator.pop(c);
+                    await _importKeyFile(result.files.single.path!, pwdCtrl.text);
+                  }
+                },
+                icon: const Icon(Icons.folder_open, color: Color(0xFF00D9FF)),
+                label: const Text('Выбрать файл',
+                    style: TextStyle(color: Color(0xFF00D9FF))),
+                style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0xFF00D9FF))),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: pwdCtrl,
+              obscureText: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Пароль',
+                labelStyle: TextStyle(color: Colors.white54),
+                filled: true, fillColor: Color(0xFF0A0E27),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _importKeyFile(String filePath, String password) async {
+    try {
+      final jsonStr = await File(filePath).readAsString();
+      final data    = jsonDecode(jsonStr) as Map<String, dynamic>;
+
+      final uid       = data['uid'] as String?;
+      final x25519    = data['x25519_encrypted'] as String?;
+      final ed25519   = data['ed25519_encrypted'] as String?;
+      final salt      = _storage.getSetting('user_salt') ?? SecureCipher.generateSalt();
+
+      if (uid == null || x25519 == null || ed25519 == null) {
+        _showError('Неверный формат файла восстановления');
+        return;
+      }
+
+      await _cipher.init(password, salt,
+          encryptedX25519Key: x25519, encryptedEd25519Key: ed25519);
+
+      await _idService.saveUID(uid);
+      await _storage.saveSetting('user_password', password);
+      await _storage.saveSetting('user_salt', salt);
+      await _storage.saveSetting('encrypted_x25519_key', x25519);
+      await _storage.saveSetting('encrypted_ed25519_key', ed25519);
+
+      if (mounted) {
+        setState(() => _myUid = uid);
+        _showError('✅ Ключи восстановлены. Подключаемся...');
+        await _autoConnect();
+      }
+    } catch (e) {
+      _showError('Ошибка импорта: неверный пароль или файл повреждён');
+    }
+  }
+
+  // _showPasswordSetupDialog() заменён на _showOnboarding()
   Future<void> _showPasswordSetupDialog() async {
+    // Вызывается только если UID есть, но пароля нет (старые установки)
+    // В новом onboarding'е пароль создаётся в _showStep2CreatePassword()
     final pwdCtrl  = TextEditingController();
     final confCtrl = TextEditingController();
     return showDialog(
@@ -497,13 +980,13 @@ class _HomeScreenState extends State<HomeScreen>
       barrierDismissible: false,
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: Text('ЗАЩИТА ЧАТОВ',
+        title: Text('СОЗДАЙ ПАРОЛЬ',
             style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF))),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              '⚠️ Обязательно запомни его! Восстановить будет невозможно.',
+              '⚠️ Обязательно запомни его! Восстановить без файла ключей невозможно.',
               style: TextStyle(color: Colors.orange, fontSize: 11),
             ),
             const SizedBox(height: 16),
@@ -512,7 +995,8 @@ class _HomeScreenState extends State<HomeScreen>
               obscureText: true,
               style: const TextStyle(color: Colors.white),
               decoration: const InputDecoration(
-                labelText: 'Придумай пароль',
+                labelText: 'Придумай пароль (минимум 8 символов)',
+                labelStyle: TextStyle(color: Colors.white54),
                 filled: true, fillColor: Color(0xFF0A0E27),
               ),
             ),
@@ -523,6 +1007,7 @@ class _HomeScreenState extends State<HomeScreen>
               style: const TextStyle(color: Colors.white),
               decoration: const InputDecoration(
                 labelText: 'Повтори пароль',
+                labelStyle: TextStyle(color: Colors.white54),
                 filled: true, fillColor: Color(0xFF0A0E27),
               ),
             ),
@@ -546,7 +1031,7 @@ class _HomeScreenState extends State<HomeScreen>
               _autoConnect();
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.cyan, foregroundColor: Colors.black,
+              backgroundColor: const Color(0xFF00D9FF), foregroundColor: Colors.black,
             ),
             child: const Text('СОЗДАТЬ', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
@@ -555,59 +1040,7 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  void _showRegistrationDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (c) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1F3C),
-        title: Text('ДОБРО ПОЖАЛОВАТЬ В DDCHAT',
-            style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 16)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Придумай себе номер из 6 цифр.\nПо нему тебя будут находить друзья!',
-              style: TextStyle(color: Colors.white70, fontSize: 13),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _idController,
-              keyboardType: TextInputType.number,
-              maxLength: 6,
-              style: const TextStyle(
-                color: Colors.white, fontSize: 24,
-                letterSpacing: 6, fontWeight: FontWeight.bold,
-              ),
-              textAlign: TextAlign.center,
-              decoration: const InputDecoration(
-                hintText: '000000',
-                filled: true, fillColor: Color(0xFF0A0E27),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          ElevatedButton(
-            onPressed: () async {
-              if (_idController.text.length == 6) {
-                await _idService.saveUID(_idController.text);
-                Navigator.pop(context);
-                _setup();
-              } else {
-                _showError('Номер должен состоять ровно из 6 цифр');
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.cyan, foregroundColor: Colors.black,
-            ),
-            child: const Text('СОЗДАТЬ', style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
-    );
-  }
+// _showRegistrationDialog() replaced by _showOnboarding()
 
   void _addContact() {
     final targetC = TextEditingController();
