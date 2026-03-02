@@ -60,6 +60,10 @@ class SocketService {
   // Очередь запросов офлайн-сообщений, накопившихся до uid_assigned.
   final _pendingOfflineRequests = <String>{};
 
+  // Callbacks для аутентификации — устанавливаются из HomeScreen
+  void Function(String reason)? onAuthFailed;   // auth_failed / uid_taken
+  void Function()?              onAuthSuccess;  // uid_assigned после challenge
+
   // ──────────────────────────────────────────────────────────────────────────
   // Инициализация
   // ──────────────────────────────────────────────────────────────────────────
@@ -183,6 +187,38 @@ class SocketService {
     try {
       final data    = jsonDecode(raw as String) as Map<String, dynamic>;
       final msgType = data['type'] as String?;
+
+      // ── auth_challenge: сервер проверяет личность ─────────────────────────
+      // Клиент подписывает нонс приватным Ed25519-ключом и отвечает.
+      if (msgType == 'auth_challenge') {
+        final nonce = data['nonce'] as String?;
+        if (nonce != null && _cipher != null) {
+          try {
+            final sig = await _cipher!.signChallenge(nonce);
+            _sendRaw({
+              'type':      'auth_response',
+              'uid':       _myUid,
+              'nonce':     nonce,
+              'signature': sig,
+            });
+            debugPrint('🔑 Auth challenge signed and sent');
+          } catch (e) {
+            debugPrint('❌ Failed to sign challenge: $e');
+          }
+        }
+        return;
+      }
+
+      // ── auth_failed / uid_taken ────────────────────────────────────────────
+      if (msgType == 'auth_failed' || msgType == 'uid_taken') {
+        final reason = data['reason'] as String? ?? msgType!;
+        debugPrint('🚫 Auth failed: $reason');
+        _isConnected  = false;
+        _isConnecting = false;
+        _channel?.sink.close();
+        onAuthFailed?.call(reason);
+        return;
+      }
 
       // ── uid_assigned: соединение установлено ─────────────────────────────
       if (msgType == 'uid_assigned') {
@@ -432,6 +468,22 @@ class SocketService {
       'x25519_key':  xKey,
       'ed25519_key': eKey,
     });
+  }
+
+  /// Регистрирует новый аккаунт на сервере.
+  ///
+  /// Вызывается один раз при первом запуске ПОСЛЕ инициализации ключей.
+  /// Сервер связывает [uid] с [ed25519PubKey] и сохраняет в Redis.
+  /// При следующих подключениях сервер отправит auth_challenge — клиент
+  /// должен подписать нонс этим же ключом.
+  void registerNewAccount(String uid, String ed25519PubKey) {
+    _sendRaw({
+      'type':           'register',
+      'uid':            uid,
+      'ed25519_pubkey': ed25519PubKey,
+      'protocol_version': PROTOCOL_VERSION,
+    });
+    debugPrint('📝 Registering new account: $uid');
   }
 
   void requestPublicKey(String targetUid) {
