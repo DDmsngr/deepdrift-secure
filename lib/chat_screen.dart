@@ -78,6 +78,10 @@ class _ChatScreenState extends State<ChatScreen> {
   bool   _keysExchanged = false;
   Timer? _keyExchangeTimeout;
 
+  // Сообщения, пришедшие до завершения key exchange.
+  // Хранят raw socket-payload и будут дешифрованы как только ключ будет готов.
+  final List<Map<String, dynamic>> _pendingMessages = [];
+
   bool _isSearching = false;
 
   bool    _isRecording     = false;
@@ -108,23 +112,32 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     _messageController.addListener(_onTextChanged);
     _scrollController.addListener(_onScroll);
-    _initializeSecureChat();
-    _loadRecentHistory().then((_) {
-      _markAllAsRead();
-      _scrollToBottom(animated: false);
-      widget.cipher.tryLoadCachedKeys(widget.targetUid, _storage).then((loaded) {
-        if (loaded && mounted) setState(() => _keysExchanged = true);
-      });
-    });
-    _listenToMessages();
+
     _reactions = _storage.loadReactions(widget.targetUid);
-    Future.delayed(const Duration(milliseconds: 500), () {
-      try {
-        _socket.getProfile(widget.targetUid);
-        _socket.requestOfflineMessages(widget.targetUid);
-      } catch (e) {
-        debugPrint('Note: requestOfflineMessages error: $e');
-      }
+
+    // Порядок важен:
+    // 1. Запустить listener ДО всего — чтобы не пропустить key_response
+    _listenToMessages();
+
+    // 2. Загрузить ключи из кэша — async, но быстро (Hive + crypto)
+    //    После этого запросить офлайн-сообщения: ключ гарантированно готов
+    _initializeSecureChat().then((_) {
+      // 3. Загрузить историю из локального Hive (синхронно через Future)
+      _loadRecentHistory().then((_) {
+        _markAllAsRead();
+        _scrollToBottom(animated: false);
+      });
+      // 4. Запросить офлайн-очередь только после того как ключ загружен из кэша
+      //    (или запрос уже отправлен в _initializeSecureChat)
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (!mounted) return;
+        try {
+          _socket.getProfile(widget.targetUid);
+          _socket.requestOfflineMessages(widget.targetUid);
+        } catch (e) {
+          debugPrint('Note: requestOfflineMessages error: $e');
+        }
+      });
     });
   }
 
@@ -153,13 +166,25 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _initializeSecureChat() async {
     try {
-      if (widget.cipher.hasSharedSecret(widget.targetUid)) {
+      // Сначала пробуем загрузить ключи из локального Hive-кэша.
+      // Это быстро (~10-20ms) и не требует сети.
+      final loaded = await widget.cipher.tryLoadCachedKeys(widget.targetUid, _storage);
+      if (loaded) {
+        debugPrint('✅ [Keys] Loaded from cache for ${widget.targetUid}');
         if (mounted) setState(() => _keysExchanged = true);
         return;
       }
+      // Кэша нет — запрашиваем публичный ключ через WebSocket.
+      // Пока ответ не придёт, входящие сообщения буферизуются в _pendingMessages.
+      debugPrint('🔑 [Keys] Requesting public key for ${widget.targetUid}');
       _socket.requestPublicKey(widget.targetUid);
       _keyExchangeTimeout = Timer(KEY_EXCHANGE_TIMEOUT, () {
-        if (!_keysExchanged && mounted) setState(() => _keysExchanged = true);
+        if (!_keysExchanged && mounted) {
+          debugPrint('⏰ [Keys] Exchange timeout for ${widget.targetUid}');
+          setState(() => _keysExchanged = true);
+          // Всё равно сбрасываем буфер — сообщения покажут ошибку дешифровки
+          _flushPendingMessages();
+        }
       });
     } catch (e) {
       debugPrint('Init error: $e');
@@ -346,10 +371,45 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  // ── Обработка входящих сообщений ─────────────────────────────────────────
+
   void _handleIncomingMessage(Map<String, dynamic> data) {
     final senderUid = data['from_uid'];
     if (senderUid != widget.targetUid) return;
     final msgId = data['id']?.toString();
+    if (msgId == null || _messageIds.contains(msgId)) return;
+
+    // Ключ ещё не готов — буферизуем сообщение.
+    // Это происходит когда офлайн-очередь прилетает до завершения key exchange
+    // (первый контакт, cold start после удаления кэша и т.д.)
+    if (!widget.cipher.hasSharedSecret(widget.targetUid)) {
+      debugPrint('⏳ [Keys] Buffering message $msgId — key not ready yet');
+      if (!_pendingMessages.any((m) => m['id']?.toString() == msgId)) {
+        _pendingMessages.add(data);
+      }
+      // Убеждаемся что запрос ключа отправлен
+      _socket.requestPublicKey(widget.targetUid);
+      return;
+    }
+
+    _decryptAndShowMessage(data);
+  }
+
+  /// Сбрасывает буфер: дешифрует все сообщения, накопленные до получения ключа.
+  void _flushPendingMessages() {
+    if (_pendingMessages.isEmpty) return;
+    debugPrint('📬 [Keys] Flushing ${_pendingMessages.length} buffered messages');
+    final toProcess = List<Map<String, dynamic>>.from(_pendingMessages);
+    _pendingMessages.clear();
+    for (final data in toProcess) {
+      _decryptAndShowMessage(data);
+    }
+  }
+
+  /// Дешифрует одно входящее сообщение и добавляет его в UI + Hive.
+  void _decryptAndShowMessage(Map<String, dynamic> data) {
+    final senderUid = data['from_uid'];
+    final msgId     = data['id']?.toString();
     if (msgId == null || _messageIds.contains(msgId)) return;
 
     final encrypted = data['encrypted_text'];
@@ -382,14 +442,7 @@ class _ChatScreenState extends State<ChatScreen> {
         return;
       }
 
-      // ── 🔴-2 FIX: Верификация Ed25519-подписи ─────────────────────────────
-      // Результат проверки сохраняется в модель сообщения и отображается
-      // пользователю в виде иконки 🔒 (valid) или ⚠️ (invalid/missing).
-      //
-      // Логика:
-      //  • signature == null  → ключ подписи ещё не установлен (unknown)
-      //  • verifySignature() == true  → подпись верна (valid)
-      //  • verifySignature() == false → подпись не совпадает или повреждена (invalid)
+      // ── Верификация Ed25519-подписи ────────────────────────────────────────
       SignatureStatus sigStatus = SignatureStatus.unknown;
       if (signature != null) {
         final isValid = await widget.cipher.verifySignature(
@@ -398,14 +451,12 @@ class _ChatScreenState extends State<ChatScreen> {
           widget.targetUid,
         );
         sigStatus = isValid ? SignatureStatus.valid : SignatureStatus.invalid;
-
         if (!isValid) {
-          // Логируем — в debug-сборке видно в консоли
           debugPrint('⚠️ [Security] Invalid signature on message $msgId from $senderUid');
         }
       }
-      // ─────────────────────────────────────────────────────────────────────
 
+      // ── Медиафайлы ──────────────────────────────────────────────────────
       String? localPath;
       if (msgTyp != MsgType.text && data['mediaData'] != null) {
         final String mediaStr = data['mediaData'] as String;
@@ -432,14 +483,13 @@ class _ChatScreenState extends State<ChatScreen> {
         'replyToId':       data['replyToId'],
         'type':            data['messageType'] ?? 'text',
         'filePath':        localPath,
-        'mediaData':       data['mediaData'], // ← сохраняем для повторной загрузки
+        'mediaData':       data['mediaData'],
         'fileName':        data['fileName'],
         'fileSize':        data['fileSize'],
         'mimeType':        data['mimeType'],
         'edited':          data['edited'] ?? false,
         'editedAt':        data['editedAt'],
         'forwardedFrom':   data['forwarded_from'],
-        // Сохраняем статус подписи как int для совместимости с Hive
         'signatureStatus': sigStatus.index,
       };
 
@@ -471,7 +521,12 @@ class _ChatScreenState extends State<ChatScreen> {
     if (x25519Key != null && ed25519Key != null) {
       widget.cipher
           .establishSharedSecret(widget.targetUid, x25519Key as String, theirSignKeyB64: ed25519Key as String)
-          .then((_) { if (mounted) setState(() => _keysExchanged = true); });
+          .then((_) {
+            if (!mounted) return;
+            setState(() => _keysExchanged = true);
+            // Сбрасываем буфер: дешифруем все сообщения, пришедшие до ключа
+            _flushPendingMessages();
+          });
     }
   }
 
