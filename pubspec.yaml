@@ -57,6 +57,9 @@ dependencies:
   file_picker: ^8.0.0
   path_provider: ^2.1.0
 
+  # Шэринг (сохранить файл / отправить на почту)
+  share_plus: ^10.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
