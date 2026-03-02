@@ -16,6 +16,9 @@ import 'crypto_service.dart';
 import 'notification_service.dart';
 import 'settings_screen.dart';
 import 'providers/app_providers.dart';
+import 'dart:convert';
+import 'package:path_provider/path_provider.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'models/chat_models.dart';
 
@@ -41,7 +44,6 @@ class _HomeScreenState extends State<HomeScreen>
   late  SecureCipher _cipher;             // получаем из CipherProvider
   final _imagePicker = ImagePicker();
 
-  final _idController     = TextEditingController();
   final _serverController = TextEditingController(
     text: 'wss://deepdrift-backend.onrender.com/ws',
   );
@@ -574,8 +576,7 @@ class _HomeScreenState extends State<HomeScreen>
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                'Придумай свой ID из 6 цифр.
-По нему тебя будут находить в DDChat.',
+                'Придумай свой ID из 6 цифр.\nПо нему тебя будут находить в DDChat.',
                 style: TextStyle(color: Colors.white70, fontSize: 13),
                 textAlign: TextAlign.center,
               ),
@@ -629,13 +630,13 @@ class _HomeScreenState extends State<HomeScreen>
     final confCtrl = TextEditingController();
     String? result;
 
+    bool obscure1 = true;
+    bool obscure2 = true;
     await showDialog(
       context: context,
       barrierDismissible: false,
       builder: (c) => StatefulBuilder(
         builder: (ctx, setS) {
-          bool obscure1 = true;
-          bool obscure2 = true;
           return AlertDialog(
             backgroundColor: const Color(0xFF1A1F3C),
             title: Text('СОЗДАЙ ПАРОЛЬ',
@@ -648,7 +649,7 @@ class _HomeScreenState extends State<HomeScreen>
                   decoration: BoxDecoration(
                     color: const Color(0xFF0A0E27),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.orange.withOpacity(0.5)),
+                    border: Border.all(color: Colors.orange.withValues(alpha: 0.5)),
                   ),
                   child: const Row(
                     children: [
@@ -749,8 +750,8 @@ class _HomeScreenState extends State<HomeScreen>
       context: context,
       barrierDismissible: false,
       builder: (c) => StatefulBuilder(
-        builder: (ctx, setS) => WillPopScope(
-          onWillPop: () async => false, // нельзя закрыть кнопкой "назад"
+        builder: (ctx, setS) => PopScope(
+          canPop: false, // нельзя закрыть кнопкой "назад"
           child: AlertDialog(
             backgroundColor: const Color(0xFF1A1F3C),
             title: Row(
@@ -771,16 +772,12 @@ class _HomeScreenState extends State<HomeScreen>
                     decoration: BoxDecoration(
                       color: const Color(0xFF1A0A0A),
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.red.withOpacity(0.6)),
+                      border: Border.all(color: Colors.red.withValues(alpha: 0.6)),
                     ),
                     child: const Text(
-                      '⚠️  Твой аккаунт ни к чему не привязан.
-
-'
+                      '⚠️  Твой аккаунт ни к чему не привязан.\n\n'
                       'Если ты потеряешь телефон без файла восстановления — '
-                      'аккаунт и вся переписка будут утрачены навсегда.
-
-'
+                      'аккаунт и вся переписка будут утрачены навсегда.\n\n'
                       'Сохрани файл прямо сейчас.',
                       style: TextStyle(color: Colors.red, fontSize: 12, height: 1.5),
                     ),
@@ -996,7 +993,6 @@ class _HomeScreenState extends State<HomeScreen>
               style: const TextStyle(color: Colors.white),
               decoration: const InputDecoration(
                 labelText: 'Придумай пароль (минимум 8 символов)',
-                labelStyle: TextStyle(color: Colors.white54),
                 filled: true, fillColor: Color(0xFF0A0E27),
               ),
             ),
@@ -1007,7 +1003,6 @@ class _HomeScreenState extends State<HomeScreen>
               style: const TextStyle(color: Colors.white),
               decoration: const InputDecoration(
                 labelText: 'Повтори пароль',
-                labelStyle: TextStyle(color: Colors.white54),
                 filled: true, fillColor: Color(0xFF0A0E27),
               ),
             ),
