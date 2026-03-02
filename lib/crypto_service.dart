@@ -428,6 +428,22 @@ class SecureCipher {
     }
   }
 
+  /// Подписывает серверный challenge для аутентификации.
+  ///
+  /// [nonceB64] — base64-encoded случайные байты, полученные от сервера.
+  /// Возвращает base64-encoded Ed25519-подпись raw байтов нонса.
+  /// Сервер проверяет подпись зарегистрированным публичным ключом пользователя.
+  Future<String> signChallenge(String nonceB64) async {
+    if (_myEd25519KeyPair == null) throw StateError('Cipher not initialized');
+    try {
+      final nonceBytes = base64Decode(nonceB64);
+      final signature  = await _ed25519.sign(nonceBytes, keyPair: _myEd25519KeyPair!);
+      return base64Encode(signature.bytes);
+    } catch (e) {
+      throw CryptoException('Failed to sign challenge: $e');
+    }
+  }
+
   /// Проверяет Ed25519-подпись сообщения от [fromUid].
   ///
   /// Возвращает `true` если подпись верна, `false` если:
