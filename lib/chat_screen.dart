@@ -3,1530 +3,1194 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:uuid/uuid.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:record/record.dart';
-import 'package:audioplayers/audioplayers.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:path_provider/path_provider.dart';
-import 'dart:convert';
-import 'package:http/http.dart' as http;
-import 'package:dio/dio.dart';
-import 'package:gal/gal.dart';
-import 'package:camera/camera.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:provider/provider.dart';
 
-import 'crypto_service.dart';
-import 'socket_service.dart';
+import 'identity_service.dart';
+import 'chat_screen.dart';
 import 'storage_service.dart';
+import 'socket_service.dart';
+import 'crypto_service.dart';
+import 'notification_service.dart';
+import 'settings_screen.dart';
+import 'providers/app_providers.dart';
+import 'dart:convert';
+import 'package:path_provider/path_provider.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
 import 'models/chat_models.dart';
-import 'widgets/message_bubble.dart';
 
-// Типы MsgType, SignatureStatus и утилиты (formatMessageTime и др.)
-// перенесены в lib/models/chat_models.dart
-
-// ─── Виджет ──────────────────────────────────────────────────────────────────
-class ChatScreen extends StatefulWidget {
-  final String myUid;
-  final String targetUid;
-  final SecureCipher cipher;
-
-  const ChatScreen({
-    super.key,
-    required this.myUid,
-    required this.targetUid,
-    required this.cipher,
-  });
-
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
   @override
-  State<ChatScreen> createState() => _ChatScreenState();
+  State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
-  static const String SERVER_HTTP_URL = 'https://deepdrift-backend.onrender.com';
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
 
-  final List<Map<String, dynamic>> _messages = [];
-  final Set<String> _messageIds = {};
-  final TextEditingController _messageController = TextEditingController();
-  final TextEditingController _searchController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
-
-  // Синглтоны — напрямую (совпадают с тем что в провайдерах)
-  final _socket  = SocketService();
-  final _storage = StorageService();
-  final _uuid    = const Uuid();
-  final _imagePicker   = ImagePicker();
-  final _audioRecorder = AudioRecorder();
-  final _audioPlayer   = AudioPlayer();
-  final _dio = Dio();
-
+  String?      _myUid;
+  List<String> _chats = [];
+  bool         _isConnected     = false;
+  bool         _isReady         = false;
+  String       _connectionStatus = 'ОФФЛАЙН';
   StreamSubscription? _socketSub;
 
-  bool   _isTyping = false;
-  Timer? _typingTimer;
-  bool   _targetIsTyping = false;
+  final _idService   = IdentityService();
+  final _storage     = StorageService();  // singleton
+  final _socket      = SocketService();   // singleton
+  late  SecureCipher _cipher;             // получаем из CipherProvider
+  final _imagePicker = ImagePicker();
 
-  bool _isLoadingMore    = false;
-  bool _hasMoreMessages  = true;
+  final _serverController = TextEditingController(
+    text: 'wss://deepdrift-backend.onrender.com/ws',
+  );
 
-  String? _replyToText;
-  String? _replyToId;
+  bool   _isSearching = false;
+  final  _searchController = TextEditingController();
+  List<Map<String, dynamic>> _searchResults = [];
 
-  // 🔴-5 FIX: Токен upload/download, получаем из uid_assigned события
-  // Не зависим от socket_service.downloadHeaders — храним локально.
-  String? _uploadToken;
 
-  bool   _keysExchanged = false;
-  Timer? _keyExchangeTimeout;
-
-  // Сообщения, пришедшие до завершения key exchange.
-  // Хранят raw socket-payload и будут дешифрованы как только ключ будет готов.
-  final List<Map<String, dynamic>> _pendingMessages = [];
-
-  // FILE_ID'ы для которых сервер вернул 404 — не ретраим бесконечно.
-  // Показываем плейсхолдер "файл удалён / недоступен".
-  final Set<String> _failedDownloads = {};
-
-  bool _isSearching = false;
-
-  bool    _isRecording     = false;
-  String? _voiceTempPath;
-  Timer?  _recordingTimer;
-  int     _recordingDuration = 0;
-
-  bool              _isMicMode       = true;
-  bool              _isVideoRecording = false;
-  CameraController? _cameraController;
-
-  String?                    _editingMessageId;
-  Map<String, Set<String>>   _reactions = {};
-  String?                    _playingMessageId;
-
-  bool   _isSendingFile  = false;
-  double _uploadProgress = 0.0;
-
-  static const int      MESSAGES_PER_PAGE    = 50;
-  static const Duration KEY_EXCHANGE_TIMEOUT = Duration(seconds: 5);
+  Timer? _statusCheckTimer;
 
   // ──────────────────────────────────────────────────────────────────────────
   // Lifecycle
   // ──────────────────────────────────────────────────────────────────────────
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Получаем единственный экземпляр SecureCipher из дерева провайдеров.
+    // didChangeDependencies вызывается до build, поэтому _cipher всегда готов.
+    _cipher = context.read<CipherProvider>().cipher;
+  }
+
+  @override
   void initState() {
     super.initState();
-    _messageController.addListener(_onTextChanged);
-    _scrollController.addListener(_onScroll);
+    WidgetsBinding.instance.addObserver(this);
 
-    _reactions = _storage.loadReactions(widget.targetUid);
+    // 🟡-2 FIX: регистрируем callback навигации по нотификациям.
+    // NotificationService вызовет _openChatWithUid() при тапе на уведомление.
+    // Если при запуске уже есть _pendingUid (cold start), callback выполнится
+    // немедленно через addPostFrameCallback — после завершения initState.
+    NotificationService().setOpenChatCallback(_openChatWithUid);
 
-    // Порядок важен:
-    // 1. Запустить listener ДО всего — чтобы не пропустить key_response
-    _listenToMessages();
-
-    // 2. Загрузить ключи из кэша — async, но быстро (Hive + crypto)
-    //    После этого запросить офлайн-сообщения: ключ гарантированно готов
-    _initializeSecureChat().then((_) {
-      // 3. Загрузить историю из локального Hive (синхронно через Future)
-      _loadRecentHistory().then((_) {
-        _markAllAsRead();
-        _scrollToBottom(animated: false);
-      });
-      // 4. Запросить офлайн-очередь только после того как ключ загружен из кэша
-      //    (или запрос уже отправлен в _initializeSecureChat)
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (!mounted) return;
-        try {
-          _socket.getProfile(widget.targetUid);
-          _socket.requestOfflineMessages(widget.targetUid);
-        } catch (e) {
-          debugPrint('Note: requestOfflineMessages error: $e');
-        }
-      });
+    _setup();
+    _statusCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (_isConnected) _socket.checkStatuses(_chats);
     });
   }
 
   @override
   void dispose() {
+    // 🟡-2 FIX: снимаем callback чтобы не держать ссылку на мёртвый State
+    NotificationService().clearOpenChatCallback();
+
+    WidgetsBinding.instance.removeObserver(this);
     _socketSub?.cancel();
-    _typingTimer?.cancel();
-    _keyExchangeTimeout?.cancel();
-    _recordingTimer?.cancel();
-    _messageController.removeListener(_onTextChanged);
-    _scrollController.removeListener(_onScroll);
-    _messageController.dispose();
+    _statusCheckTimer?.cancel();
     _searchController.dispose();
-    _scrollController.dispose();
-    _audioRecorder.dispose();
-    _audioPlayer.dispose();
-    _cameraController?.dispose();
-    if (_isTyping) _socket.sendTypingIndicator(widget.targetUid, false);
-    _cleanTempVoiceFile();
     super.dispose();
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Key exchange & History
-  // ──────────────────────────────────────────────────────────────────────────
-
-  Future<void> _initializeSecureChat() async {
-    try {
-      // Сначала пробуем загрузить ключи из локального Hive-кэша.
-      // Это быстро (~10-20ms) и не требует сети.
-      final loaded = await widget.cipher.tryLoadCachedKeys(widget.targetUid, _storage);
-      if (loaded) {
-        debugPrint('✅ [Keys] Loaded from cache for ${widget.targetUid}');
-        if (mounted) setState(() => _keysExchanged = true);
-        return;
-      }
-      // Кэша нет — запрашиваем публичный ключ через WebSocket.
-      // Пока ответ не придёт, входящие сообщения буферизуются в _pendingMessages.
-      debugPrint('🔑 [Keys] Requesting public key for ${widget.targetUid}');
-      _socket.requestPublicKey(widget.targetUid);
-      _keyExchangeTimeout = Timer(KEY_EXCHANGE_TIMEOUT, () {
-        if (!_keysExchanged && mounted) {
-          debugPrint('⏰ [Keys] Exchange timeout for ${widget.targetUid}');
-          setState(() => _keysExchanged = true);
-          // Всё равно сбрасываем буфер — сообщения покажут ошибку дешифровки
-          _flushPendingMessages();
-        }
-      });
-    } catch (e) {
-      debugPrint('Init error: $e');
-    }
-  }
-
-  Future<void> _loadRecentHistory() async {
-    try {
-      final history = _storage.getRecentMessages(widget.targetUid, limit: MESSAGES_PER_PAGE);
-      if (mounted) {
-        setState(() {
-          for (var msg in history) {
-            final m = Map<String, dynamic>.from(msg);
-            if (!_messageIds.contains(m['id'])) {
-              _messages.add(m);
-              _messageIds.add(m['id'].toString());
-            }
-          }
-          _hasMoreMessages = history.length == MESSAGES_PER_PAGE;
-        });
-        WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom(animated: false));
-      }
-    } catch (e) {
-      debugPrint('Load history error: $e');
-    }
-  }
-
-  Future<void> _loadMoreMessages() async {
-    if (_isLoadingMore || !_hasMoreMessages) return;
-    setState(() => _isLoadingMore = true);
-    try {
-      final older = _storage.getOlderMessages(widget.targetUid, _messages.length, limit: MESSAGES_PER_PAGE);
-      if (mounted) {
-        setState(() {
-          for (var msg in older) {
-            final m = Map<String, dynamic>.from(msg);
-            if (!_messageIds.contains(m['id'])) {
-              _messages.insert(0, m);
-              _messageIds.add(m['id'].toString());
-            }
-          }
-          _hasMoreMessages = older.length == MESSAGES_PER_PAGE;
-          _isLoadingMore = false;
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() => _isLoadingMore = false);
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (!_socket.isConnected) _socket.forceReconnect();
+      _socket.checkStatuses(_chats);
     }
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // HTTP MEDIA HELPERS
+  // 🟡-2 FIX: Навигация к чату по uid (из нотификации)
   // ──────────────────────────────────────────────────────────────────────────
 
-  Future<String?> _uploadFileEncrypted(File file) async {
-    try {
-      final bytes         = await file.readAsBytes();
-      final encryptedBytes = await widget.cipher.encryptFileBytes(bytes, targetUid: widget.targetUid);
-      final tempDir  = await getTemporaryDirectory();
-      final tempFile = File('${tempDir.path}/${file.path.split('/').last}.enc');
-      await tempFile.writeAsBytes(encryptedBytes);
-      final formData = FormData.fromMap({
-        'file': await MultipartFile.fromFile(tempFile.path, filename: tempFile.path.split('/').last),
-      });
-      if (mounted) setState(() => _uploadProgress = 0.0);
-      // 🔴-5 FIX: Прикрепляем upload_token к HTTP-запросу
-      final options = Options(
-        headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!},
-      );
-      final response = await _dio.post(
-        '$SERVER_HTTP_URL/upload',
-        data: formData,
-        options: options,
-        onSendProgress: (sent, total) {
-          if (mounted) setState(() => _uploadProgress = sent / total);
-        },
-      );
-      if (await tempFile.exists()) await tempFile.delete();
-      if (response.statusCode == 200 && response.data['status'] == 'success') {
-        return response.data['file_id'] as String?;
-      }
-    } catch (e) {
-      debugPrint('Encrypted Upload error: $e');
+  /// Открывает чат с [fromUid]. Вызывается NotificationService при тапе
+  /// на push-уведомление во всех трёх сценариях: foreground, background, cold start.
+  ///
+  /// Если пользователь ещё не авторизован (_myUid == null) или приложение
+  /// ещё не готово (_isReady == false) — uid добавляется как контакт и чат
+  /// откроется когда _setup() завершится.
+  void _openChatWithUid(String fromUid) {
+    if (!mounted) return;
+
+    // Добавляем контакт если ещё нет (может прийти уведомление от нового пользователя)
+    if (!_chats.contains(fromUid)) {
+      _socket.getProfile(fromUid);
+      _storage.addContact(fromUid, displayName: fromUid);
+      if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
     }
-    return null;
-  }
 
-  Future<String?> _downloadFileEncrypted(String fileId, String? fileName) async {
-    // Не пытаемся скачать файл, если он уже помечен как недоступный
-    if (_failedDownloads.contains(fileId)) return null;
-    try {
-      final appDir  = await getApplicationDocumentsDirectory();
-      final response = await http.get(
-        Uri.parse('$SERVER_HTTP_URL/download/$fileId'),
-        headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!},
-      );
-      if (response.statusCode == 404) {
-        // Файл удалён с сервера (истёк срок, или был на ephemeral диске).
-        // Помечаем как недоступный — больше не ретраим.
-        _failedDownloads.add(fileId);
-        debugPrint('📭 File permanently unavailable: $fileId');
-        return null;
-      }
-      if (response.statusCode != 200) return null;
-      final decryptedBytes = await widget.cipher.decryptFileBytes(
-        response.bodyBytes,
-        fromUid: widget.targetUid,
-      );
-      final name = fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
-      final file = File('${appDir.path}/deepdrift_media/$name');
-      if (!await file.parent.exists()) await file.parent.create(recursive: true);
-      await file.writeAsBytes(decryptedBytes);
-      return file.path;
-    } catch (e) {
-      debugPrint('Encrypted Download error: $e');
-    }
-    return null;
-  }
-
-  Future<String?> _copyFileToMediaDir(File originalFile, MsgType msgType, String? fileName) async {
-    try {
-      final appDir   = await getApplicationDocumentsDirectory();
-      final mediaDir = Directory('${appDir.path}/deepdrift_media');
-      if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
-      final ext  = _extensionForType(msgType, fileName);
-      final name = fileName ?? 'media_${DateTime.now().millisecondsSinceEpoch}$ext';
-      final newFile = await originalFile.copy('${mediaDir.path}/$name');
-      return newFile.path;
-    } catch (e) {
-      return originalFile.path;
-    }
-  }
-
-  Future<String?> _saveMediaToDiskBase64({
-    required String base64Data,
-    required MsgType msgType,
-    String? fileName,
-  }) async {
-    try {
-      final appDir   = await getApplicationDocumentsDirectory();
-      final mediaDir = Directory('${appDir.path}/deepdrift_media');
-      if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
-      final ext  = _extensionForType(msgType, fileName);
-      final name = fileName ?? 'media_${DateTime.now().millisecondsSinceEpoch}$ext';
-      final file = File('${mediaDir.path}/$name');
-      await file.writeAsBytes(base64Decode(base64Data));
-      return file.path;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  String _extensionForType(MsgType type, String? fileName) =>
-      extensionForType(type, fileName);
-
-
-  void _cleanTempVoiceFile() {
-    if (_voiceTempPath != null) {
-      try { File(_voiceTempPath!).deleteSync(); } catch (_) {}
-      _voiceTempPath = null;
-    }
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Socket listener
-  // ──────────────────────────────────────────────────────────────────────────
-
-  void _listenToMessages() {
-    _socketSub = _socket.messages.listen((data) {
-      if (!mounted) return;
-      final type = data['type'];
-      switch (type) {
-        case 'uid_assigned':
-          // Сохраняем upload_token для авторизации HTTP-запросов
-          if (data['upload_token'] != null) {
-            _uploadToken = data['upload_token'] as String;
-          }
-          break;
-        case 'message':             _handleIncomingMessage(data);  break;
-        case 'typing_indicator':    _handleTypingIndicator(data);  break;
-        case 'public_key_response': _handlePublicKeyResponse(data); break;
-        case 'message_read':        _handleMessageRead(data);      break;
-        case 'read_receipt':        _handleReadReceipt(data);      break;
-        case 'message_deleted':     _handleMessageDeleted(data);   break;
-        case 'message_edited':      _handleMessageEdited(data);    break;
-        case 'message_reaction':    _handleMessageReaction(data);  break;
-        case 'user_status':
-        case 'profile_response':
-          if (data['uid'] == widget.targetUid) setState(() {});
-          break;
-      }
-    });
-  }
-
-  // ── Обработка входящих сообщений ─────────────────────────────────────────
-
-  void _handleIncomingMessage(Map<String, dynamic> data) {
-    final senderUid = data['from_uid'];
-    if (senderUid != widget.targetUid) return;
-    final msgId = data['id']?.toString();
-    if (msgId == null || _messageIds.contains(msgId)) return;
-
-    // Ключ ещё не готов — буферизуем сообщение.
-    // Это происходит когда офлайн-очередь прилетает до завершения key exchange
-    // (первый контакт, cold start после удаления кэша и т.д.)
-    if (!widget.cipher.hasSharedSecret(widget.targetUid)) {
-      debugPrint('⏳ [Keys] Buffering message $msgId — key not ready yet');
-      if (!_pendingMessages.any((m) => m['id']?.toString() == msgId)) {
-        _pendingMessages.add(data);
-      }
-      // Убеждаемся что запрос ключа отправлен
-      _socket.requestPublicKey(widget.targetUid);
+    // Если приложение ещё инициализируется — ждём следующего кадра
+    if (!_isReady || _myUid == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openChatWithUid(fromUid));
       return;
     }
 
-    _decryptAndShowMessage(data);
+    debugPrint('📲 Opening chat with $fromUid (from notification)');
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChatScreen(
+          myUid:     _myUid!,
+          targetUid: fromUid,
+          cipher:    _cipher,
+        ),
+      ),
+    ).then((_) {
+      if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+    });
   }
 
-  /// Сбрасывает буфер: дешифрует все сообщения, накопленные до получения ключа.
-  /// Также перешифровывает сообщения с status='pending_decrypt' из Hive —
-  /// они были сохранены HomeScreen'ом до того как ключи были загружены.
-  void _flushPendingMessages() {
-    // 1. Сбрасываем socket-буфер
-    if (_pendingMessages.isNotEmpty) {
-      debugPrint('📬 [Keys] Flushing ${_pendingMessages.length} buffered messages');
-      final toProcess = List<Map<String, dynamic>>.from(_pendingMessages);
-      _pendingMessages.clear();
-      for (final data in toProcess) {
-        _decryptAndShowMessage(data);
+  // ──────────────────────────────────────────────────────────────────────────
+  // Setup & Connection
+  // ──────────────────────────────────────────────────────────────────────────
+
+  Future<void> _setup() async {
+    try {
+      await _storage.init();
+      final uid = await _idService.getStoredUID();
+      if (uid == null) {
+        // Первый запуск — полный onboarding
+        if (mounted) await _showOnboarding();
+      } else {
+        setState(() => _myUid = uid);
+        await _autoConnect();
       }
-    }
-
-    // 2. Перешифровываем pending_decrypt сообщения из истории
-    final pendingInHistory = _messages
-        .where((m) => m['status'] == 'pending_decrypt' && m['encrypted_text'] != null)
-        .toList();
-
-    if (pendingInHistory.isNotEmpty) {
-      debugPrint('🔓 [Keys] Re-decrypting ${pendingInHistory.length} pending messages from history');
-      for (final msg in pendingInHistory) {
-        final encrypted = msg['encrypted_text'] as String;
-        final msgId     = msg['id']?.toString();
-        if (msgId == null) continue;
-
-        widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
-          if (decrypted.startsWith('[⚠️') || decrypted.startsWith('[❌')) return;
-
-          final idx = _messages.indexWhere((m) => m['id']?.toString() == msgId);
-          if (idx == -1 || !mounted) return;
-
-          final updated = Map<String, dynamic>.from(_messages[idx])
-            ..['text']   = decrypted
-            ..['status'] = 'delivered';
-          // Убираем encrypted_text — больше не нужен
-          updated.remove('encrypted_text');
-
-          setState(() => _messages[idx] = updated);
-          await _storage.saveMessage(widget.targetUid, updated);
-        });
-      }
+    } catch (e) {
+      if (mounted) setState(() { _connectionStatus = 'ОШИБКА'; _isReady = true; });
     }
   }
 
-  /// Дешифрует одно входящее сообщение и добавляет его в UI + Hive.
-  void _decryptAndShowMessage(Map<String, dynamic> data) {
-    final senderUid = data['from_uid'];
-    final msgId     = data['id']?.toString();
-    if (msgId == null || _messageIds.contains(msgId)) return;
+  Future<void> _autoConnect() async {
+    try {
+      setState(() => _connectionStatus = 'ПОДКЛЮЧЕНИЕ...');
 
-    final encrypted = data['encrypted_text'];
-    final signature = data['signature'];
-    final msgTyp    = (data['messageType'] as String? ?? 'text').toMsgType();
-    final rawTime   = data['time'];
+      final savedPassword   = _storage.getSetting('user_password');
+      final savedSalt       = _storage.getSetting('user_salt');
+      final authToken       = _storage.getSetting('auth_token');
+      final savedX25519Key  = _storage.getSetting('encrypted_x25519_key');
+      final savedEd25519Key = _storage.getSetting('encrypted_ed25519_key');
 
-    widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
-      // ── Обнаружение несоответствия ключей ─────────────────────────────────
-      if (decrypted.contains('Authentication failed') || decrypted.contains('Wrong key')) {
-        widget.cipher.clearSharedSecret(widget.targetUid);
-        await _storage.clearCachedKeys(widget.targetUid);
-        _socket.requestPublicKey(widget.targetUid);
-        final errorMsg = {
-          'id': msgId,
-          'text': '⚠️ Key mismatch detected. Please ask sender to resend the message.',
-          'isMe': false,
-          'time': rawTime ?? DateTime.now().millisecondsSinceEpoch,
-          'status': 'error',
-          'type': 'text',
-          'signatureStatus': SignatureStatus.invalid.index,
-        };
-        if (mounted) {
-          setState(() {
-            _messages.add(errorMsg);
-            _messageIds.add(msgId);
-          });
-          _scrollToBottom();
-        }
+      if (savedPassword == null || savedSalt == null) {
+        if (mounted) await _showPasswordSetupDialog();
         return;
       }
 
-      // ── Верификация Ed25519-подписи ────────────────────────────────────────
-      SignatureStatus sigStatus = SignatureStatus.unknown;
-      if (signature != null) {
-        final isValid = await widget.cipher.verifySignature(
-          decrypted,
-          signature,
-          widget.targetUid,
-        );
-        sigStatus = isValid ? SignatureStatus.valid : SignatureStatus.invalid;
-        if (!isValid) {
-          debugPrint('⚠️ [Security] Invalid signature on message $msgId from $senderUid');
-        }
+      await _cipher.init(
+        savedPassword,
+        savedSalt,
+        encryptedX25519Key:  savedX25519Key,
+        encryptedEd25519Key: savedEd25519Key,
+      );
+
+      if (savedX25519Key == null || savedEd25519Key == null) {
+        final exportedKeys = await _cipher.exportBothKeys(savedPassword);
+        await _storage.saveSetting('encrypted_x25519_key', exportedKeys['x25519']!);
+        await _storage.saveSetting('encrypted_ed25519_key', exportedKeys['ed25519']!);
       }
 
-      // ── Медиафайлы ──────────────────────────────────────────────────────
-      String? localPath;
-      if (msgTyp != MsgType.text && data['mediaData'] != null) {
-        final String mediaStr = data['mediaData'] as String;
-        if (mediaStr.startsWith('FILE_ID:')) {
-          localPath = await _downloadFileEncrypted(mediaStr.substring(8), data['fileName'] as String?);
+      _socket.init(_cipher);
+
+      // Устанавливаем callback для auth_failed ДО connect()
+      _socket.onAuthFailed = (reason) {
+        if (!mounted) return;
+        String msg;
+        if (reason == 'uid_taken') {
+          msg = 'Этот ID занят другим устройством. Импортируйте файл ключей.';
         } else {
-          localPath = await _saveMediaToDiskBase64(
-            base64Data: mediaStr,
-            msgType: msgTyp,
-            fileName: data['fileName'] as String?,
-          );
+          msg = 'Ошибка аутентификации: $reason. Импортируйте файл ключей.';
         }
+        _showError(msg);
+        setState(() { _connectionStatus = 'ОШИБКА АВТОРИЗАЦИИ'; _isReady = true; });
+        // Показываем экран импорта ключей
+        _showImportKeysDialog();
+      };
+
+      _socket.connect(_serverController.text, _myUid!, authToken: authToken);
+
+      _socketSub = _socket.messages.listen((data) {
+        if (!mounted) return;
+        final type = data['type'];
+
+        if (type == 'uid_assigned') {
+          setState(() { _isConnected = true; _connectionStatus = 'В СЕТИ'; });
+          _registerPublicKeysOnServer();
+          _socket.checkStatuses(_storage.getContacts());
+          // Регистрируем pubkey при каждом подключении (сервер идемпотентен)
+          _registerAccountOnServer();
+        }
+        if (type == 'connection_status') {
+          setState(() {
+            _isConnected     = data['connected'] as bool? ?? false;
+            _connectionStatus = _isConnected ? 'В СЕТИ' : 'ОФФЛАЙН';
+          });
+        }
+        if (type == 'connection_failed') {
+          setState(() => _connectionStatus = 'ОШИБКА СЕТИ');
+        }
+        if (type == 'user_status') {
+          _storage.setContactStatus(
+            data['uid'] as String,
+            data['status'] == 'online',
+            data['last_seen'] as int?,
+          );
+          if (mounted) setState(() {});
+        }
+        if (type == 'message') _handleIncomingMessageQuietly(data);
+        if (type == 'message' || type == 'status_update' ||
+            type == 'message_deleted' || type == 'user_status') {
+          setState(() => _chats = _storage.getContactsSortedByActivity());
+        }
+      });
+
+      setState(() {
+        _isReady = true;
+        _chats   = _storage.getContactsSortedByActivity();
+      });
+    } catch (e) {
+      setState(() { _connectionStatus = 'ОШИБКА'; _isReady = true; });
+    }
+  }
+
+  Future<void> _registerPublicKeysOnServer() async {
+    try {
+      final x25519Key  = await _cipher.getMyPublicKey();
+      final ed25519Key = await _cipher.getMySigningKey();
+      _socket.registerPublicKeys(x25519Key, ed25519Key);
+    } catch (e) {
+      debugPrint('Failed to register public keys: $e');
+    }
+  }
+
+  /// Отправляет команду register с Ed25519 pubkey.
+  /// Сервер сохраняет привязку uid → pubkey (идемпотентно).
+  /// После этого при каждом подключении сервер будет отправлять auth_challenge.
+  Future<void> _registerAccountOnServer() async {
+    if (_myUid == null) return;
+    try {
+      final ed25519Key = await _cipher.getMySigningKey();
+      _socket.registerNewAccount(_myUid!, ed25519Key);
+    } catch (e) {
+      debugPrint('Failed to register account: $e');
+    }
+  }
+
+  Future<void> _handleIncomingMessageQuietly(Map<String, dynamic> data) async {
+    final senderUid = data['from_uid'] as String?;
+    final msgId     = data['id']?.toString();
+    if (senderUid == null || msgId == null) return;
+    if (_storage.hasMessage(senderUid, msgId)) return;
+    try {
+      // Сначала пробуем загрузить ключи из кэша — иначе decryptText вернёт
+      // '[⚠️ No encryption key]' и мы сохраним ошибку в Hive навсегда.
+      if (!_cipher.hasSharedSecret(senderUid)) {
+        await _cipher.tryLoadCachedKeys(senderUid, _storage);
+      }
+
+      final encryptedText = data['encrypted_text'] as String? ?? '';
+      final String decrypted;
+
+      if (_cipher.hasSharedSecret(senderUid)) {
+        // Ключ готов — дешифруем
+        decrypted = await _cipher.decryptText(encryptedText, fromUid: senderUid);
+      } else {
+        // Ключа нет (первый контакт, холодный старт без кэша).
+        // Сохраняем placeholder — ChatScreen при открытии перезапишет
+        // после завершения key exchange через WebSocket.
+        debugPrint('⏳ [HomeScreen] No key for $senderUid — saving as pending');
+        final pendingMsg = {
+          'id':             msgId,
+          'text':           '',           // пустой текст — ChatScreen заменит
+          'isMe':           false,
+          'time':           data['time'] ?? DateTime.now().millisecondsSinceEpoch,
+          'from':           senderUid,
+          'to':             _myUid,
+          'status':         'pending_decrypt',
+          'type':           data['messageType'] ?? 'text',
+          'encrypted_text': encryptedText,  // сохраняем зашифрованное для повторной попытки
+          'signature':      data['signature'],
+          'mediaData':      data['mediaData'],
+          'fileName':       data['fileName'],
+          'fileSize':       data['fileSize'],
+          'signatureStatus': SignatureStatus.unknown.index,
+        };
+        await _storage.saveMessage(senderUid, pendingMsg);
+        if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+        return;
+      }
+
+      // Проверяем что дешифровка не вернула ошибку-строку
+      if (decrypted.startsWith('[⚠️') || decrypted.startsWith('[❌')) {
+        debugPrint('⚠️ [HomeScreen] Decrypt error for $msgId: $decrypted — skipping save');
+        return;
       }
 
       final msg = {
-        'id':              msgId,
-        'text':            decrypted,
-        'isMe':            false,
-        'time':            rawTime ?? DateTime.now().millisecondsSinceEpoch,
-        'from':            senderUid,
-        'to':              widget.myUid,
-        'status':          'delivered',
-        'replyTo':         data['replyTo'],
-        'replyToId':       data['replyToId'],
-        'type':            data['messageType'] ?? 'text',
-        'filePath':        localPath,
-        'mediaData':       data['mediaData'],
-        'fileName':        data['fileName'],
-        'fileSize':        data['fileSize'],
-        'mimeType':        data['mimeType'],
-        'edited':          data['edited'] ?? false,
-        'editedAt':        data['editedAt'],
-        'forwardedFrom':   data['forwarded_from'],
-        'signatureStatus': sigStatus.index,
+        'id':       msgId,
+        'text':     decrypted,
+        'isMe':     false,
+        'time':     data['time'] ?? DateTime.now().millisecondsSinceEpoch,
+        'from':     senderUid,
+        'to':       _myUid,
+        'status':   'delivered',
+        'type':     data['messageType'] ?? 'text',
+        'mediaData': data['mediaData'],
+        'fileName': data['fileName'],
+        'fileSize': data['fileSize'],
+        // Подпись не верифицируем в тихом режиме — сделает ChatScreen при открытии
+        'signatureStatus': SignatureStatus.unknown.index,
       };
-
-      if (mounted) {
-        setState(() {
-          _messages.add(msg);
-          _messageIds.add(msgId);
-        });
-        _scrollToBottom();
-        _storage.saveMessage(widget.targetUid, msg);
-        _sendReadReceipt(msgId);
-      }
-    }).catchError((Object e) {
-      debugPrint('Decrypt error: $e');
-    });
-  }
-
-  void _handleTypingIndicator(Map<String, dynamic> data) {
-    if (data['from_uid'] == widget.targetUid && mounted) {
-      setState(() => _targetIsTyping = data['typing'] == true);
-      if (_targetIsTyping) _scrollToBottom();
-    }
-  }
-
-  void _handlePublicKeyResponse(Map<String, dynamic> data) {
-    if (data['target_uid'] != widget.targetUid) return;
-    final x25519Key  = data['x25519_key'];
-    final ed25519Key = data['ed25519_key'];
-    if (x25519Key != null && ed25519Key != null) {
-      widget.cipher
-          .establishSharedSecret(widget.targetUid, x25519Key as String, theirSignKeyB64: ed25519Key as String)
-          .then((_) {
-            if (!mounted) return;
-            setState(() => _keysExchanged = true);
-            // Сбрасываем буфер: дешифруем все сообщения, пришедшие до ключа
-            _flushPendingMessages();
-          });
-    }
-  }
-
-  void _handleMessageRead(Map<String, dynamic> data) {
-    final msgId = data['message_id']?.toString();
-    if (msgId == null || !mounted) return;
-    setState(() {
-      final idx = _messages.indexWhere((m) => m['id'] == msgId);
-      if (idx != -1) _messages[idx]['status'] = 'read';
-    });
-  }
-
-  void _handleReadReceipt(Map<String, dynamic> data) {
-    final msgId = data['message_id']?.toString();
-    if (msgId == null || !mounted) return;
-    setState(() {
-      final idx = _messages.indexWhere((m) => m['id'] == msgId);
-      if (idx != -1 && _messages[idx]['from'] == widget.myUid) {
-        _messages[idx]['status'] = 'read';
-      }
-    });
-    _storage.updateMessageStatus(widget.targetUid, msgId, 'read');
-  }
-
-  void _handleMessageDeleted(Map<String, dynamic> data) {
-    final msgId = data['message_id']?.toString();
-    if (msgId == null || !mounted) return;
-    setState(() {
-      _messages.removeWhere((m) => m['id'] == msgId);
-      _messageIds.remove(msgId);
-    });
-    _storage.deleteMessage(widget.targetUid, msgId);
-  }
-
-  void _handleMessageEdited(Map<String, dynamic> data) {
-    final msgId        = data['message_id']?.toString();
-    final newEncrypted = data['new_encrypted_text'];
-    final newSignature = data['new_signature'];
-    if (msgId == null || newEncrypted == null) return;
-
-    widget.cipher.decryptText(newEncrypted as String, fromUid: widget.targetUid).then((newText) async {
-      // Верифицируем подпись отредактированного сообщения
-      SignatureStatus sigStatus = SignatureStatus.unknown;
-      if (newSignature != null) {
-        final isValid = await widget.cipher.verifySignature(
-          newText,
-          newSignature as String,
-          widget.targetUid,
-        );
-        sigStatus = isValid ? SignatureStatus.valid : SignatureStatus.invalid;
-        if (!isValid) debugPrint('⚠️ [Security] Invalid signature on edited message $msgId');
-      }
-
-      if (mounted) {
-        setState(() {
-          final idx = _messages.indexWhere((m) => m['id'] == msgId);
-          if (idx != -1) {
-            _messages[idx]['text']            = newText;
-            _messages[idx]['edited']          = true;
-            _messages[idx]['editedAt']        = DateTime.now().millisecondsSinceEpoch;
-            _messages[idx]['signatureStatus'] = sigStatus.index;
-          }
-        });
-      }
-    });
-  }
-
-  void _handleMessageReaction(Map<String, dynamic> data) {
-    final msgId  = data['message_id']?.toString();
-    final emoji  = data['emoji'] as String?;
-    final action = data['action'] as String?;
-    if (msgId == null || emoji == null || !mounted) return;
-    setState(() {
-      _reactions.putIfAbsent(msgId, () => {});
-      if (action == 'add') {
-        _reactions[msgId]!.add(emoji);
-      } else if (action == 'remove') {
-        _reactions[msgId]!.remove(emoji);
-      }
-    });
-    _storage.saveReactions(widget.targetUid, _reactions);
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Read receipt & typing
-  // ──────────────────────────────────────────────────────────────────────────
-
-  Future<void> _markAllAsRead() async {
-    final unreadIds = _messages
-        .where((m) => m['from'] == widget.targetUid && m['status'] != 'read')
-        .map((m) => m['id'].toString())
-        .toList();
-    for (final id in unreadIds) { _sendReadReceipt(id); }
-    if (unreadIds.isNotEmpty) await _storage.markAllAsRead(widget.targetUid);
-  }
-
-  void _sendReadReceipt(String messageId) => _socket.sendReadReceipt(widget.targetUid, messageId);
-
-  void _onTextChanged() {
-    final hasText = _messageController.text.trim().isNotEmpty;
-    if (hasText && !_isTyping) {
-      _isTyping = true;
-      _socket.sendTypingIndicator(widget.targetUid, true);
-    }
-    _typingTimer?.cancel();
-    _typingTimer = Timer(const Duration(seconds: 2), () {
-      if (_isTyping) {
-        _isTyping = false;
-        _socket.sendTypingIndicator(widget.targetUid, false);
-      }
-    });
-  }
-
-  void _onScroll() {
-    if (_scrollController.hasClients && _scrollController.position.pixels <= 100) {
-      _loadMoreMessages();
+      await _storage.saveMessage(senderUid, msg);
+      _socket.sendReadReceipt(senderUid, msgId);
+      if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+    } catch (e) {
+      debugPrint('Quiet save error: $e');
     }
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Send Handlers
+  // Хелперы
   // ──────────────────────────────────────────────────────────────────────────
 
-  Future<void> _sendMessage({
-    String? text,
-    String  messageType    = 'text',
-    String? mediaData,
-    String? filePath,
-    String? fileName,
-    int?    fileSize,
-    String? mimeType,
-    // 🟡-1 Forward: опциональный источник пересылки
-    String? forwardedFrom,
-  }) async {
-    if (_editingMessageId != null) { await _saveEditedMessage(); return; }
+  // ──────────────────────────────────────────────────────────────────────────
+  // QR-сканер: считывает UID контакта и сразу открывает с ним чат
+  // ──────────────────────────────────────────────────────────────────────────
+  void _openQrScanner() {
+    final MobileScannerController scannerCtrl = MobileScannerController();
+    bool _handled = false; // Флаг: не обрабатываем второй скан после pop
 
-    final messageText = text ?? _messageController.text.trim();
-    if (messageText.isEmpty && mediaData == null) return;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.black,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SizedBox(
+        height: MediaQuery.of(context).size.height * 0.75,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  const Icon(Icons.qr_code_scanner, color: Colors.cyan),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Наведи камеру на QR-код контакта',
+                      style: TextStyle(color: Colors.white, fontSize: 14),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white54),
+                    onPressed: () {
+                      scannerCtrl.dispose();
+                      Navigator.pop(ctx);
+                    },
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: MobileScanner(
+                  controller: scannerCtrl,
+                  onDetect: (capture) {
+                    if (_handled) return;
+                    final barcode = capture.barcodes.firstOrNull;
+                    final rawValue = barcode?.rawValue;
+                    if (rawValue == null || rawValue.isEmpty) return;
 
-    if (!widget.cipher.hasSharedSecret(widget.targetUid)) {
-      final loaded = await widget.cipher.tryLoadCachedKeys(widget.targetUid, _storage);
-      if (!loaded) {
-        _socket.requestPublicKey(widget.targetUid);
-        await Future.delayed(const Duration(milliseconds: 800));
-        if (!widget.cipher.hasSharedSecret(widget.targetUid)) {
-          _showError('Cannot encrypt: recipient offline');
-          return;
-        }
-      }
-    }
+                    // UID — строка без пробелов. Отфильтруем случайные URL/мусор.
+                    final uid = rawValue.trim();
+                    if (uid.contains(' ') || uid.length < 4) return;
 
-    final msgId     = _uuid.v4();
-    final now       = DateTime.now().millisecondsSinceEpoch;
-    final replyId   = _replyToId;
-    final replyText = _replyToText;
+                    _handled = true;
+                    scannerCtrl.dispose();
+                    Navigator.pop(ctx); // Закрываем сканер
 
+                    // Добавляем контакт и открываем чат
+                    _storage.addContact(uid, displayName: uid);
+                    _socket.getProfile(uid);
+                    setState(() => _chats = _storage.getContactsSortedByActivity());
+                    _openChatWithUid(uid);
+                    _showSuccess('Контакт добавлен: $uid');
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    ).whenComplete(() => scannerCtrl.dispose());
+  }
+
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red),
+    );
+  }
+
+  void _showSuccess(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: const Color(0xFF1A4A2E)),
+    );
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Диалоги
+  // ──────────────────────────────────────────────────────────────────────────
+
+  void _showMyProfileDialog() {
+    final profile      = _storage.getMyProfile();
+    final nameCtrl     = TextEditingController(text: profile['nickname']);
+    String? currentAvatar = profile['avatarUrl'];
+
+    showDialog(
+      context: context,
+      builder: (c) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final hasAvatar = currentAvatar != null &&
+              currentAvatar!.isNotEmpty && currentAvatar != 'null';
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1A1F3C),
+            title: Text('Мой профиль', style: GoogleFonts.orbitron()),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  GestureDetector(
+                    onTap: () async {
+                      final img = await _imagePicker.pickImage(
+                        source: ImageSource.gallery, maxWidth: 512, maxHeight: 512,
+                      );
+                      if (img != null) {
+                        final fileId = await _socket.uploadFile(File(img.path));
+                        if (fileId != null) {
+                          setDialogState(() => currentAvatar = fileId);
+                        } else {
+                          _showError('Ошибка загрузки аватара');
+                        }
+                      }
+                    },
+                    child: CircleAvatar(
+                      radius: 40,
+                      backgroundColor: const Color(0xFF0A0E27),
+                      backgroundImage: hasAvatar
+                          ? NetworkImage('https://deepdrift-backend.onrender.com/download/$currentAvatar')
+                          : null,
+                      child: !hasAvatar
+                          ? const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan)
+                          : null,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Твой ID: $_myUid',
+                    style: const TextStyle(
+                      color: Colors.cyan, fontSize: 18,
+                      fontWeight: FontWeight.bold, letterSpacing: 2,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // QR-код для добавления контакта
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: QrImageView(
+                      data: _myUid ?? '000000',
+                      version: QrVersions.auto,
+                      size: 140.0,
+                      backgroundColor: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Покажи этот QR-код другу\nдля быстрого добавления',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
+                  const SizedBox(height: 16),
+
+                  TextField(
+                    controller: nameCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Твое имя (никнейм)',
+                      filled: true, fillColor: Color(0xFF0A0E27),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('ОТМЕНА'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  await _storage.saveMyProfile(
+                    nickname: nameCtrl.text.trim(),
+                    avatarUrl: currentAvatar,
+                  );
+                  _socket.updateProfile(nameCtrl.text.trim(), currentAvatar);
+                  Navigator.pop(context);
+                  setState(() {});
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.cyan,
+                  foregroundColor: Colors.black,
+                ),
+                child: const Text('СОХРАНИТЬ', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // ONBOARDING — первый запуск
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /// Полный onboarding: UID → пароль → бэкап ключей → регистрация на сервере.
+  /// Вызывается один раз при первом запуске.
+  Future<void> _showOnboarding() async {
+    // Шаг 1: выбрать UID
+    final uid = await _showStep1ChooseUid();
+    if (uid == null || !mounted) return;
+
+    // Шаг 2: создать пароль
+    final password = await _showStep2CreatePassword();
+    if (password == null || !mounted) return;
+
+    // Генерируем ключи
+    final salt = SecureCipher.generateSalt();
+    await _cipher.init(password, salt);
+    final keys = await _cipher.exportBothKeys(password);
+
+    // Сохраняем всё локально
+    await _idService.saveUID(uid);
+    await _storage.saveSetting('user_password', password);
+    await _storage.saveSetting('user_salt', salt);
+    await _storage.saveSetting('encrypted_x25519_key', keys['x25519']!);
+    await _storage.saveSetting('encrypted_ed25519_key', keys['ed25519']!);
+    if (mounted) setState(() => _myUid = uid);
+
+    // Шаг 3: критический экран бэкапа
+    if (mounted) await _showStep3KeyBackup(uid, password, keys);
+    if (!mounted) return;
+
+    // Подключаемся и регистрируем аккаунт на сервере
+    await _autoConnect();
+  }
+
+  Future<String?> _showStep1ChooseUid() async {
+    final uidCtrl = TextEditingController();
+    String? result;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1F3C),
+          title: Text('ДОБРО ПОЖАЛОВАТЬ',
+              style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 15)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Придумай свой ID из 6 цифр.\nПо нему тебя будут находить в DDChat.',
+                style: TextStyle(color: Colors.white70, fontSize: 13),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 20),
+              TextField(
+                controller: uidCtrl,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                style: const TextStyle(
+                  color: Colors.white, fontSize: 28,
+                  letterSpacing: 8, fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+                decoration: const InputDecoration(
+                  hintText: '000000',
+                  hintStyle: TextStyle(color: Colors.white24),
+                  filled: true, fillColor: Color(0xFF0A0E27),
+                  counterStyle: TextStyle(color: Colors.white38),
+                  border: OutlineInputBorder(
+                    borderSide: BorderSide(color: Color(0xFF00D9FF)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () {
+                if (uidCtrl.text.length == 6) {
+                  result = uidCtrl.text;
+                  Navigator.pop(ctx);
+                } else {
+                  _showError('ID должен состоять ровно из 6 цифр');
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00D9FF),
+                foregroundColor: Colors.black,
+              ),
+              child: const Text('ДАЛЕЕ →', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+    return result;
+  }
+
+  Future<String?> _showStep2CreatePassword() async {
+    final pwdCtrl  = TextEditingController();
+    final confCtrl = TextEditingController();
+    String? result;
+
+    bool obscure1 = true;
+    bool obscure2 = true;
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(
+        builder: (ctx, setS) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1A1F3C),
+            title: Text('СОЗДАЙ ПАРОЛЬ',
+                style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 15)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0A0E27),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.orange.withValues(alpha: 0.5)),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.lock_outline, color: Colors.orange, size: 16),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Пароль шифрует твои ключи. Запомни его — без него восстановление невозможно.',
+                          style: TextStyle(color: Colors.orange, fontSize: 11),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: pwdCtrl,
+                  obscureText: obscure1,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    labelText: 'Пароль (минимум 8 символов)',
+                    labelStyle: const TextStyle(color: Colors.white54),
+                    filled: true, fillColor: const Color(0xFF0A0E27),
+                    suffixIcon: IconButton(
+                      icon: Icon(obscure1 ? Icons.visibility_off : Icons.visibility,
+                          color: Colors.white38),
+                      onPressed: () => setS(() => obscure1 = !obscure1),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: confCtrl,
+                  obscureText: obscure2,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    labelText: 'Повтори пароль',
+                    labelStyle: const TextStyle(color: Colors.white54),
+                    filled: true, fillColor: const Color(0xFF0A0E27),
+                    suffixIcon: IconButton(
+                      icon: Icon(obscure2 ? Icons.visibility_off : Icons.visibility,
+                          color: Colors.white38),
+                      onPressed: () => setS(() => obscure2 = !obscure2),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () {
+                  if (pwdCtrl.text.length < 8) {
+                    _showError('Минимум 8 символов');
+                    return;
+                  }
+                  if (pwdCtrl.text != confCtrl.text) {
+                    _showError('Пароли не совпадают');
+                    return;
+                  }
+                  result = pwdCtrl.text;
+                  Navigator.pop(ctx);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00D9FF),
+                  foregroundColor: Colors.black,
+                ),
+                child: const Text('ДАЛЕЕ →', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    return result;
+  }
+
+  /// Шаг 3: критический экран бэкапа ключей.
+  /// Пользователь ОБЯЗАН сохранить файл перед продолжением.
+  Future<void> _showStep3KeyBackup(
+    String uid,
+    String password,
+    Map<String, String> encryptedKeys,
+  ) async {
+    bool savedConfirmed = false;
+
+    // Формируем JSON файл восстановления
+    final backupJson = jsonEncode({
+      'app':        'DDChat',
+      'version':    '1.0',
+      'uid':        uid,
+      'created_at': DateTime.now().toIso8601String(),
+      'note':       'Keep this file secret. You need your password to restore.',
+      'x25519_encrypted':  encryptedKeys['x25519'],
+      'ed25519_encrypted': encryptedKeys['ed25519'],
+    });
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(
+        builder: (ctx, setS) => PopScope(
+          canPop: false, // нельзя закрыть кнопкой "назад"
+          child: AlertDialog(
+            backgroundColor: const Color(0xFF1A1F3C),
+            title: Row(
+              children: [
+                const Icon(Icons.warning_amber_rounded, color: Colors.red, size: 22),
+                const SizedBox(width: 8),
+                Text('СОХРАНИ КЛЮЧИ',
+                    style: GoogleFonts.orbitron(color: Colors.red, fontSize: 14)),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1A0A0A),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.red.withValues(alpha: 0.6)),
+                    ),
+                    child: const Text(
+                      '⚠️  Твой аккаунт ни к чему не привязан.\n\n'
+                      'Если ты потеряешь телефон без файла восстановления — '
+                      'аккаунт и вся переписка будут утрачены навсегда.\n\n'
+                      'Сохрани файл прямо сейчас.',
+                      style: TextStyle(color: Colors.red, fontSize: 12, height: 1.5),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // Кнопка сохранения в файлы / отправки на почту
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        await _shareKeyBackupFile(uid, backupJson);
+                        setS(() => savedConfirmed = true);
+                      },
+                      icon: const Icon(Icons.save_alt, color: Color(0xFF00D9FF)),
+                      label: const Text(
+                        'Сохранить / отправить файл ключей',
+                        style: TextStyle(color: Color(0xFF00D9FF)),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Color(0xFF00D9FF)),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                  if (savedConfirmed) ...[
+                    const SizedBox(height: 8),
+                    const Row(
+                      children: [
+                        Icon(Icons.check_circle, color: Colors.green, size: 16),
+                        SizedBox(width: 6),
+                        Text('Файл открыт для сохранения',
+                            style: TextStyle(color: Colors.green, fontSize: 12)),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  Text(
+                    'Файл зашифрован твоим паролем. Без пароля он бесполезен.',
+                    style: TextStyle(color: Colors.white38, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              if (savedConfirmed)
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('Я СОХРАНИЛ ✓', style: TextStyle(fontWeight: FontWeight.bold)),
+                )
+              else
+                TextButton(
+                  onPressed: () {
+                    _showError('Сначала сохрани файл ключей!');
+                  },
+                  child: const Text('Продолжить',
+                      style: TextStyle(color: Colors.white30)),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Генерирует файл бэкапа и открывает системный share sheet.
+  /// Пользователь может: сохранить в "Файлы", отправить на email,
+  /// в Telegram "Избранное" и т.д.
+  Future<void> _shareKeyBackupFile(String uid, String backupJson) async {
     try {
-      final encrypted = await widget.cipher.encryptText(messageText, targetUid: widget.targetUid);
-      final signature = await widget.cipher.signMessage(messageText);
+      final dir      = await getTemporaryDirectory();
+      final fileName = 'ddchat_backup_$uid.json';
+      final file     = File('${dir.path}/$fileName');
+      await file.writeAsString(backupJson);
 
-      final myMsg = {
-        'id':              msgId,
-        'text':            messageText,
-        'isMe':            true,
-        'time':            now,
-        'from':            widget.myUid,
-        'to':              widget.targetUid,
-        'status':          'pending',
-        'replyTo':         replyText,
-        'replyToId':       replyId,
-        'type':            messageType,
-        'filePath':        filePath,
-        'fileName':        fileName,
-        'fileSize':        fileSize,
-        'mimeType':        mimeType,
-        'edited':          false,
-        'forwardedFrom':   forwardedFrom,
-        // Собственные сообщения не нуждаются в верификации подписи
-        'signatureStatus': SignatureStatus.valid.index,
-      };
-
-      if (mounted) {
-        setState(() {
-          _messages.add(myMsg);
-          _messageIds.add(msgId);
-          _messageController.clear();
-          _replyToText = null;
-          _replyToId   = null;
-        });
-        _scrollToBottom();
-      }
-
-      _socket.sendMessage(
-        widget.targetUid, encrypted, signature, msgId,
-        replyToId:     replyId,
-        messageType:   messageType,
-        mediaData:     mediaData,
-        fileName:      fileName,
-        fileSize:      fileSize,
-        mimeType:      mimeType,
-        forwardedFrom: forwardedFrom,
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'application/json')],
+        subject: 'DDChat — файл восстановления аккаунта $uid',
+        text: 'Это зашифрованный файл ключей DDChat. '
+              'Храни его в безопасном месте. '
+              'Для восстановления нужен этот файл + твой пароль.',
       );
-
-      if (mounted) {
-        setState(() {
-          final idx = _messages.indexWhere((m) => m['id'] == msgId);
-          if (idx != -1) _messages[idx]['status'] = 'sent';
-        });
-      }
-      await _storage.saveMessage(widget.targetUid, myMsg);
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          final idx = _messages.indexWhere((m) => m['id'] == msgId);
-          if (idx != -1) _messages[idx]['status'] = 'failed';
-        });
-      }
-      _showError('Failed to send: $e');
+      _showError('Ошибка при создании файла: $e');
     }
   }
 
-  Future<void> _sendPhoto({ImageSource source = ImageSource.gallery}) async {
-    try {
-      List<XFile> images = [];
-      if (source == ImageSource.gallery) {
-        images = await _imagePicker.pickMultiImage(imageQuality: 85);
-      } else {
-        final image = await _imagePicker.pickImage(source: source, imageQuality: 85);
-        if (image != null) images.add(image);
-      }
-      if (images.isEmpty) return;
+  /// Диалог импорта ключей — для восстановления на новом устройстве
+  /// или при ошибке аутентификации.
+  Future<void> _showImportKeysDialog() async {
+    final pwdCtrl = TextEditingController();
 
-      if (mounted) setState(() { _isSendingFile = true; _uploadProgress = 0.0; });
-
-      for (final image in images) {
-        final file     = File(image.path);
-        final fileSize = await file.length();
-        final fileName = image.name;
-        final fileId   = await _uploadFileEncrypted(file);
-        if (fileId == null) { _showError('Upload failed for $fileName'); continue; }
-        final localPath = await _copyFileToMediaDir(file, MsgType.image, fileName);
-        await _sendMessage(
-          text: '📷 Photo', messageType: 'image',
-          mediaData: 'FILE_ID:$fileId', filePath: localPath,
-          fileName: fileName, fileSize: fileSize, mimeType: 'image/jpeg',
-        );
-        await Future.delayed(const Duration(milliseconds: 300));
-      }
-    } catch (e) {
-      _showError('Failed to send photos: $e');
-    } finally {
-      if (mounted) setState(() { _isSendingFile = false; _uploadProgress = 0.0; });
-    }
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1F3C),
+        title: Text('ВОССТАНОВИТЬ АККАУНТ',
+            style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 14)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Выбери файл восстановления (ddchat_backup_XXXXXX.json) '
+              'и введи пароль, которым он был зашифрован.',
+              style: TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final result = await FilePicker.platform.pickFiles(
+                    type: FileType.custom,
+                    allowedExtensions: ['json'],
+                  );
+                  if (result != null && result.files.single.path != null) {
+                    Navigator.pop(c);
+                    await _importKeyFile(result.files.single.path!, pwdCtrl.text);
+                  }
+                },
+                icon: const Icon(Icons.folder_open, color: Color(0xFF00D9FF)),
+                label: const Text('Выбрать файл',
+                    style: TextStyle(color: Color(0xFF00D9FF))),
+                style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0xFF00D9FF))),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: pwdCtrl,
+              obscureText: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Пароль',
+                labelStyle: TextStyle(color: Colors.white54),
+                filled: true, fillColor: Color(0xFF0A0E27),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38)),
+          ),
+        ],
+      ),
+    );
   }
 
-  // ── Видео из галереи ──────────────────────────────────────────────────────
-  Future<void> _sendVideo() async {
+  Future<void> _importKeyFile(String filePath, String password) async {
     try {
-      final video = await _imagePicker.pickVideo(source: ImageSource.gallery);
-      if (video == null) return;
+      final jsonStr = await File(filePath).readAsString();
+      final data    = jsonDecode(jsonStr) as Map<String, dynamic>;
 
-      if (mounted) setState(() { _isSendingFile = true; _uploadProgress = 0.0; });
-      final file   = File(video.path);
-      final fileId = await _uploadFileEncrypted(file);
+      final uid       = data['uid'] as String?;
+      final x25519    = data['x25519_encrypted'] as String?;
+      final ed25519   = data['ed25519_encrypted'] as String?;
+      final salt      = _storage.getSetting('user_salt') ?? SecureCipher.generateSalt();
 
-      if (fileId != null) {
-        final localPath = await _copyFileToMediaDir(file, MsgType.video_gallery, video.name);
-        await _sendMessage(
-          text:        '🎬 Видео из галереи',
-          messageType: 'video_gallery',
-          mediaData:   'FILE_ID:$fileId',
-          filePath:    localPath,
-          fileName:    video.name,
-          fileSize:    await file.length(),
-          mimeType:    'video/mp4',
-        );
-      } else {
-        _showError('Ошибка загрузки видео');
-      }
-    } catch (e) {
-      _showError('Ошибка видео: $e');
-    } finally {
-      if (mounted) setState(() { _isSendingFile = false; _uploadProgress = 0.0; });
-    }
-  }
-
-  Future<void> _sendFile() async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.any, withData: false, withReadStream: false,
-      );
-      if (result == null || result.files.isEmpty) return;
-      final picked   = result.files.first;
-      final filePath = picked.path;
-      if (filePath == null) return;
-
-      final file     = File(filePath);
-      final fileSize = await file.length();
-      final fileName = picked.name;
-
-      if (mounted) setState(() { _isSendingFile = true; _uploadProgress = 0.0; });
-
-      final fileId = await _uploadFileEncrypted(file);
-      if (fileId == null) {
-        _showError('File upload failed');
-        if (mounted) setState(() => _isSendingFile = false);
+      if (uid == null || x25519 == null || ed25519 == null) {
+        _showError('Неверный формат файла восстановления');
         return;
       }
 
-      final mimeType  = _mimeTypeFromExtension(fileName);
-      final localPath = await _copyFileToMediaDir(file, MsgType.file, fileName);
-      await _sendMessage(
-        text: '📎 $fileName', messageType: 'file',
-        mediaData: 'FILE_ID:$fileId', filePath: localPath,
-        fileName: fileName, fileSize: fileSize, mimeType: mimeType,
-      );
-    } catch (e) {
-      _showError('Failed to send file: $e');
-    } finally {
-      if (mounted) setState(() { _isSendingFile = false; _uploadProgress = 0.0; });
-    }
-  }
+      await _cipher.init(password, salt,
+          encryptedX25519Key: x25519, encryptedEd25519Key: ed25519);
 
-  Future<void> _startRecording() async {
-    if (await _audioRecorder.hasPermission()) {
-      final tempDir = await getTemporaryDirectory();
-      final path = '${tempDir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
-      await _audioRecorder.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
-      setState(() { _isRecording = true; _voiceTempPath = path; _recordingDuration = 0; });
-      _recordingTimer?.cancel();
-      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() => _recordingDuration++);
-      });
-    } else {
-      _showError('Microphone permission denied');
-    }
-  }
+      await _idService.saveUID(uid);
+      await _storage.saveSetting('user_password', password);
+      await _storage.saveSetting('user_salt', salt);
+      await _storage.saveSetting('encrypted_x25519_key', x25519);
+      await _storage.saveSetting('encrypted_ed25519_key', ed25519);
 
-  Future<void> _cancelRecording() async {
-    try {
-      await _audioRecorder.stop();
-      _recordingTimer?.cancel();
-      _cleanTempVoiceFile();
-      if (mounted) setState(() { _isRecording = false; _recordingDuration = 0; });
-    } catch (e) {
-      debugPrint('Error cancelling recording: $e');
-    }
-  }
-
-  Future<void> _stopRecordingAndSend() async {
-    try {
-      final path = await _audioRecorder.stop();
-      _recordingTimer?.cancel();
-      if (mounted) setState(() => _isRecording = false);
-
-      if (path != null) {
-        _voiceTempPath = path;
-        final file = File(path);
-        if (_recordingDuration < 1) { _cleanTempVoiceFile(); return; }
-
-        if (mounted) setState(() { _isSendingFile = true; _uploadProgress = 0.0; });
-        final fileId = await _uploadFileEncrypted(file);
-        if (fileId == null) {
-          _showError('Voice upload failed');
-          _cleanTempVoiceFile();
-          if (mounted) setState(() => _isSendingFile = false);
-          return;
-        }
-
-        final fileName  = 'voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
-        final fileSize  = await file.length();
-        final localPath = await _copyFileToMediaDir(file, MsgType.voice, fileName);
-        await _sendMessage(
-          text: '🎤 Voice message', messageType: 'voice',
-          mediaData: 'FILE_ID:$fileId', filePath: localPath,
-          fileName: fileName, fileSize: fileSize, mimeType: 'audio/m4a',
-        );
-        _cleanTempVoiceFile();
-        if (mounted) setState(() => _isSendingFile = false);
+      if (mounted) {
+        setState(() => _myUid = uid);
+        _showError('✅ Ключи восстановлены. Подключаемся...');
+        await _autoConnect();
       }
     } catch (e) {
-      _showError('Error sending voice: $e');
-      _cancelRecording();
-      if (mounted) setState(() => _isSendingFile = false);
+      _showError('Ошибка импорта: неверный пароль или файл повреждён');
     }
   }
 
-  Future<void> _startVideoRecording() async {
-    try {
-      final cameras = await availableCameras();
-      final front = cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.front,
-        orElse: () => cameras.first,
-      );
-      _cameraController = CameraController(front, ResolutionPreset.medium, enableAudio: true);
-      await _cameraController!.initialize();
-      // Программный зум 1.25x — убирает эффект «рыбьего глаза» фронтальной камеры
-      try {
-        final maxZoom = await _cameraController!.getMaxZoomLevel();
-        final zoom    = 1.25.clamp(1.0, maxZoom);
-        await _cameraController!.setZoomLevel(zoom);
-      } catch (_) {/* не все устройства поддерживают zoom */}
-      await _cameraController!.startVideoRecording();
-      setState(() { _isVideoRecording = true; _recordingDuration = 0; });
-      _recordingTimer?.cancel();
-      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() => _recordingDuration++);
-      });
-    } catch (e) {
-      _showError('Camera error: $e');
-    }
+  // _showPasswordSetupDialog() заменён на _showOnboarding()
+  Future<void> _showPasswordSetupDialog() async {
+    // Вызывается только если UID есть, но пароля нет (старые установки)
+    // В новом onboarding'е пароль создаётся в _showStep2CreatePassword()
+    final pwdCtrl  = TextEditingController();
+    final confCtrl = TextEditingController();
+    return showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1F3C),
+        title: Text('СОЗДАЙ ПАРОЛЬ',
+            style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF))),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '⚠️ Обязательно запомни его! Восстановить без файла ключей невозможно.',
+              style: TextStyle(color: Colors.orange, fontSize: 11),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: pwdCtrl,
+              obscureText: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Придумай пароль (минимум 8 символов)',
+                filled: true, fillColor: Color(0xFF0A0E27),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: confCtrl,
+              obscureText: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Повтори пароль',
+                filled: true, fillColor: Color(0xFF0A0E27),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () async {
+              if (pwdCtrl.text.length < 8 || pwdCtrl.text != confCtrl.text) {
+                _showError('Пароли должны совпадать (минимум 8 символов)');
+                return;
+              }
+              final salt = SecureCipher.generateSalt();
+              await _cipher.init(pwdCtrl.text, salt);
+              final keys = await _cipher.exportBothKeys(pwdCtrl.text);
+              await _storage.saveSetting('user_password', pwdCtrl.text);
+              await _storage.saveSetting('user_salt', salt);
+              await _storage.saveSetting('encrypted_x25519_key', keys['x25519']!);
+              await _storage.saveSetting('encrypted_ed25519_key', keys['ed25519']!);
+              Navigator.pop(context);
+              _autoConnect();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00D9FF), foregroundColor: Colors.black,
+            ),
+            child: const Text('СОЗДАТЬ', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
   }
 
-  Future<void> _stopVideoRecordingAndSend() async {
-    if (_cameraController == null || !_cameraController!.value.isRecordingVideo) return;
-    try {
-      final xfile = await _cameraController!.stopVideoRecording();
-      await _cameraController!.dispose();
-      _cameraController = null;
-      _recordingTimer?.cancel();
-      setState(() => _isVideoRecording = false);
+// _showRegistrationDialog() replaced by _showOnboarding()
 
-      if (_recordingDuration < 1) return;
-
-      setState(() { _isSendingFile = true; _uploadProgress = 0.0; });
-      final file   = File(xfile.path);
-      final fileId = await _uploadFileEncrypted(file);
-      if (fileId != null) {
-        final fileName  = 'video_note_${DateTime.now().millisecondsSinceEpoch}.mp4';
-        final localPath = await _copyFileToMediaDir(file, MsgType.video_note, fileName);
-        await _sendMessage(
-          text: '🎥 Video Note', messageType: 'video_note',
-          mediaData: 'FILE_ID:$fileId', filePath: localPath,
-          fileName: fileName, fileSize: await file.length(), mimeType: 'video/mp4',
-        );
-      }
-    } catch (e) {
-      _showError('Video send error: $e');
-    } finally {
-      if (mounted) setState(() => _isSendingFile = false);
-    }
-  }
-
-  Future<void> _playVoiceMessage(Map<String, dynamic> msg) async {
-    final msgId = msg['id']?.toString();
-    try {
-      if (_playingMessageId == msgId) {
-        await _audioPlayer.stop();
-        setState(() => _playingMessageId = null);
-        return;
-      }
-      final localPath = msg['filePath'] as String?;
-      if (localPath != null && File(localPath).existsSync()) {
-        await _audioPlayer.play(DeviceFileSource(localPath));
-      } else {
-        _showError('Voice file not available locally');
-        return;
-      }
-      setState(() => _playingMessageId = msgId);
-      _audioPlayer.onPlayerComplete.first.then((_) {
-        if (mounted) setState(() => _playingMessageId = null);
-      });
-    } catch (e) {
-      _showError('Failed to play: $e');
-    }
-  }
-
-  void _startEditingMessage(Map<String, dynamic> message) {
-    setState(() {
-      _editingMessageId       = message['id']?.toString();
-      _messageController.text = message['text'] as String? ?? '';
-    });
-  }
-
-  Future<void> _saveEditedMessage() async {
-    if (_editingMessageId == null) return;
-    final newText = _messageController.text.trim();
-    if (newText.isEmpty) return;
-    try {
-      final encrypted = await widget.cipher.encryptText(newText, targetUid: widget.targetUid);
-      final signature = await widget.cipher.signMessage(newText);
-      _socket.sendEditMessage(widget.targetUid, _editingMessageId!, encrypted, signature);
-      setState(() {
-        final idx = _messages.indexWhere((m) => m['id'] == _editingMessageId);
-        if (idx != -1) {
-          _messages[idx]['text']            = newText;
-          _messages[idx]['edited']          = true;
-          _messages[idx]['editedAt']        = DateTime.now().millisecondsSinceEpoch;
-          _messages[idx]['signatureStatus'] = SignatureStatus.valid.index;
-        }
-        _editingMessageId = null;
-        _messageController.clear();
-      });
-    } catch (e) {
-      _showError('Failed to edit: $e');
-    }
-  }
-
-  Future<void> _deleteMessage(String messageId, {required bool deleteForEveryone}) async {
-    if (deleteForEveryone) _socket.sendDeleteMessage(widget.targetUid, messageId);
-    setState(() {
-      _messages.removeWhere((m) => m['id'] == messageId);
-      _messageIds.remove(messageId);
-    });
-    await _storage.deleteMessage(widget.targetUid, messageId);
-  }
-
-  void _addReaction(String messageId, String emoji) {
-    _socket.sendReaction(widget.targetUid, messageId, emoji, 'add');
-    setState(() {
-      _reactions.putIfAbsent(messageId, () => {});
-      _reactions[messageId]!.add(emoji);
-    });
-    _storage.saveReactions(widget.targetUid, _reactions);
-  }
-
-  void _removeReaction(String messageId, String emoji) {
-    _socket.sendReaction(widget.targetUid, messageId, emoji, 'remove');
-    setState(() => _reactions[messageId]?.remove(emoji));
-    _storage.saveReactions(widget.targetUid, _reactions);
+  void _addContact() {
+    final targetC = TextEditingController();
+    final nameC   = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1F3C),
+        title: Text('Добавить контакт', style: GoogleFonts.orbitron()),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: targetC,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              style: const TextStyle(color: Colors.white),
+              textAlign: TextAlign.center,
+              decoration: const InputDecoration(
+                hintText: '000000',
+                filled: true, fillColor: Color(0xFF0A0E27),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: nameC,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Имя (необязательно)',
+                filled: true, fillColor: Color(0xFF0A0E27),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('ОТМЕНА'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (targetC.text.length == 6 && targetC.text != _myUid) {
+                _socket.getProfile(targetC.text);
+                await _storage.addContact(
+                  targetC.text,
+                  displayName: nameC.text.trim().isNotEmpty ? nameC.text.trim() : null,
+                );
+                Navigator.pop(context);
+                setState(() => _chats = _storage.getContactsSortedByActivity());
+              } else {
+                _showError('Неверный ID');
+              }
+            },
+            child: const Text('ДОБАВИТЬ'),
+          ),
+        ],
+      ),
+    );
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // 🟡-1 FORWARD (пересылка сообщений)
+  // FAB меню
   // ──────────────────────────────────────────────────────────────────────────
 
-  /// Показывает диалог выбора контакта для пересылки и отправляет сообщение.
-  ///
-  /// Пересылаемое сообщение шифруется заново для получателя — оригинальный
-  /// зашифртекст никогда не передаётся третьим лицам.
-  void _forwardMessage(Map<String, dynamic> message) {
-    final contacts = _storage.getContactsList();
-    if (contacts.isEmpty) {
-      _showError('No contacts to forward to');
-      return;
-    }
-
+  void _showAddMenu() {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1F3C),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              'Переслать...',
-              style: GoogleFonts.orbitron(color: Colors.white, fontSize: 14),
-            ),
-          ),
-          const Divider(color: Colors.white12),
-          Flexible(
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: contacts.length,
-              itemBuilder: (_, i) {
-                final uid  = contacts[i];
-                final name = _storage.getContactDisplayName(uid);
-                return ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: const Color(0xFF0A0E27),
-                    child: Text(
-                      name.isNotEmpty ? name[0].toUpperCase() : '?',
-                      style: const TextStyle(color: Colors.cyan),
-                    ),
-                  ),
-                  title: Text(name, style: const TextStyle(color: Colors.white)),
-                  subtitle: Text(uid, style: const TextStyle(color: Colors.white38, fontSize: 11)),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    await _sendForwardedMessage(message, toUid: uid);
-                  },
-                );
-              },
-            ),
-          ),
-          const SizedBox(height: 8),
-        ],
-      ),
-    );
-  }
-
-  /// Пересылает [message] пользователю [toUid].
-  ///
-  /// Если целевой пользователь — текущий собеседник, пересылаем в тот же чат.
-  /// Если другой — нужен SharedSecret с ним; при его отсутствии показываем ошибку.
-  Future<void> _sendForwardedMessage(
-    Map<String, dynamic> message, {
-    required String toUid,
-  }) async {
-    // Определяем оригинальный источник пересылки
-    final originalFrom = message['forwardedFrom'] as String? ??
-        (message['isMe'] == true ? widget.myUid : widget.targetUid);
-
-    final displayName = _storage.getContactDisplayName(originalFrom);
-    final forwardLabel = displayName.isNotEmpty ? displayName : originalFrom;
-
-    if (toUid == widget.targetUid) {
-      // Пересылка в тот же чат — SharedSecret уже есть
-      await _sendMessage(
-        text:          message['text'] as String? ?? '',
-        messageType:   message['type'] as String? ?? 'text',
-        mediaData:     null, // медиа-файлы при пересылке не дублируем на сервере
-        filePath:      message['filePath'] as String?,
-        fileName:      message['fileName'] as String?,
-        fileSize:      message['fileSize'] as int?,
-        mimeType:      message['mimeType'] as String?,
-        forwardedFrom: forwardLabel,
-      );
-    } else {
-      // Пересылка в другой чат — нужна отдельная навигация или сервис
-      // TODO: открыть ChatScreen с toUid и передать сообщение через аргументы
-      // Пока показываем ошибку с подсказкой
-      _showError('Open a chat with $forwardLabel first, then forward from there.');
-    }
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // UI helpers
-  // ──────────────────────────────────────────────────────────────────────────
-
-  void _showError(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: Colors.red),
-    );
-  }
-
-  void _showSuccess(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), backgroundColor: const Color(0xFF1A4A2E)),
-    );
-  }
-
-  void _scrollToBottom({bool animated = true}) {
-    if (!_scrollController.hasClients) return;
-    Future.delayed(const Duration(milliseconds: 50), () {
-      if (!_scrollController.hasClients) return;
-      final position = _scrollController.position.maxScrollExtent;
-      if (animated) {
-        _scrollController.animateTo(
-          position,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      } else {
-        _scrollController.jumpTo(position);
-      }
-    });
-  }
-
-  // Делегаты к утилитам из models/chat_models.dart
-  String _formatLastSeen(int ts)          => formatLastSeen(ts);
-  String _formatRecordingTime(int s)      => formatRecordingTime(s);
-  String _mimeTypeFromExtension(String f) => mimeTypeFromExtension(f);
-
-
-  void _setReplyTo(Map<String, dynamic> message) {
-    setState(() {
-      _replyToText = message['text'] as String?;
-      _replyToId   = message['id']?.toString();
-    });
-  }
-
-  void _cancelReply() => setState(() { _replyToText = null; _replyToId = null; });
-
-  void _toggleSearch() {
-    setState(() {
-      _isSearching = !_isSearching;
-      if (!_isSearching) _searchController.clear();
-    });
-  }
-
-  void _copyMessageText(String text) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Copied to clipboard')),
-    );
-  }
-
-  List<Map<String, dynamic>> get _filteredMessages {
-    if (!_isSearching || _searchController.text.isEmpty) return _messages;
-    final q = _searchController.text.toLowerCase();
-    return _messages.where((m) => (m['text'] ?? '').toLowerCase().contains(q)).toList();
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Просмотр и сохранение файлов
-  // ──────────────────────────────────────────────────────────────────────────
-
-  /// Повторная загрузка медиафайла для сообщений, у которых filePath == null
-  /// (первая загрузка упала при получении — нет связи, ключи ещё не подгружены и т.п.)
-  Future<void> _retryDownloadMedia(Map<String, dynamic> msg) async {
-    final mediaData = msg['mediaData'] as String?;
-    if (mediaData == null || !mediaData.startsWith('FILE_ID:')) {
-      _showError('Данные файла недоступны — попросите собеседника переотправить');
-      return;
-    }
-
-    if (mounted) setState(() => _isSendingFile = true);
-    try {
-      final fileId   = mediaData.substring(8);
-      final fileName = msg['fileName'] as String?;
-      final newPath  = await _downloadFileEncrypted(fileId, fileName);
-
-      if (newPath != null) {
-        // Обновляем в памяти
-        final idx = _messages.indexWhere((m) => m['id'] == msg['id']);
-        if (idx != -1 && mounted) {
-          setState(() => _messages[idx]['filePath'] = newPath);
-        }
-        // Обновляем в Hive через пересохранение обновлённого сообщения
-        final updated = Map<String, dynamic>.from(msg)..['filePath'] = newPath;
-        await _storage.saveMessage(widget.targetUid, updated);
-        _showSuccess('Файл загружен');
-      } else {
-        _showError('Не удалось загрузить файл — проверь подключение');
-      }
-    } finally {
-      if (mounted) setState(() => _isSendingFile = false);
-    }
-  }
-
-
-  /// Сохраняет медиафайл из сообщения в галерею устройства.
-  Future<void> _saveToGallery(Map<String, dynamic> msg) async {
-    final filePath = msg['filePath'] as String?;
-    final msgType  = (msg['type'] as String? ?? 'text').toMsgType();
-    final fileName = msg['fileName'] as String? ?? 'ddchat_file';
-
-    if (filePath == null || !File(filePath).existsSync()) {
-      // Файл не скачан — пробуем скачать сначала
-      if (msg['mediaData'] != null) {
-        if (mounted) setState(() => _isSendingFile = true);
-        await _retryDownloadMedia(msg);
-        if (mounted) setState(() => _isSendingFile = false);
-        // Перечитываем путь после скачивания
-        final idx = _messages.indexWhere((m) => m['id'] == msg['id']);
-        final updatedPath = idx != -1 ? _messages[idx]['filePath'] as String? : null;
-        if (updatedPath == null || !File(updatedPath).existsSync()) {
-          if (mounted) _showError('Файл недоступен — возможно истёк срок хранения');
-          return;
-        }
-        await _saveToGallery(_messages[idx]);
-        return;
-      }
-      if (mounted) _showError('Файл не найден на устройстве');
-      return;
-    }
-
-    try {
-      final hasAccess = await Gal.hasAccess();
-      if (!hasAccess) {
-        final granted = await Gal.requestAccess();
-        if (!granted) {
-          if (mounted) _showError('Нет разрешения на сохранение в галерею');
-          return;
-        }
-      }
-
-      if (msgType == MsgType.image) {
-        await Gal.putImage(filePath, album: 'DDChat');
-      } else if (msgType == MsgType.video) {
-        await Gal.putVideo(filePath, album: 'DDChat');
-      } else {
-        // Для файлов (аудио, документы) — копируем в Downloads
-        if (Platform.isAndroid) {
-          final dir = Directory('/storage/emulated/0/Download/DDChat');
-          if (!await dir.exists()) await dir.create(recursive: true);
-          await File(filePath).copy('${dir.path}/$fileName');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('✅ Сохранено: Download/DDChat/$fileName')),
-            );
-          }
-          return;
-        }
-      }
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('✅ Сохранено в галерею'),
-            backgroundColor: Color(0xFF1A4A2E),
-          ),
-        );
-      }
-    } catch (e) {
-      debugPrint('Save to gallery error: $e');
-      if (mounted) _showError('Ошибка сохранения: $e');
-    }
-  }
-
-  /// Открывает фото профиля контакта на весь экран с Hero-анимацией и pinch-to-zoom.
-  void _showContactProfilePhoto(String displayName, String? avatarId) {
-    final hasPhoto = avatarId != null && avatarId.isNotEmpty;
-    Navigator.of(context).push(
-      PageRouteBuilder(
-        opaque: false,
-        barrierColor: Colors.black87,
-        pageBuilder: (_, __, ___) => GestureDetector(
-          onTap: () => Navigator.of(context).pop(),
-          child: Scaffold(
-            backgroundColor: Colors.transparent,
-            appBar: AppBar(
-              backgroundColor: Colors.black54,
-              leading: IconButton(
-                icon: const Icon(Icons.arrow_back_ios_new, color: Colors.white),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-              title: Text(displayName,
-                  style: const TextStyle(color: Colors.white, fontSize: 16)),
-            ),
-            body: Center(
-              child: Hero(
-                tag: 'contact_avatar_${widget.targetUid}',
-                child: InteractiveViewer(
-                  panEnabled:  true,
-                  minScale:    0.5,
-                  maxScale:    4.0,
-                  child: hasPhoto
-                      ? Image.network(
-                          '$SERVER_HTTP_URL/download/$avatarId',
-                          fit: BoxFit.contain,
-                          loadingBuilder: (_, child, progress) {
-                            if (progress == null) return child;
-                            return const CircularProgressIndicator(color: Colors.cyan);
-                          },
-                          errorBuilder: (_, __, ___) => _avatarFallback(displayName),
-                        )
-                      : _avatarFallback(displayName),
-                ),
-              ),
-            ),
-          ),
-        ),
-        transitionsBuilder: (_, anim, __, child) =>
-            FadeTransition(opacity: anim, child: child),
-      ),
-    );
-  }
-
-  Widget _avatarFallback(String displayName) => CircleAvatar(
-    radius: 80,
-    backgroundColor: const Color(0xFF0A0E27),
-    child: Text(
-      displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
-      style: const TextStyle(color: Colors.cyan, fontSize: 60),
-    ),
-  );
-
-  void _showFullImageFromFile(String filePath) {
-    showDialog(
-      context: context,
-      builder: (context) => Dialog(
-        backgroundColor: Colors.black,
-        insetPadding: EdgeInsets.zero,
-        child: Stack(
-          alignment: Alignment.center,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            InteractiveViewer(child: Image.file(File(filePath))),
-            Positioned(
-              right: 20, bottom: 20,
-              child: FloatingActionButton(
-                backgroundColor: Colors.white24,
-                child: const Icon(Icons.folder_shared, color: Colors.white),
-                onPressed: () async {
-                  try {
-                    bool hasAccess = await Gal.hasAccess();
-                    if (!hasAccess) await Gal.requestAccess();
-                    Directory? downloadsDir;
-                    if (Platform.isAndroid) {
-                      downloadsDir = Directory('/storage/emulated/0/Download/DDchat');
-                    } else {
-                      downloadsDir = await getApplicationDocumentsDirectory();
-                    }
-                    if (!await downloadsDir.exists()) await downloadsDir.create(recursive: true);
-                    final originalFile = File(filePath);
-                    final fileName = originalFile.path.split('/').last;
-                    final newPath  = '${downloadsDir.path}/$fileName';
-                    await originalFile.copy(newPath);
-                    await Gal.putImage(newPath);
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('✅ Saved to: $newPath')),
-                      );
-                    }
-                  } catch (e) {
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
-                      );
-                    }
-                  }
-                },
+            Container(
+              margin: const EdgeInsets.only(top: 10, bottom: 8),
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
               ),
             ),
-            Positioned(
-              top: 40, right: 20,
-              child: IconButton(
-                icon: const Icon(Icons.close, color: Colors.white, size: 30),
-                onPressed: () => Navigator.pop(context),
-              ),
+            ListTile(
+              leading: const Icon(Icons.person_add, color: Colors.cyan),
+              title: const Text('Добавить контакт', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _addContact(); },
             ),
+            ListTile(
+              leading: const Icon(Icons.group_add, color: Colors.cyan),
+              title: const Text('Создать группу', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _showError('Группы в разработке'); },
+            ),
+            ListTile(
+              leading: const Icon(Icons.qr_code_scanner, color: Colors.cyan),
+              title: const Text('Сканировать QR', style: TextStyle(color: Colors.white)),
+              onTap: () { Navigator.pop(ctx); _openQrScanner(); },
+            ),
+            const SizedBox(height: 8),
           ],
         ),
       ),
     );
   }
 
-  Future<void> _openFile(String? filePath, String fileName) async {
-    if (filePath == null || !File(filePath).existsSync()) {
-      _showError('File not available on this device');
-      return;
-    }
-    try {
-      if (Platform.isAndroid) {
-        final downloadsDir = Directory('/storage/emulated/0/Download/DDchat');
-        if (!await downloadsDir.exists()) await downloadsDir.create(recursive: true);
-        final newPath = '${downloadsDir.path}/$fileName';
-        await File(filePath).copy(newPath);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: const Text('File saved to Downloads/DDchat'),
-            action: SnackBarAction(label: 'OK', onPressed: () {}),
-          ));
-        }
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Saved at: $filePath')),
-          );
-        }
-      }
-    } catch (e) {
-      debugPrint('Save error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Saved internally at: $filePath')),
-        );
-      }
-    }
-  }
-
   // ──────────────────────────────────────────────────────────────────────────
-  // Message actions
+  // Меню контакта
   // ──────────────────────────────────────────────────────────────────────────
 
-  void _showMessageActions(Map<String, dynamic> message) {
-    final isMe = message['from'] == widget.myUid;
+  void _showContactOptions(String uid) {
+    final name     = _storage.getContactDisplayName(uid);
+    final isPinned = _storage.isContactPinned(uid);
+    final isMuted  = _storage.isContactMuted(uid);
+
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1F3C),
@@ -1534,160 +1198,363 @@ class _ChatScreenState extends State<ChatScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (context) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Drag-handle
-              Container(
-                margin: const EdgeInsets.only(top: 10, bottom: 4),
-                width: 36, height: 4,
-                decoration: BoxDecoration(
-                  color: Colors.white24,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              // 🔑 Сброс ключей — помогает при "Authentication failed"
-              // без переустановки приложения. Выбрасывает shared secret и
-              // per-contact KDF-кэш, запрашивает новый публичный ключ.
-              _actionTile(Icons.refresh, 'Сбросить ключи (Fix)', () async {
-                Navigator.pop(context);
-                widget.cipher.clearSharedSecret(widget.targetUid);
-                await _storage.clearCachedKeys(widget.targetUid);
-                _socket.requestPublicKey(widget.targetUid);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('🔑 Новые ключи запрошены — попросите переотправить'),
-                      backgroundColor: Color(0xFF1A4A2E),
-                      duration: Duration(seconds: 4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Шапка
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 20,
+                    backgroundColor: Colors.cyan.withValues(alpha: 0.15),
+                    child: Text(
+                      name.isNotEmpty ? name[0].toUpperCase() : '?',
+                      style: const TextStyle(color: Colors.cyan, fontWeight: FontWeight.bold),
                     ),
-                  );
-                }
-              }, color: Colors.greenAccent),
-              if (message['type'] == 'text')
-                _actionTile(Icons.copy, 'Копировать', () {
-                  Navigator.pop(context);
-                  _copyMessageText(message['text'] as String? ?? '');
-                }),
-              // Сохранить фото/видео в галерею (только для медиа-сообщений)
-              if (message['type'] != 'text' && message['filePath'] != null)
-                _actionTile(Icons.save_alt, 'Сохранить в галерею', () async {
-                  Navigator.pop(context);
-                  await _saveToGallery(message);
-                }, color: Colors.greenAccent),
-              _actionTile(Icons.reply, 'Ответить', () {
+                  ),
+                  const SizedBox(width: 12),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(name, style: const TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16,
+                      )),
+                      Text('ID: $uid', style: const TextStyle(
+                        color: Colors.white38, fontSize: 12,
+                      )),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Colors.white12, height: 1),
+
+            // Закрепить / открепить
+            ListTile(
+              leading: Icon(
+                isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                color: isPinned ? Colors.amber : Colors.white70,
+              ),
+              title: Text(
+                isPinned ? 'Открепить' : 'Закрепить сверху',
+                style: TextStyle(color: isPinned ? Colors.amber : Colors.white),
+              ),
+              onTap: () async {
                 Navigator.pop(context);
-                _setReplyTo(message);
-              }),
-              // 🟡-1 FIX: Кнопка Forward добавлена в меню
-              _actionTile(Icons.forward, 'Переслать', () {
+                await _storage.setContactPinned(uid, !isPinned);
+                setState(() => _chats = _storage.getContactsSortedByActivity());
+                _showSuccess(isPinned ? 'Откреплено' : '📌 $name закреплен');
+              },
+            ),
+
+            // Переименовать
+            ListTile(
+              leading: const Icon(Icons.edit_outlined, color: Colors.white70),
+              title: const Text('Переименовать', style: TextStyle(color: Colors.white)),
+              onTap: () {
                 Navigator.pop(context);
-                _forwardMessage(message);
-              }),
-              _actionTile(Icons.emoji_emotions, 'Реакция', () {
+                _showRenameDialog(uid, name);
+              },
+            ),
+
+            // Заглушить
+            ListTile(
+              leading: Icon(
+                isMuted ? Icons.volume_up_outlined : Icons.volume_off_outlined,
+                color: isMuted ? Colors.white70 : Colors.orange,
+              ),
+              title: Text(
+                isMuted ? 'Включить звук' : 'Без звука',
+                style: TextStyle(color: isMuted ? Colors.white : Colors.orange),
+              ),
+              onTap: () async {
                 Navigator.pop(context);
-                _showReactionPicker(message['id'].toString());
-              }),
-              if (isMe && message['type'] == 'text')
-                _actionTile(Icons.edit, 'Редактировать', () {
-                  Navigator.pop(context);
-                  _startEditingMessage(message);
-                }),
-              if (isMe)
-                _actionTile(Icons.delete, 'Удалить для всех', () {
-                  Navigator.pop(context);
-                  _confirmDelete(message['id'].toString(), deleteForEveryone: true);
-                }, color: Colors.red),
-              _actionTile(Icons.delete_outline, 'Удалить у себя', () {
+                await _storage.setContactMuted(uid, !isMuted);
+                setState(() {});
+                _showSuccess(isMuted ? 'Звук включен для $name' : '🔇 $name заглушен');
+              },
+            ),
+
+            // Скопировать ID
+            ListTile(
+              leading: const Icon(Icons.copy_outlined, color: Colors.white70),
+              title: const Text('Скопировать ID', style: TextStyle(color: Colors.white)),
+              onTap: () {
                 Navigator.pop(context);
-                _confirmDelete(message['id'].toString(), deleteForEveryone: false);
-              }, color: Colors.orange),
-            ],
-          ),
+                Clipboard.setData(ClipboardData(text: uid));
+                _showSuccess('ID скопирован: $uid');
+              },
+            ),
+
+            // Очистить историю
+            ListTile(
+              leading: const Icon(Icons.cleaning_services_outlined, color: Colors.orange),
+              title: const Text('Очистить историю', style: TextStyle(color: Colors.orange)),
+              onTap: () {
+                Navigator.pop(context);
+                _confirmClearHistory(uid, name);
+              },
+            ),
+
+            // Удалить контакт
+            ListTile(
+              leading: const Icon(Icons.person_remove_outlined, color: Colors.red),
+              title: Text('Удалить "$name"', style: const TextStyle(color: Colors.red)),
+              onTap: () {
+                Navigator.pop(context);
+                _confirmDeleteContact(uid, name);
+              },
+            ),
+
+            const SizedBox(height: 8),
+          ],
         ),
       ),
     );
   }
 
-  ListTile _actionTile(IconData icon, String label, VoidCallback onTap, {Color color = Colors.cyan}) =>
-      ListTile(
-        leading: Icon(icon, color: color),
-        title: Text(label, style: TextStyle(color: color == Colors.cyan ? Colors.white : color)),
-        onTap: onTap,
-      );
-
-  void _confirmDelete(String messageId, {required bool deleteForEveryone}) {
+  void _showRenameDialog(String uid, String currentName) {
+    final ctrl = TextEditingController(text: currentName);
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: const Text('Delete message?', style: TextStyle(color: Colors.white)),
-        content: Text(
-          deleteForEveryone
-              ? 'This message will be deleted for everyone'
-              : 'This message will only be deleted for you',
-          style: const TextStyle(color: Colors.white70),
+        title: const Text('Переименовать контакт', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: 'Новое имя...',
+            hintStyle: TextStyle(color: Colors.white38),
+            filled: true, fillColor: Color(0xFF0A0E27),
+            border: OutlineInputBorder(),
+          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('CANCEL'),
+            child: const Text('ОТМЕНА'),
           ),
-          TextButton(
-            onPressed: () {
+          ElevatedButton(
+            onPressed: () async {
+              final newName = ctrl.text.trim();
+              if (newName.isEmpty) return;
+              await _storage.setContactDisplayName(uid, newName);
               Navigator.pop(context);
-              _deleteMessage(messageId, deleteForEveryone: deleteForEveryone);
+              setState(() => _chats = _storage.getContactsSortedByActivity());
+              _showSuccess('Переименован в "$newName"');
             },
-            child: const Text('DELETE', style: TextStyle(color: Colors.red)),
+            child: const Text('СОХРАНИТЬ'),
           ),
         ],
       ),
     );
   }
 
-  void _showReactionPicker(String messageId) {
-    const reactions = ['❤️', '👍', '😂', '😮', '😢', '🙏', '🔥', '👎'];
+  void _confirmClearHistory(String uid, String name) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: const Text('React', style: TextStyle(color: Colors.white)),
-        content: Wrap(
-          spacing: 10,
-          children: reactions.map((emoji) => GestureDetector(
-            onTap: () { Navigator.pop(context); _addReaction(messageId, emoji); },
-            child: Text(emoji, style: const TextStyle(fontSize: 32)),
-          )).toList(),
+        title: const Text('Очистить историю?', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'Все сообщения с "$name" будут удалены с устройства.\nСам контакт останется в списке.',
+          style: const TextStyle(color: Colors.white70),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('ОТМЕНА'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await _storage.clearChatHistory(uid);
+              setState(() => _chats = _storage.getContactsSortedByActivity());
+              _showSuccess('История очищена');
+            },
+            child: const Text('ОЧИСТИТЬ', style: TextStyle(color: Colors.orange)),
+          ),
+        ],
       ),
     );
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
-  // Message bubble
-  // ──────────────────────────────────────────────────────────────────────────
-
-  // ─── Рендер одного сообщения ─────────────────────────────────────────────
-  // Логика отображения вынесена в lib/widgets/message_bubble.dart.
-  // _ChatScreenState остаётся ответственным только за колбэки (действия).
-  Widget _buildMessage(Map<String, dynamic> msg, int index) {
-    return MessageBubble(
-      msg:             msg,
-      myUid:           widget.myUid,
-      playingMessageId: _playingMessageId,
-      reactions:       _reactions,
-      onLongPress:     _showMessageActions,
-      onRetryDownload: _retryDownloadMedia,
-      onPlayVoice:     _playVoiceMessage,
-      onOpenImage:     _showFullImageFromFile,
-      onOpenFile:      (path, name) => _openFile(path, name),
-      onRemoveReaction: _removeReaction,
+  void _confirmDeleteContact(String uid, String name) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1F3C),
+        title: const Text('Удалить контакт?', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'Удалить "$name" и всю историю переписки?',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('ОТМЕНА'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _storage.removeContact(uid);
+              setState(() => _chats = _storage.getContactsSortedByActivity());
+            },
+            child: const Text('УДАЛИТЬ', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
     );
   }
 
+  void _performSearch(String query) {
+    setState(() {
+      _searchResults = query.isEmpty ? [] : _storage.searchMessages(query, limit: 50);
+    });
+  }
 
-  // Bubble widgets перенесены в lib/widgets/message_bubble.dart
+  // ──────────────────────────────────────────────────────────────────────────
+  // Виджеты
+  // ──────────────────────────────────────────────────────────────────────────
+
+  Widget _buildConnectionIndicator() {
+    final color = _connectionStatus == 'В СЕТИ'
+        ? Colors.green
+        : (_connectionStatus == 'ПОДКЛЮЧЕНИЕ...' ? Colors.orange : Colors.red);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.circle, color: color, size: 8),
+        const SizedBox(width: 4),
+        Text(_connectionStatus, style: TextStyle(fontSize: 10, color: color)),
+      ],
+    );
+  }
+
+  Widget _buildChatList() {
+    if (!_isReady) {
+      return const Center(child: CircularProgressIndicator(color: Colors.cyan));
+    }
+    if (_chats.isEmpty) {
+      return Center(
+        child: Text('Нет чатов', style: GoogleFonts.orbitron(color: Colors.white38)),
+      );
+    }
+
+    return ListView.builder(
+      itemCount: _chats.length,
+      itemBuilder: (c, i) {
+        final uid      = _chats[i];
+        final name     = _storage.getContactDisplayName(uid);
+        final avatar   = _storage.getContactAvatar(uid);
+        final meta     = _storage.getChatMetadata(uid);
+        final unread   = meta['unreadCount'] as int? ?? 0;
+        final isOnline = _storage.isContactOnline(uid);
+        final isPinned = _storage.isContactPinned(uid);
+        final isMuted  = _storage.isContactMuted(uid);
+        final hasAvatar = avatar != null && avatar.isNotEmpty && avatar != 'null';
+
+        return ListTile(
+          leading: Stack(
+            children: [
+              CircleAvatar(
+                backgroundColor: const Color(0xFF1A1F3C),
+                backgroundImage: hasAvatar
+                    ? NetworkImage('https://deepdrift-backend.onrender.com/download/$avatar')
+                    : null,
+                child: !hasAvatar
+                    ? Text(
+                        name.isNotEmpty ? name[0].toUpperCase() : '?',
+                        style: const TextStyle(color: Colors.cyan),
+                      )
+                    : null,
+              ),
+              if (isOnline)
+                Positioned(
+                  right: 0, bottom: 0,
+                  child: Container(
+                    width: 12, height: 12,
+                    decoration: BoxDecoration(
+                      color: Colors.greenAccent,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0xFF0A0E27), width: 2),
+                    ),
+                  ),
+                ),
+              if (unread > 0)
+                Positioned(
+                  right: 0, top: 0,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: Colors.cyan, shape: BoxShape.circle,
+                    ),
+                    child: Text(
+                      '$unread',
+                      style: const TextStyle(
+                        color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          title: Row(
+            children: [
+              if (isPinned)
+                const Padding(
+                  padding: EdgeInsets.only(right: 4),
+                  child: Icon(Icons.push_pin, size: 12, color: Colors.amber),
+                ),
+              if (isMuted)
+                const Padding(
+                  padding: EdgeInsets.only(right: 4),
+                  child: Icon(Icons.volume_off, size: 12, color: Colors.white38),
+                ),
+              Expanded(
+                child: Text(
+                  name,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: unread > 0 ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          subtitle: Text(
+            meta['lastMessageText'] as String? ?? 'Нет сообщений',
+            style: TextStyle(
+              color: unread > 0 ? Colors.white54 : Colors.white24,
+              fontSize: 12,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => ChatScreen(
+                  myUid:     _myUid!,
+                  targetUid: uid,
+                  cipher:    _cipher,
+                ),
+              ),
+            ).then((_) {
+              if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+            });
+          },
+          onLongPress: () => _showContactOptions(uid),
+        );
+      },
+    );
+  }
 
   // ──────────────────────────────────────────────────────────────────────────
   // Build
@@ -1695,396 +1562,166 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final displayName     = _storage.getContactDisplayName(widget.targetUid);
-    final displayMessages = _filteredMessages;
+    final totalUnread = _storage.getTotalUnreadCount();
+    final myProfile   = _storage.getMyProfile();
+    final avatarUrl   = myProfile['avatarUrl'];
+    final hasMyAvatar = avatarUrl != null && avatarUrl.isNotEmpty && avatarUrl != 'null';
 
     return PopScope(
-      canPop: !_isSendingFile,
+      canPop: !_isSearching,
       onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _isSendingFile) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Please wait for upload to finish...')),
-          );
+        if (!didPop && _isSearching) {
+          setState(() { _isSearching = false; _searchController.clear(); });
         }
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF0A0E27),
-        appBar: _buildAppBar(displayName),
-        body: Stack(
-          children: [
-            Column(
-              children: [
-                if (_replyToText != null) _buildReplyBanner(),
-                Expanded(
-                  child: ListView.builder(
-                    controller:  _scrollController,
-                    itemCount:   displayMessages.length + (_isLoadingMore ? 1 : 0),
-                    itemBuilder: (context, index) {
-                      if (_isLoadingMore && index == 0) {
-                        return const Center(
-                          child: Padding(
-                            padding: EdgeInsets.all(16),
-                            child: CircularProgressIndicator(color: Colors.cyan),
+        appBar: AppBar(
+          backgroundColor: const Color(0xFF1A1F3C),
+          title: _isSearching
+              ? TextField(
+                  controller: _searchController,
+                  autofocus: true,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    hintText: 'Поиск...',
+                    border: InputBorder.none,
+                  ),
+                  onChanged: _performSearch,
+                )
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text('DDChat', style: GoogleFonts.orbitron(fontSize: 18)),
+                        if (totalUnread > 0)
+                          Container(
+                            margin: const EdgeInsets.only(left: 8),
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.cyan,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '$totalUnread',
+                              style: const TextStyle(color: Colors.black, fontSize: 10),
+                            ),
                           ),
-                        );
-                      }
-                      final mIdx = _isLoadingMore ? index - 1 : index;
-                      return _buildMessage(displayMessages[mIdx], mIdx);
-                    },
-                  ),
-                ),
-                if (_editingMessageId != null) _buildEditBanner(),
-                _buildInputArea(),
-              ],
-            ),
-
-            // Оверлей предпросмотра камеры для видео-кружочков
-            if (_isVideoRecording &&
-                _cameraController != null &&
-                _cameraController!.value.isInitialized)
-              Positioned(
-                // Вверху экрана — максимально близко к физическому глазку камеры,
-                // чтобы пользователь смотрел в объектив, а не вниз
-                top:   80,
-                right: 16,
-                child: Container(
-                  width: 160, height: 160,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.cyan, width: 3),
-                    boxShadow: [BoxShadow(color: Colors.cyan.withValues(alpha: 0.5), blurRadius: 10)],
-                  ),
-                  child: ClipOval(
-                    child: AspectRatio(aspectRatio: 1, child: CameraPreview(_cameraController!)),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  AppBar _buildAppBar(String displayName) {
-    final isOnline = _storage.isContactOnline(widget.targetUid);
-    final lastSeen = _storage.getContactLastSeen(widget.targetUid);
-    final avatar   = _storage.getContactAvatar(widget.targetUid);
-
-    return AppBar(
-      backgroundColor: const Color(0xFF1A1F3C),
-      titleSpacing: 0,
-      title: _isSearching
-          ? TextField(
-              controller: _searchController,
-              autofocus:  true,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                hintText: 'Search messages...',
-                hintStyle: TextStyle(color: Colors.white54),
-                border: InputBorder.none,
-                contentPadding: EdgeInsets.symmetric(horizontal: 8),
-              ),
-              onChanged: (_) => setState(() {}),
-            )
-          : Row(
-              children: [
-                GestureDetector(
-                  onTap: () => _showContactProfilePhoto(displayName, avatar),
-                  child: Hero(
-                    tag: 'contact_avatar_${widget.targetUid}',
-                    child: CircleAvatar(
-                      radius: 18,
-                      backgroundColor: const Color(0xFF0A0E27),
-                      backgroundImage: (avatar != null && avatar.isNotEmpty)
-                          ? NetworkImage('$SERVER_HTTP_URL/download/$avatar')
-                          : null,
-                      child: (avatar == null || avatar.isEmpty)
-                          ? Text(
-                              displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
-                              style: const TextStyle(color: Colors.cyan, fontSize: 14),
-                            )
-                          : null,
+                      ],
                     ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(displayName, style: GoogleFonts.orbitron(fontSize: 14)),
-                      if (_targetIsTyping)
-                        const Text('typing...', style: TextStyle(fontSize: 10, color: Colors.cyan))
-                      else if (isOnline)
-                        const Text('online', style: TextStyle(fontSize: 10, color: Colors.green))
-                      else if (lastSeen > 0)
+                    Row(
+                      children: [
                         Text(
-                          'last seen ${_formatLastSeen(lastSeen)}',
+                          'ID: ${_myUid ?? '...'}',
                           style: const TextStyle(fontSize: 10, color: Colors.white54),
                         ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-      actions: [
-        IconButton(
-          icon: Icon(_isSearching ? Icons.close : Icons.search),
-          onPressed: _toggleSearch,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildReplyBanner() => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-    color: const Color(0xFF1A1F3C),
-    child: Row(
-      children: [
-        const Icon(Icons.reply, color: Colors.cyan, size: 20),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            _replyToText!,
-            style: const TextStyle(color: Colors.white70),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-        IconButton(
-          icon: const Icon(Icons.close, color: Colors.white54, size: 20),
-          onPressed: _cancelReply,
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(),
-        ),
-      ],
-    ),
-  );
-
-  Widget _buildEditBanner() => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-    color: const Color(0xFF1A1F3C),
-    child: Row(
-      children: [
-        const Icon(Icons.edit, color: Colors.cyan, size: 16),
-        const SizedBox(width: 8),
-        const Expanded(
-          child: Text('Editing message', style: TextStyle(color: Colors.cyan, fontSize: 13)),
-        ),
-        TextButton(
-          onPressed: () => setState(() {
-            _editingMessageId = null;
-            _messageController.clear();
-          }),
-          child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
-        ),
-      ],
-    ),
-  );
-
-  Widget _buildInputArea() {
-    if (_isRecording || _isVideoRecording) {
-      final isVideo = _isVideoRecording;
-      return Container(
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1A1F3C),
-          border: Border(top: BorderSide(color: isVideo ? Colors.cyan : Colors.red, width: 0.5)),
-        ),
-        child: SafeArea(
-          child: Row(
-            children: [
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: (isVideo ? Colors.cyan : Colors.red).withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(25),
-                    border: Border.all(
-                      color: (isVideo ? Colors.cyan : Colors.red).withValues(alpha: 0.3),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 10, height: 10,
-                        decoration: BoxDecoration(
-                          color: isVideo ? Colors.cyan : Colors.red,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Text(
-                        _formatRecordingTime(_recordingDuration),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const Spacer(),
-                      Text(
-                        isVideo ? 'Recording video...' : 'Recording...',
-                        style: TextStyle(
-                          color: isVideo ? Colors.cyanAccent : Colors.redAccent,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              CircleAvatar(
-                backgroundColor: Colors.white10,
-                child: IconButton(
-                  icon: const Icon(Icons.close, color: Colors.red),
-                  onPressed: isVideo
-                      ? () async {
-                          await _cameraController?.stopVideoRecording();
-                          await _cameraController?.dispose();
-                          _cameraController = null;
-                          _recordingTimer?.cancel();
-                          setState(() { _isVideoRecording = false; _recordingDuration = 0; });
-                        }
-                      : _cancelRecording,
-                ),
-              ),
-              const SizedBox(width: 8),
-              CircleAvatar(
-                backgroundColor: const Color(0xFF00D9FF),
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_upward, color: Colors.black),
-                  onPressed: isVideo ? _stopVideoRecordingAndSend : _stopRecordingAndSend,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: const BoxDecoration(
-        color: Color(0xFF1A1F3C),
-        border: Border(top: BorderSide(color: Colors.cyan, width: 0.5)),
-      ),
-      child: SafeArea(
-        child: Row(
-          children: [
-            PopupMenuButton<String>(
-              color: const Color(0xFF1A1F3C),
-              icon: const Icon(Icons.attach_file, color: Colors.cyan),
-              onSelected: (value) {
-                switch (value) {
-                  case 'photo_camera':  _sendPhoto(source: ImageSource.camera);  break;
-                  case 'photo_gallery': _sendPhoto(source: ImageSource.gallery); break;
-                  case 'video':         _sendVideo();                            break;
-                  case 'file':          _sendFile();                             break;
-                }
-              },
-              itemBuilder: (_) => [
-                // ── Медиа (фото) ──────────────────────────────────────────────
-                _popupItem('photo_camera',  Icons.camera_alt,        'Сфотографировать'),
-                _popupItem('photo_gallery', Icons.photo_library,     'Фото из галереи'),
-                // ── Видео ──────────────────────────────────────────────────────
-                _popupItem('video',         Icons.video_library,     'Видео из галереи'),
-                // ── Файлы ─────────────────────────────────────────────────────
-                _popupItem('file',          Icons.insert_drive_file, 'Файл / Документ'),
-              ],
-            ),
-
-            if (_isSendingFile)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    SizedBox(
-                      width: 24, height: 24,
-                      child: CircularProgressIndicator(
-                        value: _uploadProgress,
-                        strokeWidth: 3,
-                        color: Colors.cyan,
-                      ),
-                    ),
-                    Text(
-                      '${(_uploadProgress * 100).toInt()}%',
-                      style: const TextStyle(fontSize: 8, color: Colors.white),
+                        const SizedBox(width: 8),
+                        _buildConnectionIndicator(),
+                      ],
                     ),
                   ],
                 ),
+          actions: [
+            if (_isSearching)
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => setState(() {
+                  _isSearching = false;
+                  _searchController.clear();
+                }),
+              )
+            else ...[
+              IconButton(
+                icon: const Icon(Icons.search),
+                onPressed: () => setState(() => _isSearching = true),
               ),
-
-            Expanded(
-              child: TextField(
-                controller: _messageController,
-                style: const TextStyle(color: Colors.white),
-                maxLines: null,
-                decoration: InputDecoration(
-                  hintText: _editingMessageId != null ? 'Edit message...' : 'Type a message...',
-                  hintStyle: const TextStyle(color: Colors.white38),
-                  border: InputBorder.none,
-                ),
-                onTap: () => Future.delayed(const Duration(milliseconds: 300), _scrollToBottom),
-              ),
-            ),
-
-            ValueListenableBuilder<TextEditingValue>(
-              valueListenable: _messageController,
-              builder: (context, value, child) {
-                if (value.text.trim().isNotEmpty) {
-                  return IconButton(
-                    icon: const Icon(Icons.send, color: Colors.cyan),
-                    onPressed: _sendMessage,
-                  );
-                } else {
-                  return GestureDetector(
-                    onTap: () {
-                      HapticFeedback.lightImpact();
-                      setState(() => _isMicMode = !_isMicMode);
-                    },
-                    onLongPressStart: (_) {
-                      HapticFeedback.heavyImpact();
-                      _isMicMode ? _startRecording() : _startVideoRecording();
-                    },
-                    onLongPressEnd: (_) {
-                      _isMicMode ? _stopRecordingAndSend() : _stopVideoRecordingAndSend();
-                    },
-                    child: Container(
-                      margin: const EdgeInsets.only(left: 4),
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Colors.cyan.withValues(alpha: 0.1),
-                      ),
-                      child: Icon(
-                        _isMicMode ? Icons.mic : Icons.videocam,
-                        color: Colors.cyan,
-                        size: 24,
-                      ),
+              IconButton(
+                icon: const Icon(Icons.settings_outlined, color: Colors.white70),
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => SettingsScreen(
+                      storage: _storage,
+                      cipher:  _cipher,
+                      myUid:   _myUid ?? '',
                     ),
-                  );
-                }
-              },
-            ),
+                  ),
+                ),
+              ),
+              GestureDetector(
+                onTap: _showMyProfileDialog,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12, left: 4),
+                  child: CircleAvatar(
+                    radius: 16,
+                    backgroundColor: Colors.cyan.withValues(alpha: 0.2),
+                    backgroundImage: hasMyAvatar
+                        ? NetworkImage(
+                            'https://deepdrift-backend.onrender.com/download/$avatarUrl')
+                        : null,
+                    child: !hasMyAvatar
+                        ? const Icon(Icons.person, size: 20, color: Colors.cyan)
+                        : null,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
+        body: _isSearching ? _buildSearchResults() : _buildChatList(),
+        floatingActionButton: _isSearching
+            ? null
+            : FloatingActionButton(
+                onPressed: _showAddMenu,
+                backgroundColor: Colors.cyan,
+                child: const Icon(Icons.add, color: Colors.black, size: 28),
+              ),
       ),
     );
   }
 
-  PopupMenuItem<String> _popupItem(String value, IconData icon, String label) =>
-      PopupMenuItem(
-        value: value,
-        child: Row(
-          children: [
-            Icon(icon, color: Colors.cyan, size: 20),
-            const SizedBox(width: 12),
-            Text(label, style: const TextStyle(color: Colors.white)),
-          ],
-        ),
-      );
+  Widget _buildSearchResults() {
+    if (_searchResults.isEmpty) {
+      return const Center(child: Icon(Icons.search_off, size: 64, color: Colors.white12));
+    }
+    return ListView.builder(
+      itemCount: _searchResults.length,
+      itemBuilder: (c, i) {
+        final r    = _searchResults[i];
+        final name = _storage.getContactDisplayName(r['chatWith'] as String);
+        return ListTile(
+          leading: CircleAvatar(
+            backgroundColor: const Color(0xFF1A1F3C),
+            child: Text(
+              name.isNotEmpty ? name[0].toUpperCase() : '?',
+              style: const TextStyle(color: Colors.cyan),
+            ),
+          ),
+          title: Text(name),
+          subtitle: Text(
+            r['text'] as String? ?? '',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12),
+          ),
+          onTap: () {
+            setState(() => _isSearching = false);
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => ChatScreen(
+                  myUid:     _myUid!,
+                  targetUid: r['chatWith'] as String,
+                  cipher:    _cipher,
+                ),
+              ),
+            ).then((_) {
+              if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+            });
+          },
+        );
+      },
+    );
+  }
 }
-// VideoNotePlayer и VideoGalleryPlayer перенесены в lib/widgets/video_players.dart
