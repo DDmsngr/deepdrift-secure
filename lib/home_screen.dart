@@ -285,10 +285,50 @@ class _HomeScreenState extends State<HomeScreen>
     if (senderUid == null || msgId == null) return;
     if (_storage.hasMessage(senderUid, msgId)) return;
     try {
-      final decrypted = await _cipher.decryptText(
-        data['encrypted_text'] as String,
-        fromUid: senderUid,
-      );
+      // Сначала пробуем загрузить ключи из кэша — иначе decryptText вернёт
+      // '[⚠️ No encryption key]' и мы сохраним ошибку в Hive навсегда.
+      if (!_cipher.hasSharedSecret(senderUid)) {
+        await _cipher.tryLoadCachedKeys(senderUid, _storage);
+      }
+
+      final encryptedText = data['encrypted_text'] as String? ?? '';
+      final String decrypted;
+
+      if (_cipher.hasSharedSecret(senderUid)) {
+        // Ключ готов — дешифруем
+        decrypted = await _cipher.decryptText(encryptedText, fromUid: senderUid);
+      } else {
+        // Ключа нет (первый контакт, холодный старт без кэша).
+        // Сохраняем placeholder — ChatScreen при открытии перезапишет
+        // после завершения key exchange через WebSocket.
+        debugPrint('⏳ [HomeScreen] No key for $senderUid — saving as pending');
+        final pendingMsg = {
+          'id':             msgId,
+          'text':           '',           // пустой текст — ChatScreen заменит
+          'isMe':           false,
+          'time':           data['time'] ?? DateTime.now().millisecondsSinceEpoch,
+          'from':           senderUid,
+          'to':             _myUid,
+          'status':         'pending_decrypt',
+          'type':           data['messageType'] ?? 'text',
+          'encrypted_text': encryptedText,  // сохраняем зашифрованное для повторной попытки
+          'signature':      data['signature'],
+          'mediaData':      data['mediaData'],
+          'fileName':       data['fileName'],
+          'fileSize':       data['fileSize'],
+          'signatureStatus': SignatureStatus.unknown.index,
+        };
+        await _storage.saveMessage(senderUid, pendingMsg);
+        if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+        return;
+      }
+
+      // Проверяем что дешифровка не вернула ошибку-строку
+      if (decrypted.startsWith('[⚠️') || decrypted.startsWith('[❌')) {
+        debugPrint('⚠️ [HomeScreen] Decrypt error for $msgId: $decrypted — skipping save');
+        return;
+      }
+
       final msg = {
         'id':       msgId,
         'text':     decrypted,
@@ -298,6 +338,7 @@ class _HomeScreenState extends State<HomeScreen>
         'to':       _myUid,
         'status':   'delivered',
         'type':     data['messageType'] ?? 'text',
+        'mediaData': data['mediaData'],
         'fileName': data['fileName'],
         'fileSize': data['fileSize'],
         // Подпись не верифицируем в тихом режиме — сделает ChatScreen при открытии
@@ -307,7 +348,7 @@ class _HomeScreenState extends State<HomeScreen>
       _socket.sendReadReceipt(senderUid, msgId);
       if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
     } catch (e) {
-      debugPrint('Quiet save error: $e'); // 🟢-3 FIX
+      debugPrint('Quiet save error: $e');
     }
   }
 
