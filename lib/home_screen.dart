@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
@@ -364,6 +366,89 @@ class _HomeScreenState extends State<HomeScreen>
   // Хелперы
   // ──────────────────────────────────────────────────────────────────────────
 
+  /// Открывает markdown-документ (ToS / Privacy) из любого контекста (включая диалоги).
+  void _showLegalDocFromContext(BuildContext ctx, {
+    required String title,
+    required String assetPath,
+  }) {
+    showModalBottomSheet(
+      context: ctx,
+      backgroundColor: const Color(0xFF0A0E27),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.85,
+        maxChildSize: 0.95,
+        minChildSize: 0.4,
+        builder: (_, ctrl) => Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 4),
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24, borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 16, 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.article_outlined,
+                      color: Color(0xFF00D9FF), size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(title,
+                        style: GoogleFonts.orbitron(
+                            color: const Color(0xFF00D9FF), fontSize: 13)),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close,
+                        color: Colors.white38, size: 20),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Colors.white12, height: 1),
+            Expanded(
+              child: FutureBuilder<String>(
+                future: rootBundle.loadString(assetPath),
+                builder: (_, snap) {
+                  if (!snap.hasData) {
+                    return const Center(
+                      child: CircularProgressIndicator(color: Color(0xFF00D9FF)),
+                    );
+                  }
+                  return Markdown(
+                    controller: ctrl,
+                    data: snap.data!,
+                    styleSheet: MarkdownStyleSheet(
+                      p:        const TextStyle(color: Colors.white70, fontSize: 13, height: 1.5),
+                      h1:       TextStyle(color: const Color(0xFF00D9FF), fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    fontFamily: GoogleFonts.orbitron().fontFamily),
+                      h2:       const TextStyle(color: Colors.white, fontSize: 15,
+                                    fontWeight: FontWeight.bold),
+                      strong:   const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      listBullet: const TextStyle(color: Color(0xFF00D9FF)),
+                      tableBody: const TextStyle(color: Colors.white70, fontSize: 12),
+                      tableHead: const TextStyle(color: Colors.white,
+                                    fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// Вычисляет SHA-256 публичных ключей и сохраняет в Hive.
   /// Вызывается один раз при первой инициализации и при импорте ключей.
   /// Settings читает кэш — fingerprint стабилен между APK-обновлениями.
@@ -627,6 +712,7 @@ class _HomeScreenState extends State<HomeScreen>
   Future<String?> _showStep1ChooseUid() async {
     final uidCtrl = TextEditingController();
     String? result;
+    bool tosAccepted = false;
 
     await showDialog(
       context: context,
@@ -636,51 +722,103 @@ class _HomeScreenState extends State<HomeScreen>
           backgroundColor: const Color(0xFF1A1F3C),
           title: Text('ДОБРО ПОЖАЛОВАТЬ',
               style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 15)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Придумай свой ID из 6 цифр.\nПо нему тебя будут находить в DDChat.',
-                style: TextStyle(color: Colors.white70, fontSize: 13),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 20),
-              TextField(
-                controller: uidCtrl,
-                keyboardType: TextInputType.number,
-                maxLength: 6,
-                style: const TextStyle(
-                  color: Colors.white, fontSize: 28,
-                  letterSpacing: 8, fontWeight: FontWeight.bold,
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Придумай свой ID из 6 цифр.\nПо нему тебя будут находить в DDChat.',
+                  style: TextStyle(color: Colors.white70, fontSize: 13),
+                  textAlign: TextAlign.center,
                 ),
-                textAlign: TextAlign.center,
-                decoration: const InputDecoration(
-                  hintText: '000000',
-                  hintStyle: TextStyle(color: Colors.white24),
-                  filled: true, fillColor: Color(0xFF0A0E27),
-                  counterStyle: TextStyle(color: Colors.white38),
-                  border: OutlineInputBorder(
-                    borderSide: BorderSide(color: Color(0xFF00D9FF)),
+                const SizedBox(height: 20),
+                TextField(
+                  controller: uidCtrl,
+                  keyboardType: TextInputType.number,
+                  maxLength: 6,
+                  style: const TextStyle(
+                    color: Colors.white, fontSize: 28,
+                    letterSpacing: 8, fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                  decoration: const InputDecoration(
+                    hintText: '000000',
+                    hintStyle: TextStyle(color: Colors.white24),
+                    filled: true, fillColor: Color(0xFF0A0E27),
+                    counterStyle: TextStyle(color: Colors.white38),
+                    border: OutlineInputBorder(
+                      borderSide: BorderSide(color: Color(0xFF00D9FF)),
+                    ),
                   ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 16),
+                // ── ToS / Privacy чекбокс ─────────────────────────────────
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Checkbox(
+                      value: tosAccepted,
+                      activeColor: const Color(0xFF00D9FF),
+                      checkColor: Colors.black,
+                      onChanged: (v) => setS(() => tosAccepted = v ?? false),
+                    ),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 12),
+                        child: Wrap(
+                          children: [
+                            const Text('Я прочитал и принимаю ',
+                                style: TextStyle(color: Colors.white70, fontSize: 12)),
+                            GestureDetector(
+                              onTap: () => _showLegalDocFromContext(ctx,
+                                  title: 'Условия использования',
+                                  assetPath: 'assets/terms_of_service.md'),
+                              child: const Text('Условия использования',
+                                  style: TextStyle(
+                                      color: Color(0xFF00D9FF),
+                                      fontSize: 12,
+                                      decoration: TextDecoration.underline)),
+                            ),
+                            const Text(' и ',
+                                style: TextStyle(color: Colors.white70, fontSize: 12)),
+                            GestureDetector(
+                              onTap: () => _showLegalDocFromContext(ctx,
+                                  title: 'Политику конфиденциальности',
+                                  assetPath: 'assets/privacy_policy.md'),
+                              child: const Text('Политику конфиденциальности',
+                                  style: TextStyle(
+                                      color: Color(0xFF00D9FF),
+                                      fontSize: 12,
+                                      decoration: TextDecoration.underline)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
           actions: [
             ElevatedButton(
-              onPressed: () {
-                if (uidCtrl.text.length == 6) {
-                  result = uidCtrl.text;
-                  Navigator.pop(ctx);
-                } else {
-                  _showError('ID должен состоять ровно из 6 цифр');
-                }
-              },
+              onPressed: !tosAccepted
+                  ? null
+                  : () {
+                      if (uidCtrl.text.length == 6) {
+                        result = uidCtrl.text;
+                        Navigator.pop(ctx);
+                      } else {
+                        _showError('ID должен состоять ровно из 6 цифр');
+                      }
+                    },
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF00D9FF),
+                backgroundColor:
+                    tosAccepted ? const Color(0xFF00D9FF) : Colors.white12,
                 foregroundColor: Colors.black,
               ),
-              child: const Text('ДАЛЕЕ →', style: TextStyle(fontWeight: FontWeight.bold)),
+              child: const Text('ДАЛЕЕ →',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ],
         ),
@@ -952,6 +1090,7 @@ class _HomeScreenState extends State<HomeScreen>
     bool   obscurePwd = true;
     String? errorText;
     bool   isLoading  = false;
+    bool   tosAccepted = false;
 
     await showDialog(
       context: context,
@@ -1228,6 +1367,57 @@ class _HomeScreenState extends State<HomeScreen>
                       ),
                     ),
 
+                    // ── ToS чекбокс ──────────────────────────────────────────
+                    const SizedBox(height: 8),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Checkbox(
+                          value: tosAccepted,
+                          activeColor: const Color(0xFF00D9FF),
+                          checkColor: Colors.black,
+                          onChanged: isLoading
+                              ? null
+                              : (v) => setS(() => tosAccepted = v ?? false),
+                        ),
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: Wrap(
+                              children: [
+                                const Text('Принимаю ',
+                                    style: TextStyle(
+                                        color: Colors.white54, fontSize: 11)),
+                                GestureDetector(
+                                  onTap: () => _showLegalDocFromContext(dlgCtx,
+                                      title: 'Условия использования',
+                                      assetPath: 'assets/terms_of_service.md'),
+                                  child: const Text('Условия использования',
+                                      style: TextStyle(
+                                          color: Color(0xFF00D9FF),
+                                          fontSize: 11,
+                                          decoration: TextDecoration.underline)),
+                                ),
+                                const Text(' и ',
+                                    style: TextStyle(
+                                        color: Colors.white54, fontSize: 11)),
+                                GestureDetector(
+                                  onTap: () => _showLegalDocFromContext(dlgCtx,
+                                      title: 'Политику конфиденциальности',
+                                      assetPath: 'assets/privacy_policy.md'),
+                                  child: const Text('Политику конф.',
+                                      style: TextStyle(
+                                          color: Color(0xFF00D9FF),
+                                          fontSize: 11,
+                                          decoration: TextDecoration.underline)),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+
                     // ── Ошибка ───────────────────────────────────────────────
                     if (errorText != null) ...[
                       const SizedBox(height: 8),
@@ -1278,15 +1468,15 @@ class _HomeScreenState extends State<HomeScreen>
                   child: const Text('ОТМЕНА',
                       style: TextStyle(color: Colors.white38)),
                 ),
-                // «Авторизовать» — активен только при выбранном файле
+                // «Авторизовать» — активен только при выбранном файле И принятых условиях
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: selectedFileName != null
+                    backgroundColor: (selectedFileName != null && tosAccepted)
                         ? const Color(0xFF00D9FF)
                         : Colors.white12,
                     foregroundColor: Colors.black,
                   ),
-                  onPressed: (selectedFileName != null && !isLoading)
+                  onPressed: (selectedFileName != null && tosAccepted && !isLoading)
                       ? authorize
                       : null,
                   child: const Text('АВТОРИЗОВАТЬ',
