@@ -476,6 +476,52 @@ class SocketService {
   /// Сервер связывает [uid] с [ed25519PubKey] и сохраняет в Redis.
   /// При следующих подключениях сервер отправит auth_challenge — клиент
   /// должен подписать нонс этим же ключом.
+  /// Отправляет групповое сообщение — один раз, зашифрованное симметричным
+  /// ключом группы. Сервер делает fan-out всем участникам.
+  void sendGroupMessage({
+    required String   groupId,
+    required String   encryptedText,
+    required String   signature,
+    required String   msgId,
+    String?  messageType,
+    String?  mediaData,
+    String?  fileName,
+    int?     fileSize,
+    String?  mimeType,
+    String?  replyToId,
+  }) {
+    final payload = <String, dynamic>{
+      'type':           'message',
+      'target_uid':     groupId,
+      'id':             msgId,
+      'encrypted_text': encryptedText,
+      'signature':      signature,
+      'messageType':    messageType ?? 'text',
+      'group_id':       groupId,
+      if (mediaData  != null) 'mediaData':  mediaData,
+      if (fileName   != null) 'fileName':   fileName,
+      if (fileSize   != null) 'fileSize':   fileSize,
+      if (mimeType   != null) 'mimeType':   mimeType,
+      if (replyToId  != null) 'replyToId':  replyToId,
+    };
+    send(payload);
+  }
+
+  /// Запрашивает зашифрованный групповой ключ с сервера.
+  void requestGroupKey(String groupId) {
+    send({'type': 'get_group_key', 'group_id': groupId});
+  }
+
+  /// Отправляет зашифрованные копии группового ключа для каждого участника.
+  /// Вызывается создателем группы после generate + encrypt.
+  void distributeGroupKeys(String groupId, Map<String, String> encryptedKeys) {
+    send({
+      'type':           'distribute_group_keys',
+      'group_id':       groupId,
+      'encrypted_keys': encryptedKeys,  // {uid: encryptedKeyBlob}
+    });
+  }
+
   void registerNewAccount(String uid, String ed25519PubKey) {
     _sendRaw({
       'type':           'register',
