@@ -239,6 +239,38 @@ class SecureCipher {
     return false;
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Групповые ключи (shared symmetric key)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /// Генерирует 32 случайных байта — групповой симметричный ключ.
+  /// Использует Random.secure() — криптографически стойкий PRNG.
+  List<int> generateGroupKey() {
+    final rng = Random.secure();
+    return List<int>.generate(32, (_) => rng.nextInt(256));
+  }
+
+  /// Устанавливает симметричный ключ группы напрямую из байт.
+  /// После вызова encryptText(groupId) / decryptText(groupId) работают штатно.
+  void setGroupKey(String groupId, List<int> keyBytes) {
+    _sharedSecrets[groupId] = SecretKey(keyBytes);
+    debugLog('🔑 [Crypto] Group key set for $groupId');
+  }
+
+  /// Шифрует групповой ключ для конкретного участника.
+  /// Использует его personal shared secret — результат безопасен для передачи через сервер.
+  Future<String> encryptGroupKeyFor(String memberUid, List<int> keyBytes) async {
+    final keyB64 = base64Encode(keyBytes);
+    return encryptText(keyB64, targetUid: memberUid);
+  }
+
+  /// Расшифровывает групповой ключ, полученный от создателя группы.
+  /// [fromUid] — UID создателя (его shared secret использован для шифрования).
+  Future<List<int>> decryptGroupKey(String fromUid, String encryptedB64) async {
+    final keyB64 = await decryptText(encryptedB64, fromUid: fromUid);
+    return base64Decode(keyB64);
+  }
+
   void clearSharedSecret(String targetUid) {
     _sharedSecrets.remove(targetUid);
     _contactPublicKeys.remove(targetUid);
