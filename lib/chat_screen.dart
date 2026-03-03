@@ -176,6 +176,12 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       // Сначала пробуем загрузить ключи из локального Hive-кэша.
       // Это быстро (~10-20ms) и не требует сети.
+      // Для групп: загружаем симметричный ключ группы
+      if (_storage.isGroup(widget.targetUid)) {
+        await _loadGroupKey();
+        return; // Группа не использует key exchange через WebSocket
+      }
+
       final loaded = await widget.cipher.tryLoadCachedKeys(widget.targetUid, _storage);
       if (loaded) {
         debugPrint('✅ [Keys] Loaded from cache for ${widget.targetUid}');
@@ -383,7 +389,8 @@ class _ChatScreenState extends State<ChatScreen> {
           break;
         case 'message':             _handleIncomingMessage(data);  break;
         case 'typing_indicator':    _handleTypingIndicator(data);  break;
-        case 'public_key_response': _handlePublicKeyResponse(data); break;
+        case 'public_key_response':  _handlePublicKeyResponse(data); break;
+        case 'group_key_response':   _handleGroupKeyResponse(data);  break;
         case 'message_read':        _handleMessageRead(data);      break;
         case 'read_receipt':        _handleReadReceipt(data);      break;
         case 'message_deleted':     _handleMessageDeleted(data);   break;
@@ -400,25 +407,98 @@ class _ChatScreenState extends State<ChatScreen> {
   // ── Обработка входящих сообщений ─────────────────────────────────────────
 
   void _handleIncomingMessage(Map<String, dynamic> data) {
-    final senderUid = data['from_uid'];
-    if (senderUid != widget.targetUid) return;
+    final senderUid = data['from_uid'] as String?;
+    final groupId   = data['group_id'] as String?;
+
+    // Для групповых сообщений: group_id должен совпасть с targetUid,
+    // для личных: from_uid должен совпасть.
+    if (groupId != null && groupId.isNotEmpty) {
+      if (groupId != widget.targetUid) return;
+    } else {
+      if (senderUid != widget.targetUid) return;
+    }
+
     final msgId = data['id']?.toString();
     if (msgId == null || _messageIds.contains(msgId)) return;
 
-    // Ключ ещё не готов — буферизуем сообщение.
-    // Это происходит когда офлайн-очередь прилетает до завершения key exchange
-    // (первый контакт, cold start после удаления кэша и т.д.)
-    if (!widget.cipher.hasSharedSecret(widget.targetUid)) {
+    // Decrypt using sender's shared secret (regardless of group or personal)
+    final decryptUid = senderUid ?? widget.targetUid;
+
+    if (!widget.cipher.hasSharedSecret(decryptUid)) {
       debugPrint('⏳ [Keys] Buffering message $msgId — key not ready yet');
       if (!_pendingMessages.any((m) => m['id']?.toString() == msgId)) {
         _pendingMessages.add(data);
       }
-      // Убеждаемся что запрос ключа отправлен
-      _socket.requestPublicKey(widget.targetUid);
+      _socket.requestPublicKey(decryptUid);
       return;
     }
 
     _decryptAndShowMessage(data);
+  }
+
+  /// Загружает симметричный ключ группы.
+  /// Порядок: 1) уже в памяти  2) кэш Hive  3) запрос к серверу
+  Future<void> _loadGroupKey() async {
+    final groupId = widget.targetUid;
+    if (widget.cipher.hasSharedSecret(groupId)) return;
+
+    // Пробуем из кэша Hive
+    final cached = _storage.getGroupKeyBlob(groupId);
+    if (cached != null && cached['blob']!.isNotEmpty) {
+      final creatorUid = cached['creator']!;
+      try {
+        // Убедимся что есть personal ключ с создателем
+        if (!widget.cipher.hasSharedSecret(creatorUid)) {
+          await widget.cipher.tryLoadCachedKeys(creatorUid, _storage);
+        }
+        if (widget.cipher.hasSharedSecret(creatorUid)) {
+          final keyBytes = await widget.cipher.decryptGroupKey(creatorUid, cached['blob']!);
+          widget.cipher.setGroupKey(groupId, keyBytes);
+          debugPrint('✅ [GroupKey] Loaded from Hive cache for $groupId');
+          if (mounted) setState(() => _keysExchanged = true);
+          _flushPendingMessages();
+          return;
+        }
+      } catch (e) {
+        debugPrint('⚠️ [GroupKey] Cache decrypt failed: $e');
+      }
+    }
+
+    // Запрашиваем с сервера
+    debugPrint('🔑 [GroupKey] Requesting from server for $groupId');
+    _socket.requestGroupKey(groupId);
+  }
+
+  /// Обрабатывает ответ сервера с зашифрованным групповым ключом.
+  Future<void> _handleGroupKeyResponse(Map<String, dynamic> data) async {
+    final groupId    = data['group_id'] as String?;
+    final encKey     = data['encrypted_key'] as String?;
+    final creatorUid = data['creator_uid'] as String?;
+    if (groupId == null || encKey == null || creatorUid == null) return;
+    if (groupId != widget.targetUid) return;
+
+    try {
+      // Загружаем personal ключ с создателем если нет
+      if (!widget.cipher.hasSharedSecret(creatorUid)) {
+        await widget.cipher.tryLoadCachedKeys(creatorUid, _storage);
+        if (!widget.cipher.hasSharedSecret(creatorUid)) {
+          _socket.requestPublicKey(creatorUid);
+          await Future.delayed(const Duration(milliseconds: 800));
+        }
+      }
+      final keyBytes = await widget.cipher.decryptGroupKey(creatorUid, encKey);
+      widget.cipher.setGroupKey(groupId, keyBytes);
+
+      // Кэшируем в Hive
+      await _storage.saveGroupKeyBlob(groupId, encKey, creatorUid);
+
+      debugPrint('✅ [GroupKey] Received and set for $groupId');
+      if (mounted) setState(() => _keysExchanged = true);
+      _flushPendingMessages();
+    } catch (e) {
+      debugPrint('❌ [GroupKey] Failed to decrypt group key: $e');
+      if (mounted) _showError('Не удалось загрузить ключ группы');
+    }
   }
 
   /// Сбрасывает буфер: дешифрует все сообщения, накопленные до получения ключа.
@@ -471,7 +551,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// Дешифрует одно входящее сообщение и добавляет его в UI + Hive.
   void _decryptAndShowMessage(Map<String, dynamic> data) {
-    final senderUid = data['from_uid'];
+    final senderUid = (data['from_uid'] as String?) ?? widget.targetUid;
+    final groupId   = data['group_id'] as String?;
     final msgId     = data['id']?.toString();
     if (msgId == null || _messageIds.contains(msgId)) return;
 
@@ -480,12 +561,20 @@ class _ChatScreenState extends State<ChatScreen> {
     final msgTyp    = (data['messageType'] as String? ?? 'text').toMsgType();
     final rawTime   = data['time'];
 
-    widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
+    // For groups: decrypt with sender's key. For personal: use targetUid.
+    final decryptFromUid = (groupId != null && groupId.isNotEmpty) ? senderUid : widget.targetUid;
+    // chatUid: where to save the message (group id or personal uid)
+    final chatUid = (groupId != null && groupId.isNotEmpty) ? groupId : widget.targetUid;
+
+    // For groups: decrypt with group key (stored under groupId).
+    // For personal: decrypt with sender's shared secret.
+    final useUid = (groupId != null && groupId.isNotEmpty) ? groupId : decryptFromUid;
+    widget.cipher.decryptText(encrypted, fromUid: useUid).then((decrypted) async {
       // ── Обнаружение несоответствия ключей ─────────────────────────────────
       if (decrypted.contains('Authentication failed') || decrypted.contains('Wrong key')) {
-        widget.cipher.clearSharedSecret(widget.targetUid);
-        await _storage.clearCachedKeys(widget.targetUid);
-        _socket.requestPublicKey(widget.targetUid);
+        widget.cipher.clearSharedSecret(decryptFromUid);
+        await _storage.clearCachedKeys(decryptFromUid);
+        _socket.requestPublicKey(decryptFromUid);
         final errorMsg = {
           'id': msgId,
           'text': '⚠️ Key mismatch detected. Please ask sender to resend the message.',
@@ -511,7 +600,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final isValid = await widget.cipher.verifySignature(
           decrypted,
           signature,
-          widget.targetUid,
+          senderUid,
         );
         sigStatus = isValid ? SignatureStatus.valid : SignatureStatus.invalid;
         if (!isValid) {
@@ -726,7 +815,6 @@ class _ChatScreenState extends State<ChatScreen> {
     String? fileName,
     int?    fileSize,
     String? mimeType,
-    // 🟡-1 Forward: опциональный источник пересылки
     String? forwardedFrom,
   }) async {
     if (_editingMessageId != null) { await _saveEditedMessage(); return; }
@@ -734,6 +822,19 @@ class _ChatScreenState extends State<ChatScreen> {
     final messageText = text ?? _messageController.text.trim();
     if (messageText.isEmpty && mediaData == null) return;
 
+    final isGroup = _storage.isGroup(widget.targetUid);
+
+    if (isGroup) {
+      await _sendGroupMessage(
+        text: messageText, messageType: messageType,
+        mediaData: mediaData, filePath: filePath,
+        fileName: fileName, fileSize: fileSize, mimeType: mimeType,
+        forwardedFrom: forwardedFrom,
+      );
+      return;
+    }
+
+    // ── Личный чат ────────────────────────────────────────────────────────────
     if (!widget.cipher.hasSharedSecret(widget.targetUid)) {
       final loaded = await widget.cipher.tryLoadCachedKeys(widget.targetUid, _storage);
       if (!loaded) {
@@ -772,7 +873,6 @@ class _ChatScreenState extends State<ChatScreen> {
         'mimeType':        mimeType,
         'edited':          false,
         'forwardedFrom':   forwardedFrom,
-        // Собственные сообщения не нуждаются в верификации подписи
         'signatureStatus': SignatureStatus.valid.index,
       };
 
@@ -813,6 +913,101 @@ class _ChatScreenState extends State<ChatScreen> {
         });
       }
       _showError('Failed to send: $e');
+    }
+  }
+
+  /// Групповая отправка: шифруем ОДИН РАЗ симметричным ключом группы.
+  /// Сервер делает fan-out всем участникам.
+  Future<void> _sendGroupMessage({
+    String? text,
+    String  messageType  = 'text',
+    String? mediaData,
+    String? filePath,
+    String? fileName,
+    int?    fileSize,
+    String? mimeType,
+    String? forwardedFrom,
+  }) async {
+    final messageText = text ?? '';
+    if (messageText.isEmpty && mediaData == null) return;
+
+    // Проверяем что групповой ключ установлен
+    if (!widget.cipher.hasSharedSecret(widget.targetUid)) {
+      _showError('Ключ группы не загружен. Попробуй закрыть и открыть чат.');
+      return;
+    }
+
+    final msgId     = _uuid.v4();
+    final now       = DateTime.now().millisecondsSinceEpoch;
+    final replyId   = _replyToId;
+    final replyText = _replyToText;
+
+    try {
+      // Шифруем ОДИН РАЗ групповым ключом
+      final encrypted = await widget.cipher.encryptText(
+          messageText, targetUid: widget.targetUid);
+      final signature = await widget.cipher.signMessage(messageText);
+
+      final myMsg = {
+        'id':              msgId,
+        'text':            messageText,
+        'isMe':            true,
+        'time':            now,
+        'from':            widget.myUid,
+        'to':              widget.targetUid,
+        'status':          'pending',
+        'replyTo':         replyText,
+        'replyToId':       replyId,
+        'type':            messageType,
+        'filePath':        filePath,
+        'fileName':        fileName,
+        'fileSize':        fileSize,
+        'mimeType':        mimeType,
+        'edited':          false,
+        'forwardedFrom':   forwardedFrom,
+        'group_id':        widget.targetUid,
+        'signatureStatus': SignatureStatus.valid.index,
+      };
+
+      if (mounted) {
+        setState(() {
+          _messages.add(myMsg);
+          _messageIds.add(msgId);
+          _messageController.clear();
+          _replyToText = null;
+          _replyToId   = null;
+        });
+        _scrollToBottom();
+      }
+
+      _socket.sendGroupMessage(
+        groupId:      widget.targetUid,
+        encryptedText: encrypted,
+        signature:    signature,
+        msgId:        msgId,
+        messageType:  messageType,
+        mediaData:    mediaData,
+        fileName:     fileName,
+        fileSize:     fileSize,
+        mimeType:     mimeType,
+        replyToId:    replyId,
+      );
+
+      if (mounted) {
+        setState(() {
+          final idx = _messages.indexWhere((m) => m['id'] == msgId);
+          if (idx != -1) _messages[idx]['status'] = 'sent';
+        });
+      }
+      await _storage.saveMessage(widget.targetUid, myMsg);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          final idx = _messages.indexWhere((m) => m['id'] == msgId);
+          if (idx != -1) _messages[idx]['status'] = 'failed';
+        });
+      }
+      _showError('Ошибка отправки: $e');
     }
   }
 
@@ -1794,7 +1989,11 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final displayName     = _storage.getContactDisplayName(widget.targetUid);
+    final isGroup      = _storage.isGroup(widget.targetUid);
+    final displayName  = isGroup
+        ? _storage.getGroupName(widget.targetUid)
+        : _storage.getContactDisplayName(widget.targetUid);
+    final groupMembers = isGroup ? _storage.getGroupMembers(widget.targetUid) : <String>[];
     final displayMessages = _filteredMessages;
 
     return PopScope(
@@ -1808,7 +2007,7 @@ class _ChatScreenState extends State<ChatScreen> {
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF0A0E27),
-        appBar: _buildAppBar(displayName),
+        appBar: _buildAppBar(displayName, isGroup: isGroup, groupMembers: groupMembers),
         body: Stack(
           children: [
             Column(
@@ -1864,7 +2063,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  AppBar _buildAppBar(String displayName) {
+  AppBar _buildAppBar(String displayName, {bool isGroup = false, List<String> groupMembers = const []}) {
     final isOnline = _storage.isContactOnline(widget.targetUid);
     final lastSeen = _storage.getContactLastSeen(widget.targetUid);
     final avatar   = _storage.getContactAvatar(widget.targetUid);
@@ -1893,16 +2092,18 @@ class _ChatScreenState extends State<ChatScreen> {
                     tag: 'contact_avatar_${widget.targetUid}',
                     child: CircleAvatar(
                       radius: 18,
-                      backgroundColor: const Color(0xFF0A0E27),
-                      backgroundImage: (avatar != null && avatar.isNotEmpty)
+                      backgroundColor: isGroup ? const Color(0xFF0A2A3A) : const Color(0xFF0A0E27),
+                      backgroundImage: (!isGroup && avatar != null && avatar.isNotEmpty)
                           ? NetworkImage('$SERVER_HTTP_URL/download/$avatar')
                           : null,
-                      child: (avatar == null || avatar.isEmpty)
-                          ? Text(
-                              displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
-                              style: const TextStyle(color: Colors.cyan, fontSize: 14),
-                            )
-                          : null,
+                      child: isGroup
+                          ? const Icon(Icons.group, color: Color(0xFF00D9FF), size: 18)
+                          : (avatar == null || avatar.isEmpty)
+                              ? Text(
+                                  displayName.isNotEmpty ? displayName[0].toUpperCase() : '?',
+                                  style: const TextStyle(color: Colors.cyan, fontSize: 14),
+                                )
+                              : null,
                     ),
                   ),
                 ),
@@ -1912,7 +2113,12 @@ class _ChatScreenState extends State<ChatScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(displayName, style: GoogleFonts.orbitron(fontSize: 14)),
-                      if (_targetIsTyping)
+                      if (isGroup)
+                        Text(
+                          '\${groupMembers.length} участников',
+                          style: const TextStyle(fontSize: 10, color: Colors.white54),
+                        )
+                      else if (_targetIsTyping)
                         const Text('typing...', style: TextStyle(fontSize: 10, color: Colors.cyan))
                       else if (isOnline)
                         const Text('online', style: TextStyle(fontSize: 10, color: Colors.green))
