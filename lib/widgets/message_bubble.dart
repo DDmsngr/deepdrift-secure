@@ -235,6 +235,8 @@ class MessageBubble extends StatelessWidget {
 
   Widget _buildImage() {
     final localPath = msg['filePath'] as String?;
+
+    // Файл есть локально — показываем
     if (localPath != null && File(localPath).existsSync()) {
       return GestureDetector(
         onTap: () => onOpenImage(localPath),
@@ -249,7 +251,20 @@ class MessageBubble extends StatelessWidget {
         ),
       );
     }
-    if (msg['mediaData'] != null) return _retryButton(Icons.image_rounded, 'Изображение');
+
+    // Есть ссылка на сервер — показываем кнопку ручной загрузки.
+    // Загрузку инициирует ТОЛЬКО пользователь нажатием. ChatScreen
+    // защищает от повторных 404 через _failedDownloads (Hive-персистентный).
+    if (msg['mediaData'] != null) {
+      final mediaStr = msg['mediaData'] as String;
+      // Если файл помечен как недоступный — показываем заглушку "истёк"
+      if (mediaStr.startsWith('FILE_ID:') &&
+          (msg['fileExpired'] == true)) {
+        return _expiredPlaceholder();
+      }
+      return _retryButton(Icons.image_rounded, 'Изображение');
+    }
+
     return _imagePlaceholder();
   }
 
@@ -264,6 +279,24 @@ class MessageBubble extends StatelessWidget {
         if (msg['fileName'] != null)
           Text(msg['fileName'] as String,
               style: const TextStyle(color: Colors.white38, fontSize: 11)),
+      ],
+    ),
+  );
+
+  /// Показывается когда файл получил 404 — он удалён с сервера (истёк срок).
+  Widget _expiredPlaceholder() => Container(
+    width: 200, height: 80,
+    decoration: BoxDecoration(
+      color: Colors.black26, borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: Colors.white12),
+    ),
+    child: const Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(Icons.timer_off_outlined, color: Colors.white24, size: 28),
+        SizedBox(height: 4),
+        Text('Файл удалён с сервера',
+            style: TextStyle(color: Colors.white24, fontSize: 11)),
       ],
     ),
   );
