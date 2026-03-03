@@ -1138,6 +1138,206 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   // ──────────────────────────────────────────────────────────────────────────
+  // Создание группы
+  // ──────────────────────────────────────────────────────────────────────────
+
+  void _createGroupDialog() {
+    final nameCtrl    = TextEditingController();
+    final memberCtrl  = TextEditingController();
+    final contacts    = _storage.getContacts()
+        .where((c) => !_storage.isGroup(c))
+        .toList();
+    final selected    = <String>{};
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1F3C),
+          title: Text('НОВАЯ ГРУППА',
+              style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 14)),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Название группы
+                  TextField(
+                    controller: nameCtrl,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Название группы',
+                      labelStyle: TextStyle(color: Colors.white54),
+                      filled: true, fillColor: Color(0xFF0A0E27),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // Список контактов для выбора
+                  if (contacts.isNotEmpty) ...[
+                    const Text('Выбери участников:',
+                        style: TextStyle(color: Colors.white70, fontSize: 12)),
+                    const SizedBox(height: 8),
+                    ...contacts.map((uid) {
+                      final name = _storage.getContactDisplayName(uid);
+                      return CheckboxListTile(
+                        dense: true,
+                        value: selected.contains(uid),
+                        onChanged: (v) => setS(() {
+                          v! ? selected.add(uid) : selected.remove(uid);
+                        }),
+                        title: Text(name,
+                            style: const TextStyle(color: Colors.white, fontSize: 13)),
+                        subtitle: Text(uid,
+                            style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                        activeColor: const Color(0xFF00D9FF),
+                        checkColor: Colors.black,
+                        controlAffinity: ListTileControlAffinity.leading,
+                      );
+                    }),
+                    const Divider(color: Colors.white12),
+                  ],
+                  // Ручной ввод UID
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: memberCtrl,
+                          keyboardType: TextInputType.number,
+                          maxLength: 6,
+                          style: const TextStyle(color: Colors.white, fontSize: 18,
+                              letterSpacing: 4),
+                          textAlign: TextAlign.center,
+                          decoration: const InputDecoration(
+                            hintText: 'Добавить по ID',
+                            hintStyle: TextStyle(color: Colors.white24, fontSize: 13,
+                                letterSpacing: 0),
+                            filled: true, fillColor: Color(0xFF0A0E27),
+                            counterStyle: TextStyle(color: Colors.white24),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.add_circle, color: Color(0xFF00D9FF)),
+                        onPressed: () {
+                          final uid = memberCtrl.text.trim();
+                          if (uid.length == 6 && uid != _myUid) {
+                            setS(() => selected.add(uid));
+                            memberCtrl.clear();
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  if (selected.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      children: selected.map((uid) => Chip(
+                        label: Text(_storage.getContactDisplayName(uid),
+                            style: const TextStyle(color: Colors.white, fontSize: 11)),
+                        backgroundColor: const Color(0xFF0A2A3A),
+                        deleteIconColor: Colors.white38,
+                        onDeleted: () => setS(() => selected.remove(uid)),
+                      )).toList(),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38)),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final name = nameCtrl.text.trim();
+                if (name.isEmpty) { _showError('Введи название группы'); return; }
+                if (selected.isEmpty) { _showError('Выбери хотя бы одного участника'); return; }
+
+                Navigator.pop(ctx);
+                await _createGroup(name, selected.toList());
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00D9FF),
+                foregroundColor: Colors.black,
+              ),
+              child: const Text('СОЗДАТЬ', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _createGroup(String name, List<String> memberUids) async {
+    if (_myUid == null) return;
+
+    final groupId = 'g_${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}';
+    final members = [_myUid!, ...memberUids];
+
+    // ── Генерируем симметричный ключ группы ──────────────────────────────────
+    final groupKeyBytes = _cipher.generateGroupKey();
+    // Устанавливаем ключ себе сразу (создатель тоже участник)
+    _cipher.setGroupKey(groupId, groupKeyBytes);
+
+    // Шифруем ключ для каждого участника его personal shared secret
+    final encryptedKeys = <String, String>{};
+    for (final uid in memberUids) {
+      if (!_cipher.hasSharedSecret(uid)) {
+        // Пробуем загрузить из кэша
+        await _cipher.tryLoadCachedKeys(uid, _storage);
+      }
+      if (_cipher.hasSharedSecret(uid)) {
+        try {
+          encryptedKeys[uid] = await _cipher.encryptGroupKeyFor(uid, groupKeyBytes);
+        } catch (e) {
+          debugPrint('⚠️ Could not encrypt group key for $uid: $e');
+        }
+      }
+    }
+
+    // Сохраняем группу локально
+    await _storage.saveGroup(
+      groupId:    groupId,
+      groupName:  name,
+      members:    members,
+      creatorUid: _myUid!,
+    );
+
+    // Регистрируем группу на сервере + раздаём ключи
+    _socket.send({
+      'type':    'create_group',
+      'group_id': groupId,
+      'members': members,
+    });
+    if (encryptedKeys.isNotEmpty) {
+      _socket.distributeGroupKeys(groupId, encryptedKeys);
+    }
+
+    if (mounted) {
+      setState(() => _chats = _storage.getContactsSortedByActivity());
+      // Открываем чат группы
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatScreen(
+            myUid:     _myUid!,
+            targetUid: groupId,
+            cipher:    _cipher,
+          ),
+        ),
+      ).then((_) {
+        if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+      });
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
   // FAB меню
   // ──────────────────────────────────────────────────────────────────────────
 
@@ -1168,7 +1368,7 @@ class _HomeScreenState extends State<HomeScreen>
             ListTile(
               leading: const Icon(Icons.group_add, color: Colors.cyan),
               title: const Text('Создать группу', style: TextStyle(color: Colors.white)),
-              onTap: () { Navigator.pop(ctx); _showError('Группы в разработке'); },
+              onTap: () { Navigator.pop(ctx); _createGroupDialog(); },
             ),
             ListTile(
               leading: const Icon(Icons.qr_code_scanner, color: Colors.cyan),
@@ -1458,22 +1658,28 @@ class _HomeScreenState extends State<HomeScreen>
         final isMuted  = _storage.isContactMuted(uid);
         final hasAvatar = avatar != null && avatar.isNotEmpty && avatar != 'null';
 
+        final isGroup = _storage.isGroup(uid);
+
         return ListTile(
           leading: Stack(
             children: [
               CircleAvatar(
-                backgroundColor: const Color(0xFF1A1F3C),
-                backgroundImage: hasAvatar
+                backgroundColor: isGroup
+                    ? const Color(0xFF0A2A3A)
+                    : const Color(0xFF1A1F3C),
+                backgroundImage: (!isGroup && hasAvatar)
                     ? NetworkImage('https://deepdrift-backend.onrender.com/download/$avatar')
                     : null,
-                child: !hasAvatar
-                    ? Text(
-                        name.isNotEmpty ? name[0].toUpperCase() : '?',
-                        style: const TextStyle(color: Colors.cyan),
-                      )
-                    : null,
+                child: isGroup
+                    ? const Icon(Icons.group, color: Color(0xFF00D9FF), size: 22)
+                    : (!hasAvatar
+                        ? Text(
+                            name.isNotEmpty ? name[0].toUpperCase() : '?',
+                            style: const TextStyle(color: Colors.cyan),
+                          )
+                        : null),
               ),
-              if (isOnline)
+              if (!isGroup && isOnline)
                 Positioned(
                   right: 0, bottom: 0,
                   child: Container(
