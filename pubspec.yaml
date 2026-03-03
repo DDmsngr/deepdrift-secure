@@ -57,6 +57,9 @@ dependencies:
   file_picker: ^8.0.0
   path_provider: ^2.1.0
 
+  # Запрет скриншотов (FLAG_SECURE на Android, iOS secure)
+  flutter_windowmanager: ^0.2.0
+
   # Шэринг (сохранить файл / отправить на почту)
   share_plus: ^10.0.0
 
