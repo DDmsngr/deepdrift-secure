@@ -43,6 +43,9 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   static const String SERVER_HTTP_URL = 'https://deepdrift-backend.onrender.com';
+  /// true  → FLAG_SECURE выключен (можно скриншотить для отладки).
+  /// false → FLAG_SECURE включён в боевой версии.
+  static const bool _debugMode = false;
 
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _messageIds = {};
@@ -574,7 +577,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _socket.requestPublicKey(decryptFromUid);
         final errorMsg = {
           'id': msgId,
-          'text': '⚠️ Key mismatch detected. Please ask sender to resend the message.',
+          'text': '⚠️ Несоответствие ключей — попроси собеседника переотправить.',
           'isMe': false,
           'time': rawTime ?? DateTime.now().millisecondsSinceEpoch,
           'status': 'error',
@@ -909,7 +912,7 @@ class _ChatScreenState extends State<ChatScreen> {
           if (idx != -1) _messages[idx]['status'] = 'failed';
         });
       }
-      _showError('Failed to send: $e');
+      _showError('Ошибка отправки: $e');
     }
   }
 
@@ -1036,7 +1039,7 @@ class _ChatScreenState extends State<ChatScreen> {
         await Future.delayed(const Duration(milliseconds: 300));
       }
     } catch (e) {
-      _showError('Failed to send photos: $e');
+      _showError('Ошибка отправки фото: $e');
     } finally {
       if (mounted) setState(() { _isSendingFile = false; _uploadProgress = 0.0; });
     }
@@ -1104,7 +1107,7 @@ class _ChatScreenState extends State<ChatScreen> {
         fileName: fileName, fileSize: fileSize, mimeType: mimeType,
       );
     } catch (e) {
-      _showError('Failed to send file: $e');
+      _showError('Ошибка отправки файла: $e');
     } finally {
       if (mounted) setState(() { _isSendingFile = false; _uploadProgress = 0.0; });
     }
@@ -1242,7 +1245,7 @@ class _ChatScreenState extends State<ChatScreen> {
       if (localPath != null && File(localPath).existsSync()) {
         await _audioPlayer.play(DeviceFileSource(localPath));
       } else {
-        _showError('Voice file not available locally');
+        _showError('Голосовое сообщение недоступно на этом устройстве');
         return;
       }
       setState(() => _playingMessageId = msgId);
@@ -1644,7 +1647,7 @@ class _ChatScreenState extends State<ChatScreen> {
   static const _secureChannel = MethodChannel('com.deepdrift.secure/window');
 
   void _enableSecureScreen() async {
-    if (!Platform.isAndroid) return;
+    if (!Platform.isAndroid || _debugMode) return;
     try {
       await _secureChannel.invokeMethod('addSecureFlag');
     } catch (e) {
@@ -1653,7 +1656,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _disableSecureScreen() async {
-    if (!Platform.isAndroid) return;
+    if (!Platform.isAndroid || _debugMode) return;
     try {
       await _secureChannel.invokeMethod('clearSecureFlag');
     } catch (e) {
@@ -1998,7 +2001,7 @@ class _ChatScreenState extends State<ChatScreen> {
       onPopInvokedWithResult: (didPop, result) {
         if (!didPop && _isSendingFile) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Please wait for upload to finish...')),
+            const SnackBar(content: Text('Подожди, пока файл загружается...')),
           );
         }
       },
