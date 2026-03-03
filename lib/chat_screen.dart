@@ -563,9 +563,6 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // For groups: decrypt with sender's key. For personal: use targetUid.
     final decryptFromUid = (groupId != null && groupId.isNotEmpty) ? senderUid : widget.targetUid;
-    // chatUid: where to save the message (group id or personal uid)
-    final chatUid = (groupId != null && groupId.isNotEmpty) ? groupId : widget.targetUid;
-
     // For groups: decrypt with group key (stored under groupId).
     // For personal: decrypt with sender's shared secret.
     final useUid = (groupId != null && groupId.isNotEmpty) ? groupId : decryptFromUid;
