@@ -3,6 +3,8 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter_markdown/flutter_markdown.dart';
 
 import 'storage_service.dart';
 import 'crypto_service.dart';
@@ -416,6 +418,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: 'X25519 + Ed25519 + ChaCha20',
           ),
 
+          const SizedBox(height: 8),
+
+          // ── Правовая информация ───────────────────────────────────────────
+          _sectionHeader('⚖️  ПРАВОВАЯ ИНФОРМАЦИЯ'),
+
+          ListTile(
+            leading: const Icon(Icons.privacy_tip_outlined, color: Colors.cyan),
+            title: const Text('Политика конфиденциальности',
+                style: TextStyle(color: Colors.white)),
+            trailing: const Icon(Icons.chevron_right, color: Colors.white24),
+            onTap: () => _showLegalDoc(
+              context,
+              title: 'Политика конфиденциальности',
+              assetPath: 'assets/privacy_policy.md',
+            ),
+          ),
+
+          ListTile(
+            leading: const Icon(Icons.gavel_outlined, color: Colors.cyan),
+            title: const Text('Условия использования',
+                style: TextStyle(color: Colors.white)),
+            trailing: const Icon(Icons.chevron_right, color: Colors.white24),
+            onTap: () => _showLegalDoc(
+              context,
+              title: 'Условия использования',
+              assetPath: 'assets/terms_of_service.md',
+            ),
+          ),
+
           const SizedBox(height: 32),
         ],
       ),
@@ -495,6 +526,117 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
             const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Открывает markdown-документ (ToS / Privacy Policy) в DraggableBottomSheet.
+  void _showLegalDoc(BuildContext context, {
+    required String title,
+    required String assetPath,
+  }) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF0A0E27),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.85,
+        maxChildSize: 0.95,
+        minChildSize: 0.4,
+        builder: (_, ctrl) => Column(
+          children: [
+            // Drag handle
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 4),
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // Title bar
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 16, 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.article_outlined,
+                      color: Color(0xFF00D9FF), size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: GoogleFonts.orbitron(
+                        color: const Color(0xFF00D9FF),
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close,
+                        color: Colors.white38, size: 20),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Colors.white12, height: 1),
+            // Markdown content
+            Expanded(
+              child: FutureBuilder<String>(
+                future: rootBundle.loadString(assetPath),
+                builder: (ctx, snap) {
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return const Center(
+                      child: CircularProgressIndicator(color: Color(0xFF00D9FF)),
+                    );
+                  }
+                  if (snap.hasError || !snap.hasData) {
+                    return const Center(
+                      child: Text('Не удалось загрузить документ',
+                          style: TextStyle(color: Colors.white54)),
+                    );
+                  }
+                  return Markdown(
+                    controller: ctrl,
+                    data: snap.data!,
+                    styleSheet: MarkdownStyleSheet(
+                      p:           const TextStyle(color: Colors.white70, fontSize: 13, height: 1.5),
+                      h1:          TextStyle(color: const Color(0xFF00D9FF),
+                                       fontSize: 18, fontWeight: FontWeight.bold,
+                                       fontFamily: GoogleFonts.orbitron().fontFamily),
+                      h2:          const TextStyle(color: Colors.white,
+                                       fontSize: 15, fontWeight: FontWeight.bold),
+                      h3:          const TextStyle(color: Colors.white70,
+                                       fontSize: 13, fontWeight: FontWeight.bold),
+                      strong:      const TextStyle(color: Colors.white,
+                                       fontWeight: FontWeight.bold),
+                      em:          const TextStyle(color: Colors.white54,
+                                       fontStyle: FontStyle.italic),
+                      code:        const TextStyle(color: Color(0xFF00D9FF),
+                                       backgroundColor: Color(0xFF0A1A2A),
+                                       fontFamily: 'monospace', fontSize: 12),
+                      blockquote:  const TextStyle(color: Colors.white54, fontSize: 12),
+                      tableBody:   const TextStyle(color: Colors.white70, fontSize: 12),
+                      tableHead:   const TextStyle(color: Colors.white,
+                                       fontWeight: FontWeight.bold, fontSize: 12),
+                      listBullet:  const TextStyle(color: Color(0xFF00D9FF)),
+                      horizontalRuleDecoration: const BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(color: Color(0xFF1A2A4A), width: 1),
+                        ),
+                      ),
+                    ),
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+                  );
+                },
+              ),
+            ),
           ],
         ),
       ),
