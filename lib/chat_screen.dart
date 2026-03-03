@@ -13,6 +13,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:dio/dio.dart';
 import 'package:gal/gal.dart';
+import 'package:flutter_windowmanager/flutter_windowmanager.dart';
 import 'package:camera/camera.dart';
 
 import 'crypto_service.dart';
@@ -114,6 +115,8 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    // Запрещаем скриншоты и запись экрана в чате — приватность E2EE
+    _enableSecureScreen();
     _messageController.addListener(_onTextChanged);
     _scrollController.addListener(_onScroll);
 
@@ -147,6 +150,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    // Снимаем запрет скриншотов при выходе из чата
+    _disableSecureScreen();
     _socketSub?.cancel();
     _typingTimer?.cancel();
     _keyExchangeTimeout?.cancel();
@@ -197,6 +202,13 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _loadRecentHistory() async {
     try {
+      // Загружаем список file_id с постоянными ошибками из Hive,
+      // чтобы не делать повторные запросы после перезапуска приложения.
+      final failedRaw = _storage.getSetting('failed_downloads_${widget.targetUid}');
+      if (failedRaw is List) {
+        _failedDownloads.addAll(failedRaw.cast<String>());
+      }
+
       final history = _storage.getRecentMessages(widget.targetUid, limit: MESSAGES_PER_PAGE);
       if (mounted) {
         setState(() {
@@ -287,9 +299,12 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       if (response.statusCode == 404) {
         // Файл удалён с сервера (истёк срок, или был на ephemeral диске).
-        // Помечаем как недоступный — больше не ретраим.
+        // Помечаем как недоступный в памяти И в Hive — больше не ретраим
+        // даже после перезапуска приложения.
         _failedDownloads.add(fileId);
-        debugPrint('📭 File permanently unavailable: $fileId');
+        final key = 'failed_downloads_${widget.targetUid}';
+        await _storage.saveSetting(key, _failedDownloads.toList());
+        debugPrint('📭 File permanently unavailable (saved to Hive): $fileId');
         return null;
       }
       if (response.statusCode != 200) return null;
@@ -421,7 +436,10 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
 
-    // 2. Перешифровываем pending_decrypt сообщения из истории
+    // 2. Перешифровываем pending_decrypt сообщения из истории.
+    // ВАЖНО: обновляем только текст. Медиафайлы НЕ скачиваем автоматически —
+    // пользователь нажмёт кнопку повтора сам. Иначе каждый reconnect
+    // триггерит лавину HTTP-запросов к /download.
     final pendingInHistory = _messages
         .where((m) => m['status'] == 'pending_decrypt' && m['encrypted_text'] != null)
         .toList();
@@ -429,9 +447,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (pendingInHistory.isNotEmpty) {
       debugPrint('🔓 [Keys] Re-decrypting ${pendingInHistory.length} pending messages from history');
       for (final msg in pendingInHistory) {
-        final encrypted = msg['encrypted_text'] as String;
+        final encrypted = msg['encrypted_text'] as String?;
         final msgId     = msg['id']?.toString();
-        if (msgId == null) continue;
+        if (msgId == null || encrypted == null) continue;
 
         widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
           if (decrypted.startsWith('[⚠️') || decrypted.startsWith('[❌')) return;
@@ -442,11 +460,11 @@ class _ChatScreenState extends State<ChatScreen> {
           final updated = Map<String, dynamic>.from(_messages[idx])
             ..['text']   = decrypted
             ..['status'] = 'delivered';
-          // Убираем encrypted_text — больше не нужен
-          updated.remove('encrypted_text');
+          updated.remove('encrypted_text'); // больше не нужен
 
           setState(() => _messages[idx] = updated);
           await _storage.saveMessage(widget.targetUid, updated);
+          // Медиафайл покажет _retryButton — пользователь скачает сам
         });
       }
     }
@@ -507,7 +525,12 @@ class _ChatScreenState extends State<ChatScreen> {
       if (msgTyp != MsgType.text && data['mediaData'] != null) {
         final String mediaStr = data['mediaData'] as String;
         if (mediaStr.startsWith('FILE_ID:')) {
-          localPath = await _downloadFileEncrypted(mediaStr.substring(8), data['fileName'] as String?);
+          final fileId = mediaStr.substring(8);
+          // Не скачиваем если файл уже помечен как недоступный в этой сессии
+          // или в Hive (персистентный кэш 404).
+          if (!_failedDownloads.contains(fileId)) {
+            localPath = await _downloadFileEncrypted(fileId, data['fileName'] as String?);
+          }
         } else {
           localPath = await _saveMediaToDiskBase64(
             base64Data: mediaStr,
@@ -718,7 +741,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _socket.requestPublicKey(widget.targetUid);
         await Future.delayed(const Duration(milliseconds: 800));
         if (!widget.cipher.hasSharedSecret(widget.targetUid)) {
-          _showError('Cannot encrypt: recipient offline');
+          _showError('Нет ключа шифрования — собеседник не в сети');
           return;
         }
       }
@@ -1169,28 +1192,84 @@ class _ChatScreenState extends State<ChatScreen> {
     // Определяем оригинальный источник пересылки
     final originalFrom = message['forwardedFrom'] as String? ??
         (message['isMe'] == true ? widget.myUid : widget.targetUid);
-
-    final displayName = _storage.getContactDisplayName(originalFrom);
+    final displayName  = _storage.getContactDisplayName(originalFrom);
     final forwardLabel = displayName.isNotEmpty ? displayName : originalFrom;
 
-    if (toUid == widget.targetUid) {
-      // Пересылка в тот же чат — SharedSecret уже есть
+    // msg['text'] — уже расшифрованный текст в памяти.
+    // _sendMessage заново зашифрует его публичным ключом получателя.
+    // Нельзя пересылать зашифрованный блоб напрямую — получатель не откроет
+    // его своим ключом (ECDH-секрет уникален для каждой пары).
+    final plainText  = message['text'] as String? ?? '';
+    final msgType    = message['type'] as String? ?? 'text';
+    final localPath  = message['filePath'] as String?;
+    final fileName   = message['fileName'] as String?;
+    final fileSize   = message['fileSize'] as int?;
+    final mimeType   = message['mimeType'] as String?;
+
+    // Убеждаемся что ключ получателя доступен
+    if (!widget.cipher.hasSharedSecret(toUid)) {
+      final loaded = await widget.cipher.tryLoadCachedKeys(toUid, _storage);
+      if (!loaded) {
+        _showError('Нет ключа для $forwardLabel — откройте чат с ним сначала');
+        return;
+      }
+    }
+
+    if (msgType != 'text' && localPath != null && File(localPath).existsSync()) {
+      // ── Медиа: перешифровываем и загружаем заново ──────────────────────
+      // FILE_ID нельзя переиспользовать — файл зашифрован старым shared secret.
+      if (mounted) setState(() => _isSendingFile = true);
+      try {
+        final fileId = await _uploadFileEncryptedForUid(File(localPath), toUid);
+        if (fileId == null) { _showError('Ошибка загрузки файла'); return; }
+        await _sendMessage(
+          messageType:   msgType,
+          mediaData:     'FILE_ID:$fileId',
+          filePath:      localPath,
+          fileName:      fileName,
+          fileSize:      fileSize,
+          mimeType:      mimeType,
+          forwardedFrom: forwardLabel,
+        );
+      } finally {
+        if (mounted) setState(() => _isSendingFile = false);
+      }
+    } else {
+      // ── Текст: _sendMessage зашифрует plainText ключом toUid ───────────
       await _sendMessage(
-        text:          message['text'] as String? ?? '',
-        messageType:   message['type'] as String? ?? 'text',
-        mediaData:     null, // медиа-файлы при пересылке не дублируем на сервере
-        filePath:      message['filePath'] as String?,
-        fileName:      message['fileName'] as String?,
-        fileSize:      message['fileSize'] as int?,
-        mimeType:      message['mimeType'] as String?,
+        text:          plainText,
+        messageType:   msgType,
         forwardedFrom: forwardLabel,
       );
-    } else {
-      // Пересылка в другой чат — нужна отдельная навигация или сервис
-      // TODO: открыть ChatScreen с toUid и передать сообщение через аргументы
-      // Пока показываем ошибку с подсказкой
-      _showError('Open a chat with $forwardLabel first, then forward from there.');
     }
+    if (toUid != widget.targetUid) {
+      _showSuccess('Переслано в чат $forwardLabel');
+    }
+  }
+
+  /// Шифрует файл для конкретного получателя и загружает на сервер.
+  /// Используется при пересылке медиа — нельзя переиспользовать FILE_ID
+  /// т.к. шифрование E2EE привязано к паре отправитель-получатель.
+  Future<String?> _uploadFileEncryptedForUid(File file, String targetUid) async {
+    try {
+      final bytes          = await file.readAsBytes();
+      final encryptedBytes = await widget.cipher.encryptFileBytes(bytes, targetUid: targetUid);
+      final tempDir  = await getTemporaryDirectory();
+      final tempFile = File('${tempDir.path}/${file.path.split('/').last}.enc');
+      await tempFile.writeAsBytes(encryptedBytes);
+      final formData = FormData.fromMap({
+        'file': await MultipartFile.fromFile(tempFile.path, filename: tempFile.path.split('/').last),
+      });
+      final options  = Options(headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!});
+      final response = await _dio.post('$SERVER_HTTP_URL/upload', data: formData, options: options);
+      if (await tempFile.exists()) await tempFile.delete();
+      if (response.statusCode == 200 && response.data['status'] == 'success') {
+        return response.data['file_id'] as String?;
+      }
+    } catch (e) {
+      debugPrint('Forward upload error: $e');
+    }
+    return null;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1370,6 +1449,24 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _enableSecureScreen() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    try {
+      await FlutterWindowManager.addFlags(FlutterWindowManager.FLAG_SECURE);
+    } catch (e) {
+      debugPrint('Screenshot protection enable error: $e');
+    }
+  }
+
+  void _disableSecureScreen() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    try {
+      await FlutterWindowManager.clearFlags(FlutterWindowManager.FLAG_SECURE);
+    } catch (e) {
+      debugPrint('Screenshot protection disable error: $e');
+    }
+  }
+
   /// Открывает фото профиля контакта на весь экран с Hero-анимацией и pinch-to-zoom.
   void _showContactProfilePhoto(String displayName, String? avatarId) {
     final hasPhoto = avatarId != null && avatarId.isNotEmpty;
@@ -1461,13 +1558,13 @@ class _ChatScreenState extends State<ChatScreen> {
                     await Gal.putImage(newPath);
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('✅ Saved to: $newPath')),
+                        SnackBar(content: Text('✅ Сохранено: $newPath')),
                       );
                     }
                   } catch (e) {
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                        SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red),
                       );
                     }
                   }
@@ -1489,7 +1586,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _openFile(String? filePath, String fileName) async {
     if (filePath == null || !File(filePath).existsSync()) {
-      _showError('File not available on this device');
+      _showError('Файл недоступен на этом устройстве');
       return;
     }
     try {
@@ -1500,14 +1597,14 @@ class _ChatScreenState extends State<ChatScreen> {
         await File(filePath).copy(newPath);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: const Text('File saved to Downloads/DDchat'),
-            action: SnackBarAction(label: 'OK', onPressed: () {}),
+            content: const Text('Файл сохранён в Downloads/DDchat'),
+            action: SnackBarAction(label: 'ОК', onPressed: () {}),
           ));
         }
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Saved at: $filePath')),
+            SnackBar(content: Text('Сохранено: $filePath')),
           );
         }
       }
@@ -1515,7 +1612,7 @@ class _ChatScreenState extends State<ChatScreen> {
       debugPrint('Save error: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Saved internally at: $filePath')),
+          SnackBar(content: Text('Сохранено в: $filePath')),
         );
       }
     }
@@ -1622,24 +1719,24 @@ class _ChatScreenState extends State<ChatScreen> {
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: const Text('Delete message?', style: TextStyle(color: Colors.white)),
+        title: const Text('Удалить сообщение?', style: TextStyle(color: Colors.white)),
         content: Text(
           deleteForEveryone
-              ? 'This message will be deleted for everyone'
-              : 'This message will only be deleted for you',
+              ? 'Сообщение будет удалено у всех'
+              : 'Сообщение будет удалено только у тебя',
           style: const TextStyle(color: Colors.white70),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('CANCEL'),
+            child: const Text('ОТМЕНА'),
           ),
           TextButton(
             onPressed: () {
               Navigator.pop(context);
               _deleteMessage(messageId, deleteForEveryone: deleteForEveryone);
             },
-            child: const Text('DELETE', style: TextStyle(color: Colors.red)),
+            child: const Text('УДАЛИТЬ', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
@@ -1652,7 +1749,7 @@ class _ChatScreenState extends State<ChatScreen> {
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1F3C),
-        title: const Text('React', style: TextStyle(color: Colors.white)),
+        title: const Text('Реакция', style: TextStyle(color: Colors.white)),
         content: Wrap(
           spacing: 10,
           children: reactions.map((emoji) => GestureDetector(
