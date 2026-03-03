@@ -800,12 +800,16 @@ class _HomeScreenState extends State<HomeScreen>
     bool savedConfirmed = false;
 
     // Формируем JSON файл восстановления
+    // Читаем соль ИЗ ХРАНИЛИЩА — она нужна при восстановлении на другом устройстве.
+    // Без соли расшифровать ключи невозможно.
+    final backupSalt = _storage.getSetting('user_salt') ?? '';
     final backupJson = jsonEncode({
       'app':        'DDChat',
-      'version':    '1.0',
+      'version':    '1.1',
       'uid':        uid,
+      'salt':       backupSalt,
       'created_at': DateTime.now().toIso8601String(),
-      'note':       'Keep this file secret. You need your password to restore.',
+      'note':       'Держи этот файл в тайне. Для восстановления нужен файл + пароль.',
       'x25519_encrypted':  encryptedKeys['x25519'],
       'ed25519_encrypted': encryptedKeys['ed25519'],
     });
@@ -932,102 +936,399 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
-  /// Диалог импорта ключей — для восстановления на новом устройстве
-  /// или при ошибке аутентификации.
+  /// Пошаговый мастер восстановления аккаунта.
+  ///
+  /// Этапы:
+  ///   1. Выбор файла → показываем имя файла, НЕ запускаем импорт
+  ///   2. Ввод пароля → пароль не стирается при выборе другого файла
+  ///   3. Тап «Авторизовать» → пробуем расшифровать
+  ///      • Неверный пароль → ошибка на том же экране, пароль остаётся
+  ///      • Верный → диалог подтверждения ID (особенно важен при смене аккаунта)
+  ///   4. Только после подтверждения → записываем ключи в хранилище
   Future<void> _showImportKeysDialog() async {
-    final pwdCtrl = TextEditingController();
+    String? selectedFilePath;
+    String? selectedFileName;
+    final pwdCtrl     = TextEditingController();
+    bool   obscurePwd = true;
+    String? errorText;
+    bool   isLoading  = false;
 
     await showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (c) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1F3C),
-        title: Text('ВОССТАНОВИТЬ АККАУНТ',
-            style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 14)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'Выбери файл восстановления (ddchat_backup_XXXXXX.json) '
-              'и введи пароль, которым он был зашифрован.',
-              style: TextStyle(color: Colors.white70, fontSize: 12),
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () async {
-                  final result = await FilePicker.platform.pickFiles(
-                    type: FileType.custom,
-                    allowedExtensions: ['json'],
-                  );
-                  if (result != null && result.files.single.path != null) {
-                    Navigator.pop(c);
-                    await _importKeyFile(result.files.single.path!, pwdCtrl.text);
-                  }
-                },
-                icon: const Icon(Icons.folder_open, color: Color(0xFF00D9FF)),
-                label: const Text('Выбрать файл',
-                    style: TextStyle(color: Color(0xFF00D9FF))),
-                style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: Color(0xFF00D9FF))),
+      builder: (dlgCtx) => StatefulBuilder(
+        builder: (dlgCtx, setS) {
+
+          // ── Шаг 1: выбрать файл ────────────────────────────────────────────
+          Future<void> pickFile() async {
+            final result = await FilePicker.platform.pickFiles(
+              type: FileType.custom,
+              allowedExtensions: ['json'],
+            );
+            if (result != null && result.files.single.path != null) {
+              setS(() {
+                selectedFilePath = result.files.single.path;
+                selectedFileName = result.files.single.name;
+                errorText = null;   // сбрасываем ошибку при смене файла
+              });
+            }
+          }
+
+          // ── Шаг 2: «Сменить аккаунт» — полный сброс выбора ───────────────
+          void resetSelection() {
+            setS(() {
+              selectedFilePath = null;
+              selectedFileName = null;
+              pwdCtrl.clear();
+              errorText = null;
+            });
+          }
+
+          // ── Шаг 3: «Авторизовать» — расшифровка + проверка ID ─────────────
+          Future<void> authorize() async {
+            if (selectedFilePath == null) {
+              setS(() => errorText = 'Выбери файл восстановления');
+              return;
+            }
+            if (pwdCtrl.text.isEmpty) {
+              setS(() => errorText = 'Введи пароль');
+              return;
+            }
+
+            setS(() { isLoading = true; errorText = null; });
+
+            try {
+              final jsonStr = await File(selectedFilePath!).readAsString();
+              final data    = jsonDecode(jsonStr) as Map<String, dynamic>;
+
+              final importUid = data['uid'] as String?;
+              final x25519    = data['x25519_encrypted'] as String?;
+              final ed25519   = data['ed25519_encrypted'] as String?;
+
+              if (importUid == null || x25519 == null || ed25519 == null) {
+                setS(() {
+                  errorText = 'Неверный формат файла — возможно файл повреждён';
+                  isLoading = false;
+                });
+                return;
+              }
+
+              // Для дешифровки используем соль из файла (если есть) или из хранилища.
+              // Это важно: соль из старого хранилища не подходит для ключей другого устройства.
+              final fileSalt = data['salt'] as String?;
+              final salt     = fileSalt
+                  ?? _storage.getSetting('user_salt')
+                  ?? SecureCipher.generateSalt();
+
+              // Пробуем расшифровать — если пароль неверный, бросит исключение
+              await _cipher.init(pwdCtrl.text, salt,
+                  encryptedX25519Key: x25519, encryptedEd25519Key: ed25519);
+
+              // ── Пароль верный: проверяем, не меняется ли ID ───────────────
+              setS(() => isLoading = false);
+
+              final currentUid = _myUid;
+              final isSameId   = currentUid == importUid;
+
+              // Закрываем диалог перед показом confirmation
+              Navigator.of(dlgCtx).pop();
+
+              // ── Диалог подтверждения ──────────────────────────────────────
+              if (!mounted) return;
+              final confirmed = await showDialog<bool>(
+                context: context,
+                barrierDismissible: false,
+                builder: (cCtx) => AlertDialog(
+                  backgroundColor: const Color(0xFF1A1F3C),
+                  title: Text(
+                    isSameId ? 'ПОДТВЕРДИ ВОССТАНОВЛЕНИЕ' : '⚠️ СМЕНА АККАУНТА',
+                    style: GoogleFonts.orbitron(
+                      color: isSameId ? const Color(0xFF00D9FF) : Colors.orange,
+                      fontSize: 13,
+                    ),
+                  ),
+                  content: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (!isSameId) ...[
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.orange.withValues(alpha: 0.4)),
+                          ),
+                          child: const Text(
+                            '⚠️ В файле найден другой ID. Текущие ключи будут заменены.',
+                            style: TextStyle(color: Colors.orange, fontSize: 12),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      _idRow('ID в файле', importUid,
+                          color: const Color(0xFF00D9FF)),
+                      if (currentUid != null && !isSameId)
+                        _idRow('Текущий ID', currentUid,
+                            color: Colors.white38),
+                    ],
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(cCtx, false),
+                      child: const Text('ОТМЕНА',
+                          style: TextStyle(color: Colors.white38)),
+                    ),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor:
+                            isSameId ? const Color(0xFF00D9FF) : Colors.orange,
+                        foregroundColor: Colors.black,
+                      ),
+                      onPressed: () => Navigator.pop(cCtx, true),
+                      child: Text(
+                        isSameId ? 'ВОССТАНОВИТЬ' : 'СМЕНИТЬ АККАУНТ',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+
+              if (confirmed != true || !mounted) return;
+
+              // ── Подтверждено: записываем всё ──────────────────────────────
+              await _idService.saveUID(importUid);
+              await _storage.saveSetting('user_password',        pwdCtrl.text);
+              await _storage.saveSetting('user_salt',            salt);
+              await _storage.saveSetting('encrypted_x25519_key', x25519);
+              await _storage.saveSetting('encrypted_ed25519_key', ed25519);
+              await _cacheKeyFingerprint();
+
+              if (mounted) {
+                setState(() => _myUid = importUid);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('✅ Аккаунт $importUid восстановлен'),
+                    backgroundColor: const Color(0xFF1A4A2E),
+                    duration: const Duration(seconds: 3),
+                  ),
+                );
+                await _autoConnect();
+              }
+
+            } catch (e) {
+              // Неверный пароль или поврежденный файл — НЕ закрываем диалог
+              setS(() {
+                errorText = 'Неверный пароль или файл повреждён';
+                isLoading = false;
+              });
+            }
+          }
+
+          // ── UI ─────────────────────────────────────────────────────────────
+          return PopScope(
+            canPop: !isLoading,
+            child: AlertDialog(
+              backgroundColor: const Color(0xFF1A1F3C),
+              title: Text('ВОССТАНОВИТЬ АККАУНТ',
+                  style: GoogleFonts.orbitron(
+                      color: const Color(0xFF00D9FF), fontSize: 13)),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Выбери файл ddchat_backup_XXXXXX.json и введи пароль.',
+                      style: TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // ── Файл ─────────────────────────────────────────────────
+                    if (selectedFileName == null)
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: isLoading ? null : pickFile,
+                          icon: const Icon(Icons.folder_open,
+                              color: Color(0xFF00D9FF)),
+                          label: const Text('Выбрать файл',
+                              style: TextStyle(color: Color(0xFF00D9FF))),
+                          style: OutlinedButton.styleFrom(
+                              side: const BorderSide(
+                                  color: Color(0xFF00D9FF))),
+                        ),
+                      )
+                    else
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0A2A1A),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: Colors.green.withValues(alpha: 0.4)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.check_circle,
+                                color: Colors.green, size: 16),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                selectedFileName!,
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 12),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            // «Сменить файл» — сброс без выхода из диалога
+                            TextButton(
+                              onPressed: isLoading ? null : resetSelection,
+                              style: TextButton.styleFrom(
+                                  minimumSize: Size.zero,
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8)),
+                              child: const Text('Сменить',
+                                  style: TextStyle(
+                                      color: Colors.orange, fontSize: 11)),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                    const SizedBox(height: 12),
+
+                    // ── Пароль ───────────────────────────────────────────────
+                    TextField(
+                      controller: pwdCtrl,
+                      obscureText: obscurePwd,
+                      enabled: !isLoading,
+                      style: const TextStyle(color: Colors.white),
+                      onChanged: (_) {
+                        if (errorText != null) setS(() => errorText = null);
+                      },
+                      decoration: InputDecoration(
+                        labelText: 'Пароль',
+                        labelStyle:
+                            const TextStyle(color: Colors.white54),
+                        filled: true,
+                        fillColor: const Color(0xFF0A0E27),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            obscurePwd
+                                ? Icons.visibility_off
+                                : Icons.visibility,
+                            color: Colors.white38, size: 20,
+                          ),
+                          onPressed: () =>
+                              setS(() => obscurePwd = !obscurePwd),
+                        ),
+                      ),
+                    ),
+
+                    // ── Ошибка ───────────────────────────────────────────────
+                    if (errorText != null) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.red.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                              color: Colors.red.withValues(alpha: 0.4)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.error_outline,
+                                color: Colors.red, size: 16),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                errorText!,
+                                style: const TextStyle(
+                                    color: Colors.red, fontSize: 12),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+
+                    if (isLoading) ...[
+                      const SizedBox(height: 12),
+                      const Center(
+                        child: CircularProgressIndicator(
+                            color: Color(0xFF00D9FF)),
+                      ),
+                    ],
+                  ],
+                ),
               ),
+              actions: [
+                // «Отмена» = полный сброс + закрытие (не просто pop)
+                TextButton(
+                  onPressed: isLoading
+                      ? null
+                      : () {
+                          pwdCtrl.clear();
+                          Navigator.of(dlgCtx).pop();
+                        },
+                  child: const Text('ОТМЕНА',
+                      style: TextStyle(color: Colors.white38)),
+                ),
+                // «Авторизовать» — активен только при выбранном файле
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: selectedFileName != null
+                        ? const Color(0xFF00D9FF)
+                        : Colors.white12,
+                    foregroundColor: Colors.black,
+                  ),
+                  onPressed: (selectedFileName != null && !isLoading)
+                      ? authorize
+                      : null,
+                  child: const Text('АВТОРИЗОВАТЬ',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: pwdCtrl,
-              obscureText: true,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Пароль',
-                labelStyle: TextStyle(color: Colors.white54),
-                filled: true, fillColor: Color(0xFF0A0E27),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(c),
-            child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38)),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
 
-  Future<void> _importKeyFile(String filePath, String password) async {
-    try {
-      final jsonStr = await File(filePath).readAsString();
-      final data    = jsonDecode(jsonStr) as Map<String, dynamic>;
-
-      final uid       = data['uid'] as String?;
-      final x25519    = data['x25519_encrypted'] as String?;
-      final ed25519   = data['ed25519_encrypted'] as String?;
-      final salt      = _storage.getSetting('user_salt') ?? SecureCipher.generateSalt();
-
-      if (uid == null || x25519 == null || ed25519 == null) {
-        _showError('Неверный формат файла восстановления');
-        return;
-      }
-
-      await _cipher.init(password, salt,
-          encryptedX25519Key: x25519, encryptedEd25519Key: ed25519);
-
-      await _idService.saveUID(uid);
-      await _storage.saveSetting('user_password', password);
-      await _storage.saveSetting('user_salt', salt);
-      await _storage.saveSetting('encrypted_x25519_key', x25519);
-      await _storage.saveSetting('encrypted_ed25519_key', ed25519);
-
-      if (mounted) {
-        setState(() => _myUid = uid);
-        _showError('✅ Ключи восстановлены. Подключаемся...');
-        await _autoConnect();
-      }
-    } catch (e) {
-      _showError('Ошибка импорта: неверный пароль или файл повреждён');
-    }
+  /// Вспомогательный виджет: строка с ID для диалога подтверждения.
+  Widget _idRow(String label, String uid, {Color color = Colors.white}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Text('$label: ',
+              style: const TextStyle(color: Colors.white54, fontSize: 12)),
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: color.withValues(alpha: 0.4)),
+            ),
+            child: Text(
+              uid,
+              style: TextStyle(
+                  color: color,
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                  letterSpacing: 3),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   // _showPasswordSetupDialog() заменён на _showOnboarding()
