@@ -188,9 +188,17 @@ class _HomeScreenState extends State<HomeScreen>
       );
 
       if (savedX25519Key == null || savedEd25519Key == null) {
+        // Первый запуск или миграция — экспортируем и сохраняем ключи
         final exportedKeys = await _cipher.exportBothKeys(savedPassword);
         await _storage.saveSetting('encrypted_x25519_key', exportedKeys['x25519']!);
         await _storage.saveSetting('encrypted_ed25519_key', exportedKeys['ed25519']!);
+        // Кэшируем fingerprint для стабильного отображения в настройках
+        await _cacheKeyFingerprint();
+      } else {
+        // Ключи уже были — просто обновляем кэш fingerprint (если ещё нет)
+        if (_storage.getSetting('cached_key_fingerprint') == null) {
+          await _cacheKeyFingerprint();
+        }
       }
 
       _socket.init(_cipher);
@@ -355,6 +363,20 @@ class _HomeScreenState extends State<HomeScreen>
   // ──────────────────────────────────────────────────────────────────────────
   // Хелперы
   // ──────────────────────────────────────────────────────────────────────────
+
+  /// Вычисляет SHA-256 публичных ключей и сохраняет в Hive.
+  /// Вызывается один раз при первой инициализации и при импорте ключей.
+  /// Settings читает кэш — fingerprint стабилен между APK-обновлениями.
+  Future<void> _cacheKeyFingerprint() async {
+    try {
+      final x25519B64  = await _cipher.getMyPublicKey();
+      final ed25519B64 = await _cipher.getMySigningKey();
+      await _storage.saveSetting('cached_key_fingerprint', '$x25519B64:$ed25519B64');
+      debugPrint('✅ Key fingerprint cached');
+    } catch (e) {
+      debugPrint('⚠️ Could not cache key fingerprint: $e');
+    }
+  }
 
   // ──────────────────────────────────────────────────────────────────────────
   // QR-сканер: считывает UID контакта и сразу открывает с ним чат
@@ -591,6 +613,7 @@ class _HomeScreenState extends State<HomeScreen>
     await _storage.saveSetting('user_salt', salt);
     await _storage.saveSetting('encrypted_x25519_key', keys['x25519']!);
     await _storage.saveSetting('encrypted_ed25519_key', keys['ed25519']!);
+    await _cacheKeyFingerprint();
     if (mounted) setState(() => _myUid = uid);
 
     // Шаг 3: критический экран бэкапа
