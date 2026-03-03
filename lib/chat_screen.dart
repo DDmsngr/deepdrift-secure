@@ -45,7 +45,7 @@ class _ChatScreenState extends State<ChatScreen> {
   static const String SERVER_HTTP_URL = 'https://deepdrift-backend.onrender.com';
   /// true  → FLAG_SECURE выключен (можно скриншотить для отладки).
   /// false → FLAG_SECURE включён в боевой версии.
-  static const bool _debugMode = false;
+  static const bool _debugMode = true; // TODO: set false before release
 
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _messageIds = {};
@@ -533,15 +533,23 @@ class _ChatScreenState extends State<ChatScreen> {
         final msgId     = msg['id']?.toString();
         if (msgId == null || encrypted == null) continue;
 
-        widget.cipher.decryptText(encrypted, fromUid: widget.targetUid).then((decrypted) async {
+        final fromUid    = msg['from'] as String? ?? widget.targetUid;
+        final isGroupMsg = fromUid != widget.targetUid && _storage.isGroup(widget.targetUid);
+        final decryptUid = isGroupMsg ? widget.targetUid : fromUid;
+
+        widget.cipher.decryptText(encrypted, fromUid: decryptUid).then((decrypted) async {
           if (decrypted.startsWith('[⚠️') || decrypted.startsWith('[❌')) return;
+          // Пустая строка = ключи не совпали, показываем явную ошибку
+          final finalText = decrypted.isEmpty
+              ? '🔐 Сообщение зашифровано другим ключом'
+              : decrypted;
 
           final idx = _messages.indexWhere((m) => m['id']?.toString() == msgId);
           if (idx == -1 || !mounted) return;
 
           final updated = Map<String, dynamic>.from(_messages[idx])
-            ..['text']   = decrypted
-            ..['status'] = 'delivered';
+            ..['text']   = finalText
+            ..['status'] = decrypted.isEmpty ? 'error' : 'delivered';
           updated.remove('encrypted_text'); // больше не нужен
 
           setState(() => _messages[idx] = updated);
@@ -570,6 +578,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // For personal: decrypt with sender's shared secret.
     final useUid = (groupId != null && groupId.isNotEmpty) ? groupId : decryptFromUid;
     widget.cipher.decryptText(encrypted, fromUid: useUid).then((decrypted) async {
+      if (decrypted.isEmpty) { if (mounted) setState(() { _messages.add({'id':msgId,'text':'🔐 Ключи изменились — переотправь','isMe':false,'time':rawTime??DateTime.now().millisecondsSinceEpoch,'status':'error','type':'text','signatureStatus':SignatureStatus.invalid.index}); _messageIds.add(msgId); }); _socket.requestPublicKey(decryptFromUid); return; }
       // ── Обнаружение несоответствия ключей ─────────────────────────────────
       if (decrypted.contains('Authentication failed') || decrypted.contains('Wrong key')) {
         widget.cipher.clearSharedSecret(decryptFromUid);
@@ -660,7 +669,26 @@ class _ChatScreenState extends State<ChatScreen> {
         _sendReadReceipt(msgId);
       }
     }).catchError((Object e) {
-      debugPrint('Decrypt error: $e');
+      debugPrint('Decrypt error for msg $msgId: $e');
+      // Показываем пустой пузырь с ошибкой вместо тихого проглатывания
+      final senderUid2 = (data['from_uid'] as String?) ?? widget.targetUid;
+      final errMsg = {
+        'id':     msgId,
+        'text':   '🔐 Не удалось расшифровать',
+        'isMe':   false,
+        'time':   data['time'] ?? DateTime.now().millisecondsSinceEpoch,
+        'from':   senderUid2,
+        'status': 'error',
+        'type':   'text',
+        'signatureStatus': SignatureStatus.invalid.index,
+      };
+      if (mounted) {
+        setState(() {
+          _messages.add(errMsg);
+          _messageIds.add(msgId);
+        });
+        _scrollToBottom();
+      }
     });
   }
 
@@ -2115,7 +2143,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       Text(displayName, style: GoogleFonts.orbitron(fontSize: 14)),
                       if (isGroup)
                         Text(
-                          '\${groupMembers.length} участников',
+                          '${groupMembers.length} участников',
                           style: const TextStyle(fontSize: 10, color: Colors.white54),
                         )
                       else if (_targetIsTyping)
