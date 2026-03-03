@@ -250,6 +250,7 @@ class _HomeScreenState extends State<HomeScreen>
           if (mounted) setState(() {});
         }
         if (type == 'message') _handleIncomingMessageQuietly(data);
+        if (type == 'group_invited') _handleGroupInvited(data);
         if (type == 'message' || type == 'status_update' ||
             type == 'message_deleted' || type == 'user_status') {
           setState(() => _chats = _storage.getContactsSortedByActivity());
@@ -366,6 +367,104 @@ class _HomeScreenState extends State<HomeScreen>
   // ──────────────────────────────────────────────────────────────────────────
 
   /// Открывает markdown-документ (ToS / Privacy) из любого контекста (включая диалоги).
+  Future<void> _handleGroupInvited(Map<String, dynamic> data) async {
+    final groupId    = data['group_id']   as String?;
+    final groupName  = data['group_name'] as String? ?? data['group_id'] as String? ?? '';
+    final creatorUid = data['creator']    as String? ?? '';
+    final members    = (data['members']   as List?)?.map((e) => e.toString()).toList() ?? [];
+    if (groupId == null || groupId.isEmpty) return;
+    if (_storage.getGroupMembers(groupId).isNotEmpty) return;
+    await _storage.saveGroup(
+      groupId:    groupId,
+      groupName:  groupName,
+      members:    members,
+      creatorUid: creatorUid,
+    );
+    if (mounted) {
+      setState(() => _chats = _storage.getContactsSortedByActivity());
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Тебя добавили в группу «$groupName»'),
+        backgroundColor: const Color(0xFF1A1F3C),
+        action: SnackBarAction(
+          label: 'ОТКРЫТЬ',
+          textColor: const Color(0xFF00D9FF),
+          onPressed: () {
+            if (_myUid == null) return;
+            Navigator.push(context, MaterialPageRoute(
+              builder: (_) => ChatScreen(myUid: _myUid!, targetUid: groupId, cipher: _cipher),
+            )).then((_) {
+              if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+            });
+          },
+        ),
+        duration: const Duration(seconds: 6),
+      ));
+    }
+  }
+
+  void _showSecurityCode(String uid, String contactName) async {
+    final code = await _cipher.getSecurityCode(uid);
+    if (!mounted) return;
+    if (code == 'NOT_ESTABLISHED') {
+      _showError('Ключ не установлен — сначала открой чат с $contactName');
+      return;
+    }
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1F3C),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(width: 36, height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
+              Row(children: [
+                const Icon(Icons.verified_user, color: Color(0xFF00D9FF)),
+                const SizedBox(width: 10),
+                Text('Отпечаток сессии',
+                    style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 14)),
+              ]),
+              const SizedBox(height: 12),
+              const Text('Сравни этот код с кодом собеседника голосом или лично.\nЕсли коды совпадают — соединение защищено.',
+                style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.5),
+                textAlign: TextAlign.center),
+              const SizedBox(height: 20),
+              Container(
+                width: double.infinity, padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0A0E27), borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF00D9FF).withValues(alpha: 0.4))),
+                child: Text(code, style: const TextStyle(color: Color(0xFF00D9FF),
+                    fontFamily: 'monospace', fontSize: 20,
+                    fontWeight: FontWeight.bold, letterSpacing: 2),
+                    textAlign: TextAlign.center)),
+              const SizedBox(height: 10),
+              Text('С кем: $contactName ($uid)',
+                  style: const TextStyle(color: Colors.white38, fontSize: 11)),
+              const SizedBox(height: 16),
+              SizedBox(width: double.infinity, child: OutlinedButton.icon(
+                icon: const Icon(Icons.copy, color: Color(0xFF00D9FF), size: 18),
+                label: const Text('Скопировать код',
+                    style: TextStyle(color: Color(0xFF00D9FF))),
+                style: OutlinedButton.styleFrom(side: const BorderSide(color: Color(0xFF00D9FF))),
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: 'DDChat Security Code\n$contactName ($uid)\n$code'));
+                  _showSuccess('Код скопирован');
+                },
+              )),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showLegalDocFromContext(BuildContext ctx, {
     required String title,
     required String assetPath,
@@ -1824,9 +1923,10 @@ class _HomeScreenState extends State<HomeScreen>
 
     // Регистрируем группу на сервере + раздаём ключи
     _socket.send({
-      'type':    'create_group',
-      'group_id': groupId,
-      'members': members,
+      'type':       'create_group',
+      'group_id':   groupId,
+      'group_name': name,
+      'members':    members,
     });
     if (encryptedKeys.isNotEmpty) {
       _socket.distributeGroupKeys(groupId, encryptedKeys);
@@ -2001,6 +2101,20 @@ class _HomeScreenState extends State<HomeScreen>
               },
             ),
 
+            // Проверить отпечаток E2E
+            if (!_storage.isGroup(uid))
+              ListTile(
+                leading: const Icon(Icons.verified_user_outlined, color: Colors.cyan),
+                title: const Text('Проверить отпечаток',
+                    style: TextStyle(color: Colors.white)),
+                subtitle: const Text('Убедись что чат не перехвачен',
+                    style: TextStyle(color: Colors.white38, fontSize: 11)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _showSecurityCode(uid, name);
+                },
+              ),
+
             // Очистить историю
             ListTile(
               leading: const Icon(Icons.cleaning_services_outlined, color: Colors.orange),
@@ -2162,7 +2276,10 @@ class _HomeScreenState extends State<HomeScreen>
       itemCount: _chats.length,
       itemBuilder: (c, i) {
         final uid      = _chats[i];
-        final name     = _storage.getContactDisplayName(uid);
+        final isGroup  = _storage.isGroup(uid);
+        final name     = isGroup
+            ? _storage.getGroupName(uid)
+            : _storage.getContactDisplayName(uid);
         final avatar   = _storage.getContactAvatar(uid);
         final meta     = _storage.getChatMetadata(uid);
         final unread   = meta['unreadCount'] as int? ?? 0;
@@ -2170,8 +2287,6 @@ class _HomeScreenState extends State<HomeScreen>
         final isPinned = _storage.isContactPinned(uid);
         final isMuted  = _storage.isContactMuted(uid);
         final hasAvatar = avatar != null && avatar.isNotEmpty && avatar != 'null';
-
-        final isGroup = _storage.isGroup(uid);
 
         return ListTile(
           leading: Stack(
