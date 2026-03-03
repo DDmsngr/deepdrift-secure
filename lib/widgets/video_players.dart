@@ -36,33 +36,43 @@ class _VideoNotePlayerState extends State<VideoNotePlayer> {
   @override
   Widget build(BuildContext context) {
     if (!_isInit) {
-      return const SizedBox(
+      return SizedBox(
         width: 220, height: 220,
         child: DecoratedBox(
-          decoration: BoxDecoration(shape: BoxShape.circle, color: Colors.black26),
-          child: Center(child: CircularProgressIndicator(color: Colors.cyan)),
+          decoration: BoxDecoration(
+            color: Colors.black26,
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: const Center(child: CircularProgressIndicator(color: Colors.cyan)),
         ),
       );
     }
     return GestureDetector(
       onTap: () {
         setState(() {
+          _controller.value.isPlaying
+              ? _controller.pause()
+              : _controller.play();
+        });
+      },
+      onLongPress: () {
+        setState(() {
           _controller.setVolume(_controller.value.volume == 0 ? 1 : 0);
         });
       },
       child: SizedBox(
-        // Фиксируем КВАДРАТ 220×220 — исключает растяжение в овал
-        // независимо от maxWidth родительского пузыря.
         width: 220, height: 220,
         child: Stack(
           alignment: Alignment.center,
           children: [
-            DecoratedBox(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.cyan.withValues(alpha: 0.3), width: 3),
-              ),
-              child: ClipOval(
+            // Box-формат: скруглённые углы вместо круга
+            ClipRRect(
+              borderRadius: BorderRadius.circular(18),
+              child: Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: Colors.cyan.withValues(alpha: 0.4), width: 2),
+                ),
                 child: AspectRatio(
                   aspectRatio: 1.0,
                   child: FittedBox(
@@ -76,10 +86,29 @@ class _VideoNotePlayerState extends State<VideoNotePlayer> {
                 ),
               ),
             ),
+            // Play/pause overlay
+            if (!_controller.value.isPlaying)
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.black45,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: const Center(
+                  child: Icon(Icons.play_arrow_rounded, color: Colors.white, size: 48),
+                ),
+              ),
+            // Volume indicator
             if (_controller.value.volume > 0)
-              const Positioned(
-                bottom: 20,
-                child: Icon(Icons.volume_up, color: Colors.white, size: 20),
+              Positioned(
+                bottom: 10, right: 10,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.volume_up, color: Colors.white, size: 16),
+                ),
               ),
           ],
         ),
