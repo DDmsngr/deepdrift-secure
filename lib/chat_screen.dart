@@ -13,7 +13,6 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:dio/dio.dart';
 import 'package:gal/gal.dart';
-import 'package:flutter_windowmanager/flutter_windowmanager.dart';
 import 'package:camera/camera.dart';
 
 import 'crypto_service.dart';
@@ -1449,19 +1448,22 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  // MethodChannel для FLAG_SECURE (заменяет flutter_windowmanager)
+  static const _secureChannel = MethodChannel('com.deepdrift.secure/window');
+
   void _enableSecureScreen() async {
-    if (!Platform.isAndroid && !Platform.isIOS) return;
+    if (!Platform.isAndroid) return;
     try {
-      await FlutterWindowManager.addFlags(FlutterWindowManager.FLAG_SECURE);
+      await _secureChannel.invokeMethod('addSecureFlag');
     } catch (e) {
       debugPrint('Screenshot protection enable error: $e');
     }
   }
 
   void _disableSecureScreen() async {
-    if (!Platform.isAndroid && !Platform.isIOS) return;
+    if (!Platform.isAndroid) return;
     try {
-      await FlutterWindowManager.clearFlags(FlutterWindowManager.FLAG_SECURE);
+      await _secureChannel.invokeMethod('clearSecureFlag');
     } catch (e) {
       debugPrint('Screenshot protection disable error: $e');
     }
