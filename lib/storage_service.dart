@@ -488,6 +488,80 @@ class StorageService {
     }
   }
 
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Группы
+  // Группа хранится как контакт с uid = 'g_XXXXXX'.
+  // Метаданные (имя, участники) — в _metadataBox под ключом 'group_g_XXXXXX'.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /// Создаёт/обновляет группу локально.
+  Future<void> saveGroup({
+    required String groupId,
+    required String groupName,
+    required List<String> members,
+    required String creatorUid,
+  }) async {
+    final box = Hive.box(_metadataBox);
+    await box.put('group_$groupId', {
+      'name':    groupName,
+      'members': members,
+      'creator': creatorUid,
+    });
+    // Добавляем в список чатов как обычный контакт
+    await addContact(groupId, displayName: groupName);
+  }
+
+  /// Возвращает true если uid — группа.
+  bool isGroup(String uid) => uid.startsWith('g_');
+
+  /// Возвращает имя группы (или uid если не найдено).
+  String getGroupName(String groupId) {
+    final box  = Hive.box(_metadataBox);
+    final data = box.get('group_$groupId');
+    if (data is Map) return (data['name'] as String?) ?? groupId;
+    return getContactDisplayName(groupId);
+  }
+
+  /// Возвращает список участников группы (без самого пользователя).
+  List<String> getGroupMembers(String groupId) {
+    final box  = Hive.box(_metadataBox);
+    final data = box.get('group_$groupId');
+    if (data is Map && data['members'] is List) {
+      return (data['members'] as List).map((e) => e.toString()).toList();
+    }
+    return [];
+  }
+
+  /// Возвращает UID создателя группы.
+  String? getGroupCreator(String groupId) {
+    final box  = Hive.box(_metadataBox);
+    final data = box.get('group_$groupId');
+    if (data is Map) return data['creator'] as String?;
+    return null;
+  }
+
+  /// Сохраняет зашифрованный blob группового ключа (то что вернул сервер).
+  /// Хранится локально чтобы не запрашивать при каждом открытии чата.
+  Future<void> saveGroupKeyBlob(String groupId, String encryptedBlob, String creatorUid) async {
+    await Hive.box(_metadataBox).put('gkey_$groupId', {
+      'blob':    encryptedBlob,
+      'creator': creatorUid,
+    });
+  }
+
+  /// Возвращает {blob, creator} или null если ключ не сохранён.
+  Map<String, String>? getGroupKeyBlob(String groupId) {
+    final data = Hive.box(_metadataBox).get('gkey_$groupId');
+    if (data is Map) {
+      return {
+        'blob':    data['blob'] as String? ?? '',
+        'creator': data['creator'] as String? ?? '',
+      };
+    }
+    return null;
+  }
+
   // ──────────────────────────────────────────────────────────────────────────
   // Приватные вспомогательные методы
   // ──────────────────────────────────────────────────────────────────────────
