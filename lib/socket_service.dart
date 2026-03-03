@@ -16,9 +16,9 @@ class SocketService {
 
   static const String   PROTOCOL_VERSION      = '3.0';
   static const int      MAX_RECONNECT_ATTEMPTS = 50;
-  static const Duration RECONNECT_BASE_DELAY   = Duration(seconds: 2);
+  static const Duration RECONNECT_BASE_DELAY   = Duration(seconds: 4);
   static const Duration PING_INTERVAL          = Duration(seconds: 10);
-  static const Duration CONNECTION_TIMEOUT     = Duration(seconds: 5);
+  static const Duration CONNECTION_TIMEOUT     = Duration(seconds: 20);
   // Если ACK не пришёл за 30 секунд — считаем доставку неуспешной и
   // освобождаем Completer, чтобы не было утечки памяти (🟡-6 FIX).
   static const Duration PENDING_MSG_TIMEOUT    = Duration(seconds: 30);
@@ -378,8 +378,13 @@ class SocketService {
       _messageStream.add({'type': 'connection_failed'});
       return;
     }
+    // Защита от шторма: если таймер уже запущен — не дублируем
+    if (_reconnectTimer?.isActive == true) return;
     _reconnectTimer?.cancel();
-    final delay = _getReconnectDelay();
+    // Первая попытка через 3с — даём Render время
+    final delay = _reconnectAttempts == 0
+        ? const Duration(seconds: 3)
+        : _getReconnectDelay();
     debugPrint('🔄 Reconnecting in ${delay.inSeconds}s (attempt $_reconnectAttempts)...');
     _reconnectTimer = Timer(delay, () {
       _reconnectAttempts++;
@@ -630,9 +635,16 @@ class SocketService {
   int  get reconnectAttempts => _reconnectAttempts;
 
   void forceReconnect() {
+    // Защита: если уже устанавливаем соединение — не запускаем второе
+    if (_isConnecting) return;
     _reconnectAttempts = 0;
+    _reconnectTimer?.cancel();
+    _connectionTimeoutTimer?.cancel();
+    _isConnected  = false;
+    _isConnecting = false;
+    // 300мс задержка: даём onDone обработаться раньше чем запустим новое соединение
     _channel?.sink.close();
-    _attemptConnection();
+    Future.delayed(const Duration(milliseconds: 300), _attemptConnection);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
