@@ -55,6 +55,7 @@ class _HomeScreenState extends State<HomeScreen>
 
 
   Timer? _statusCheckTimer;
+  Timer? _reconnectDebounce;
 
   // ──────────────────────────────────────────────────────────────────────────
   // Lifecycle
@@ -93,6 +94,7 @@ class _HomeScreenState extends State<HomeScreen>
     WidgetsBinding.instance.removeObserver(this);
     _socketSub?.cancel();
     _statusCheckTimer?.cancel();
+    _reconnectDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -100,8 +102,12 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      if (!_socket.isConnected) _socket.forceReconnect();
-      _socket.checkStatuses(_chats);
+      // Дебаунс 500мс — Android шлёт несколько resumed подряд при запуске
+      _reconnectDebounce?.cancel();
+      _reconnectDebounce = Timer(const Duration(milliseconds: 500), () {
+        if (!_socket.isConnected) _socket.forceReconnect();
+        _socket.checkStatuses(_chats);
+      });
     }
   }
 
@@ -294,6 +300,59 @@ class _HomeScreenState extends State<HomeScreen>
     final msgId     = data['id']?.toString();
     if (senderUid == null || msgId == null) return;
     if (_storage.hasMessage(senderUid, msgId)) return;
+
+    // ── Новый контакт — показываем баннер запроса ────────────────────────────
+    final isKnown = _storage.getContacts().contains(senderUid);
+    if (!isKnown && mounted) {
+      await _storage.addContact(senderUid);
+      setState(() => _chats = _storage.getContactsSortedByActivity());
+      _socket.requestPublicKey(senderUid);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: const Color(0xFF0D1B3E),
+        duration: const Duration(seconds: 8),
+        content: Row(children: [
+          Container(
+            width: 38, height: 38,
+            decoration: BoxDecoration(
+              color: const Color(0xFF00D9FF).withValues(alpha: 0.15),
+              shape: BoxShape.circle,
+              border: Border.all(color: const Color(0xFF00D9FF).withValues(alpha: 0.4)),
+            ),
+            child: Center(child: Text(
+              senderUid.isNotEmpty ? senderUid[0] : '?',
+              style: const TextStyle(
+                  color: Color(0xFF00D9FF), fontWeight: FontWeight.bold, fontSize: 16),
+            )),
+          ),
+          const SizedBox(width: 12),
+          Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('📩 Входящий запрос',
+                  style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+              Text('ID $senderUid хочет написать тебе',
+                  style: const TextStyle(color: Colors.white54, fontSize: 11)),
+            ],
+          )),
+        ]),
+        action: SnackBarAction(
+          label: 'ОТКРЫТЬ',
+          textColor: const Color(0xFF00D9FF),
+          onPressed: () {
+            if (_myUid == null) return;
+            Navigator.push(context, MaterialPageRoute(
+              builder: (_) => ChatScreen(
+                  myUid: _myUid!, targetUid: senderUid, cipher: _cipher),
+            )).then((_) {
+              if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+            });
+          },
+        ),
+      ));
+    }
+
     try {
       // Сначала пробуем загрузить ключи из кэша — иначе decryptText вернёт
       // '[⚠️ No encryption key]' и мы сохраним ошибку в Hive навсегда.
