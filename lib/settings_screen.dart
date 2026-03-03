@@ -56,17 +56,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (!mounted) return;
     setState(() => _loadingFingerprint = true);
     try {
-      final x25519B64  = await widget.cipher.getMyPublicKey();
-      final ed25519B64 = await widget.cipher.getMySigningKey();
+      // Читаем из Hive-кэша (сохраняется при первой инициализации ключей).
+      // Это гарантирует, что fingerprint НЕ меняется при каждом запуске / APK-обновлении.
+      final cached = widget.storage.getSetting('cached_key_fingerprint') as String?;
 
-      // Декодируем из base64 → сырые байты, затем SHA-256 конкатенации
+      final String x25519B64;
+      final String ed25519B64;
+
+      if (cached != null && cached.contains(':')) {
+        final parts = cached.split(':');
+        x25519B64  = parts[0];
+        ed25519B64 = parts[1];
+      } else {
+        // Fallback: вычисляем из текущих ключей (первый запуск после обновления)
+        x25519B64  = await widget.cipher.getMyPublicKey();
+        ed25519B64 = await widget.cipher.getMySigningKey();
+      }
+
+      // SHA-256(x25519_pubkey || ed25519_pubkey)
       final x25519Bytes  = base64Decode(x25519B64);
       final ed25519Bytes = base64Decode(ed25519B64);
       final combined     = [...x25519Bytes, ...ed25519Bytes];
       final hash         = sha256.convert(combined);
       final hex          = hash.toString().toUpperCase();
 
-      // Форматируем: 8 групп по 5 символов (первые 40 из 64)
+      // 8 групп по 5 символов
       final buffer = StringBuffer();
       for (int i = 0; i < 8; i++) {
         if (i > 0) buffer.write(' ');
@@ -82,7 +96,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _myPublicKeyFingerprint = 'Error loading key';
+          _myPublicKeyFingerprint = 'Ошибка загрузки ключа';
           _loadingFingerprint     = false;
         });
       }
@@ -388,6 +402,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             value: 'DDChat 1.0.0',
           ),
 
+          ListTile(
+            leading: const Icon(Icons.new_releases_outlined, color: Colors.cyan),
+            title: const Text('Что нового', style: TextStyle(color: Colors.white)),
+            subtitle: const Text('История обновлений', style: TextStyle(color: Colors.white38, fontSize: 12)),
+            trailing: const Icon(Icons.chevron_right, color: Colors.white24),
+            onTap: () => _showChangelog(context),
+          ),
+
           _infoTile(
             icon:  Icons.security,
             title: 'Шифрование',
@@ -403,6 +425,81 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ──────────────────────────────────────────────────────────────────────────
   // Вспомогательные виджеты
   // ──────────────────────────────────────────────────────────────────────────
+
+  void _showChangelog(BuildContext context) {
+    const changes = [
+      (icon: '🎥', text: 'Видео-заметки в формате бокс вместо кружочков'),
+      (icon: '👥', text: 'Групповые чаты с E2E-шифрованием'),
+      (icon: '🔑', text: 'Стабильный Fingerprint — не меняется при обновлении APK'),
+      (icon: '☁️', text: 'Хранилище медиафайлов переехало на Cloudflare R2'),
+      (icon: '🛡️', text: 'Ed25519 аутентификация — UID нельзя угнать'),
+      (icon: '🔐', text: 'Резервная копия ключей при регистрации'),
+      (icon: '📥', text: 'Сохранение фото/видео в галерею по долгому нажатию'),
+      (icon: '🌐', text: 'Интерфейс полностью на русском языке'),
+    ];
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1F3C),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      isScrollControlled: true,
+      builder: (_) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        maxChildSize: 0.9,
+        builder: (_, ctrl) => Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 4),
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24, borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+              child: Row(
+                children: [
+                  const Icon(Icons.new_releases_outlined, color: Color(0xFF00D9FF)),
+                  const SizedBox(width: 10),
+                  Text('Что нового',
+                      style: GoogleFonts.orbitron(
+                          color: const Color(0xFF00D9FF), fontSize: 16)),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                controller: ctrl,
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                itemCount: changes.length,
+                itemBuilder: (_, i) => Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(changes[i].icon, style: const TextStyle(fontSize: 20)),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          changes[i].text,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 14, height: 1.4),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _sectionHeader(String title) {
     return Padding(
