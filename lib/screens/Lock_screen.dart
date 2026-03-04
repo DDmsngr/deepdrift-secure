@@ -3,7 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../storage_service.dart';
 
-/// Экран блокировки с числовым PIN-кодом (4–12 цифр).
+/// Экран блокировки с числовым PIN-кодом (4–12 цифр). 
 /// PIN хранится отдельно от пароля шифрования.
 /// Показывается при возврате из фона если включена настройка 'app_lock_enabled'.
 class LockScreen extends StatefulWidget {
