@@ -26,6 +26,15 @@ class StorageService {
   // Значение — последняя Future в цепочке для этого ключа.
   final _locks = <String, Future<void>>{};
 
+  // ── Кэш отсортированного списка контактов ─────────────────────────────────
+  List<String>? _sortedContactsCache;
+  bool          _sortedContactsDirty = true;
+
+  void _invalidateSortedContacts() {
+    _sortedContactsDirty = true;
+    _sortedContactsCache = null;
+  }
+
   /// Ставит [fn] в очередь для [key] и возвращает Future с результатом.
   /// Ошибки в предыдущей операции не блокируют следующую (catchError на хвосте).
   Future<T> _withLock<T>(String key, Future<T> Function() fn) {
