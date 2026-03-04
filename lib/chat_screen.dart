@@ -20,6 +20,7 @@ import 'socket_service.dart';
 import 'storage_service.dart';
 import 'models/chat_models.dart';
 import 'widgets/message_bubble.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 // Типы MsgType, SignatureStatus и утилиты (formatMessageTime и др.)
 // перенесены в lib/models/chat_models.dart
@@ -1089,7 +1090,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final fileSize = await file.length();
         final fileName = image.name;
         final fileId   = await _uploadFileEncrypted(file);
-        if (fileId == null) { _showError('Upload failed for $fileName'); continue; }
+        if (fileId == null) { _showError('Ошибка загрузки: $fileName'); continue; }
         final localPath = await _copyFileToMediaDir(file, MsgType.image, fileName);
         await _sendMessage(
           text: '📷 Photo', messageType: 'image',
@@ -1154,7 +1155,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
       final fileId = await _uploadFileEncrypted(file);
       if (fileId == null) {
-        _showError('File upload failed');
+        _showError('Ошибка загрузки файла');
         if (mounted) setState(() => _isSendingFile = false);
         return;
       }
@@ -1184,7 +1185,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (mounted) setState(() => _recordingDuration++);
       });
     } else {
-      _showError('Microphone permission denied');
+      _showError('Нет доступа к микрофону');
     }
   }
 
@@ -1213,7 +1214,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (mounted) setState(() { _isSendingFile = true; _uploadProgress = 0.0; });
         final fileId = await _uploadFileEncrypted(file);
         if (fileId == null) {
-          _showError('Voice upload failed');
+          _showError('Ошибка загрузки голосового');
           _cleanTempVoiceFile();
           if (mounted) setState(() => _isSendingFile = false);
           return;
@@ -1231,7 +1232,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (mounted) setState(() => _isSendingFile = false);
       }
     } catch (e) {
-      _showError('Error sending voice: $e');
+      _showError('Ошибка отправки голосового: $e');
       _cancelRecording();
       if (mounted) setState(() => _isSendingFile = false);
     }
@@ -1259,7 +1260,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (mounted) setState(() => _recordingDuration++);
       });
     } catch (e) {
-      _showError('Camera error: $e');
+      _showError('Ошибка камеры: $e');
     }
   }
 
@@ -1287,7 +1288,7 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
     } catch (e) {
-      _showError('Video send error: $e');
+      _showError('Ошибка отправки видео: $e');
     } finally {
       if (mounted) setState(() => _isSendingFile = false);
     }
@@ -1313,7 +1314,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (mounted) setState(() => _playingMessageId = null);
       });
     } catch (e) {
-      _showError('Failed to play: $e');
+      _showError('Ошибка воспроизведения: $e');
     }
   }
 
@@ -1344,7 +1345,7 @@ class _ChatScreenState extends State<ChatScreen> {
         _messageController.clear();
       });
     } catch (e) {
-      _showError('Failed to edit: $e');
+      _showError('Ошибка редактирования: $e');
     }
   }
 
@@ -1383,7 +1384,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _forwardMessage(Map<String, dynamic> message) {
     final contacts = _storage.getContactsList();
     if (contacts.isEmpty) {
-      _showError('No contacts to forward to');
+      _showError('Нет контактов для пересылки');
       return;
     }
 
@@ -1586,7 +1587,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _copyMessageText(String text) {
     Clipboard.setData(ClipboardData(text: text));
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Copied to clipboard')),
+      const SnackBar(content: Text('Скопировано в буфер')),
     );
   }
 
@@ -1904,14 +1905,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   minScale:    0.5,
                   maxScale:    4.0,
                   child: hasPhoto
-                      ? Image.network(
-                          '$SERVER_HTTP_URL/download/$avatarId',
+                      ? CachedNetworkImage(
+                          imageUrl: '$SERVER_HTTP_URL/download/$avatarId',
                           fit: BoxFit.contain,
-                          loadingBuilder: (_, child, progress) {
-                            if (progress == null) return child;
-                            return const CircularProgressIndicator(color: Colors.cyan);
-                          },
-                          errorBuilder: (_, __, ___) => _avatarFallback(displayName),
+                          placeholder: (_, __) => const CircularProgressIndicator(color: Colors.cyan),
+                          errorWidget: (_, __, ___) => _avatarFallback(displayName),
                         )
                       : _avatarFallback(displayName),
                 ),
@@ -2325,7 +2323,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       radius: 18,
                       backgroundColor: isGroup ? const Color(0xFF0A2A3A) : const Color(0xFF0A0E27),
                       backgroundImage: (!isGroup && avatar != null && avatar.isNotEmpty)
-                          ? NetworkImage('$SERVER_HTTP_URL/download/$avatar')
+                          ? CachedNetworkImageProvider('$SERVER_HTTP_URL/download/$avatar')
                           : null,
                       child: isGroup
                           ? const Icon(Icons.group, color: Color(0xFF00D9FF), size: 18)
@@ -2359,12 +2357,12 @@ class _ChatScreenState extends State<ChatScreen> {
                               style: const TextStyle(fontSize: 10, color: Colors.cyan));
                         })
                       else if (_targetIsTyping)
-                        const Text('typing...', style: TextStyle(fontSize: 10, color: Colors.cyan))
+                        const Text('печатает...', style: TextStyle(fontSize: 10, color: Colors.cyan))
                       else if (isOnline)
-                        const Text('online', style: TextStyle(fontSize: 10, color: Colors.green))
+                        const Text('онлайн', style: TextStyle(fontSize: 10, color: Colors.green))
                       else if (lastSeen > 0)
                         Text(
-                          'last seen ${_formatLastSeen(lastSeen)}',
+                          'был(а) ${_formatLastSeen(lastSeen)}',
                           style: const TextStyle(fontSize: 10, color: Colors.white54),
                         ),
                     ],
