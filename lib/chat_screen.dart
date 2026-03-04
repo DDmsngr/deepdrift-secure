@@ -118,7 +118,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     // Запрещаем скриншоты и запись экрана в чате — приватность E2EE
-    _enableSecureScreen();
+    //_enableSecureScreen();
     _messageController.addListener(_onTextChanged);
     _scrollController.addListener(_onScroll);
 
@@ -152,8 +152,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
-    // Снимаем запрет скриншотов при выходе из чата
-    _disableSecureScreen();
+    // Скриншоты заблокированы глобально — не снимаем флаг при выходе из чата
     _socketSub?.cancel();
     _typingTimer?.cancel();
     _keyExchangeTimeout?.cancel();
@@ -223,6 +222,19 @@ class _ChatScreenState extends State<ChatScreen> {
           for (var msg in history) {
             final m = Map<String, dynamic>.from(msg);
             if (!_messageIds.contains(m['id'])) {
+              // ── FIX: пустые пузыри — если текст пустой но есть encrypted_text,
+              //    помечаем как pending_decrypt чтобы переразшифровался при готовности ключей
+              if ((m['text'] == null || (m['text'] as String).isEmpty) &&
+                  m['encrypted_text'] != null &&
+                  m['status'] != 'pending_decrypt') {
+                m['status'] = 'pending_decrypt';
+              }
+              // ── FIX: фото исчезают — если filePath не существует на диске,
+              //    сбрасываем его чтобы UI показал кнопку "загрузить"
+              final fp = m['filePath'] as String?;
+              if (fp != null && fp.isNotEmpty && !File(fp).existsSync()) {
+                m['filePath'] = null;
+              }
               _messages.add(m);
               _messageIds.add(m['id'].toString());
             }
@@ -246,6 +258,16 @@ class _ChatScreenState extends State<ChatScreen> {
           for (var msg in older) {
             final m = Map<String, dynamic>.from(msg);
             if (!_messageIds.contains(m['id'])) {
+              // ── FIX: пустые пузыри и исчезающие фото (аналогично _loadRecentHistory)
+              if ((m['text'] == null || (m['text'] as String).isEmpty) &&
+                  m['encrypted_text'] != null &&
+                  m['status'] != 'pending_decrypt') {
+                m['status'] = 'pending_decrypt';
+              }
+              final fp = m['filePath'] as String?;
+              if (fp != null && fp.isNotEmpty && !File(fp).existsSync()) {
+                m['filePath'] = null;
+              }
               _messages.insert(0, m);
               _messageIds.add(m['id'].toString());
             }
@@ -1676,6 +1698,166 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// Открывает фото профиля контакта на весь экран с Hero-анимацией и pinch-to-zoom.
+  // ──────────────────────────────────────────────────────────────────────────
+  // Групповые настройки
+  // ──────────────────────────────────────────────────────────────────────────
+
+  void _showGroupMembersDialog(String groupName, List<String> members) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1F3C),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            margin: const EdgeInsets.only(top: 12, bottom: 8),
+            width: 36, height: 4,
+            decoration: BoxDecoration(
+              color: Colors.white24, borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.group, color: Color(0xFF00D9FF), size: 20),
+                const SizedBox(width: 10),
+                Text(
+                  'Участники: ${members.length}',
+                  style: GoogleFonts.orbitron(
+                      color: const Color(0xFF00D9FF), fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+          const Divider(color: Colors.white12, height: 1),
+          Flexible(
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: members.length,
+              itemBuilder: (_, i) {
+                final uid  = members[i];
+                final name = _storage.getContactDisplayName(uid);
+                return ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: const Color(0xFF0A2A3A),
+                    child: Text(
+                      name.isNotEmpty ? name[0].toUpperCase() : '?',
+                      style: const TextStyle(color: Colors.cyan),
+                    ),
+                  ),
+                  title: Text(name, style: const TextStyle(color: Colors.white)),
+                  subtitle: Text(uid,
+                      style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+
+  void _showRenameGroupDialog() {
+    final ctrl = TextEditingController(
+      text: _storage.getGroupName(widget.targetUid),
+    );
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1F3C),
+        title: Text('Переименовать группу',
+            style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 13)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            labelText: 'Название группы',
+            labelStyle: TextStyle(color: Colors.white54),
+            filled: true,
+            fillColor: Color(0xFF0A0E27),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00D9FF),
+              foregroundColor: Colors.black,
+            ),
+            onPressed: () async {
+              final newName = ctrl.text.trim();
+              if (newName.isEmpty) return;
+              await _storage.setContactDisplayName(widget.targetUid, newName);
+              // Обновляем метаданные группы
+              final members = _storage.getGroupMembers(widget.targetUid);
+              final creator = _storage.getGroupCreator(widget.targetUid) ?? widget.myUid;
+              await _storage.saveGroup(
+                groupId:   widget.targetUid,
+                groupName: newName,
+                members:   members,
+                creatorUid: creator,
+              );
+              if (mounted) {
+                setState(() {});
+                Navigator.pop(ctx);
+                _showSuccess('Название изменено');
+              }
+            },
+            child: const Text('СОХРАНИТЬ'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showLeaveGroupDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1F3C),
+        title: Text('Покинуть группу?',
+            style: GoogleFonts.orbitron(color: Colors.red, fontSize: 13)),
+        content: const Text(
+          'Ты выйдешь из группы и перестанешь получать сообщения.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              // Отправляем событие на сервер
+              _socket.send({
+                'type':     'leave_group',
+                'group_id': widget.targetUid,
+              });
+              // Удаляем группу из локального хранилища
+              await _storage.removeContact(widget.targetUid);
+              if (mounted) Navigator.of(context).pop(); // Выходим из чата
+            },
+            child: const Text('ПОКИНУТЬ'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showContactProfilePhoto(String displayName, String? avatarId) {
     final hasPhoto = avatarId != null && avatarId.isNotEmpty;
     Navigator.of(context).push(
@@ -2148,6 +2330,38 @@ class _ChatScreenState extends State<ChatScreen> {
           icon: Icon(_isSearching ? Icons.close : Icons.search),
           onPressed: _toggleSearch,
         ),
+        if (isGroup && !_isSearching)
+          PopupMenuButton<String>(
+            color: const Color(0xFF1A1F3C),
+            icon: const Icon(Icons.more_vert, color: Colors.white70),
+            onSelected: (value) async {
+              switch (value) {
+                case 'members':
+                  _showGroupMembersDialog(displayName, groupMembers);
+                  break;
+                case 'rename':
+                  _showRenameGroupDialog();
+                  break;
+                case 'leave':
+                  _showLeaveGroupDialog();
+                  break;
+              }
+            },
+            itemBuilder: (_) => [
+              _popupItem('members', Icons.group,        'Участники группы'),
+              _popupItem('rename',  Icons.edit,         'Переименовать'),
+              const PopupMenuDivider(),
+              PopupMenuItem(
+                value: 'leave',
+                child: Row(children: [
+                  const Icon(Icons.exit_to_app, color: Colors.red, size: 20),
+                  const SizedBox(width: 12),
+                  Text('Покинуть группу',
+                      style: const TextStyle(color: Colors.red)),
+                ]),
+              ),
+            ],
+          ),
       ],
     );
   }
