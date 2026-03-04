@@ -46,7 +46,7 @@ class _ChatScreenState extends State<ChatScreen> {
   static const String SERVER_HTTP_URL = 'https://deepdrift-backend.onrender.com';
   /// true  → FLAG_SECURE выключен (можно скриншотить для отладки).
   /// false → FLAG_SECURE включён в боевой версии.
-  static const bool _debugMode = false;
+  static const bool _debugMode = true; // true = скриншоты разрешены; false = FLAG_SECURE
 
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _messageIds = {};
@@ -1839,6 +1839,27 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  Future<void> _changeGroupPhoto() async {
+    try {
+      final picker = ImagePicker();
+      final img = await picker.pickImage(source: ImageSource.gallery, maxWidth: 512, maxHeight: 512);
+      if (img == null) return;
+      if (mounted) setState(() => _isSendingFile = true);
+      final fileId = await _uploadFileEncrypted(File(img.path));
+      if (fileId != null) {
+        await _storage.setContactAvatar(widget.targetUid, fileId);
+        _socket.send({'type': 'update_group_photo', 'group_id': widget.targetUid, 'avatar_id': fileId});
+        if (mounted) { setState(() {}); _showSuccess('Фото группы обновлено'); }
+      } else {
+        if (mounted) _showError('Ошибка загрузки фото');
+      }
+    } catch (e) {
+      if (mounted) _showError('Ошибка: $e');
+    } finally {
+      if (mounted) setState(() => _isSendingFile = false);
+    }
+  }
+
   void _showLeaveGroupDialog() {
     showDialog(
       context: context,
@@ -2270,18 +2291,17 @@ class _ChatScreenState extends State<ChatScreen> {
                 _cameraController != null &&
                 _cameraController!.value.isInitialized)
               Positioned(
-                // Вверху экрана — максимально близко к физическому глазку камеры,
-                // чтобы пользователь смотрел в объектив, а не вниз
                 top:   80,
                 right: 16,
                 child: Container(
                   width: 160, height: 160,
                   decoration: BoxDecoration(
-                    shape: BoxShape.circle,
+                    borderRadius: BorderRadius.circular(16),
                     border: Border.all(color: Colors.cyan, width: 3),
                     boxShadow: [BoxShadow(color: Colors.cyan.withValues(alpha: 0.5), blurRadius: 10)],
                   ),
-                  child: ClipOval(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(13),
                     child: AspectRatio(aspectRatio: 1, child: CameraPreview(_cameraController!)),
                   ),
                 ),
@@ -2387,6 +2407,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 case 'rename':
                   _showRenameGroupDialog();
                   break;
+                case 'photo':
+                  await _changeGroupPhoto();
+                  break;
                 case 'leave':
                   _showLeaveGroupDialog();
                   break;
@@ -2395,6 +2418,7 @@ class _ChatScreenState extends State<ChatScreen> {
             itemBuilder: (_) => [
               _popupItem('members', Icons.group,        'Участники группы'),
               _popupItem('rename',  Icons.edit,         'Переименовать'),
+              _popupItem('photo',   Icons.photo_camera, 'Сменить фото группы'),
               const PopupMenuDivider(),
               PopupMenuItem(
                 value: 'leave',
