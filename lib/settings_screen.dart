@@ -14,6 +14,8 @@ class SettingsScreen extends StatefulWidget {
   final String          myUid;
   /// Callback для открытия диалога "Восстановить / Сменить аккаунт" из HomeScreen
   final VoidCallback?   onSwitchAccount;
+  /// Callback для полного удаления аккаунта
+  final VoidCallback?   onDeleteAccount;
 
   const SettingsScreen({
     super.key,
@@ -21,6 +23,7 @@ class SettingsScreen extends StatefulWidget {
     required this.cipher,
     required this.myUid,
     this.onSwitchAccount,
+    this.onDeleteAccount,
   });
 
   @override
@@ -30,6 +33,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool    _autoSavePhotos      = false;
   bool    _notificationsSound  = true;
+  bool    _appLockEnabled      = false;
   String? _myPublicKeyFingerprint;
   bool    _loadingFingerprint  = false;
 
@@ -38,6 +42,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     _autoSavePhotos     = widget.storage.getSetting('auto_save_photos',    defaultValue: false);
     _notificationsSound = widget.storage.getSetting('notifications_sound', defaultValue: true);
+    _appLockEnabled     = widget.storage.getSetting('app_lock_enabled',    defaultValue: false);
     _loadFingerprint();
   }
 
@@ -448,6 +453,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const SizedBox(height: 8),
 
+          // ── БЛОКИРОВКА ─────────────────────────────────────────────────────
+          _sectionHeader('БЛОКИРОВКА'),
+
+          _switchTile(
+            icon:     Icons.lock_clock_outlined,
+            title:    'Блокировать при уходе в фон',
+            subtitle: 'Запрашивать пароль при возврате в приложение',
+            value:    _appLockEnabled,
+            onChanged: (val) async {
+              setState(() => _appLockEnabled = val);
+              await widget.storage.saveSetting('app_lock_enabled', val);
+            },
+          ),
+
+          // ── ОПАСНАЯ ЗОНА ───────────────────────────────────────────────────
+          _sectionHeader('ОПАСНАЯ ЗОНА'),
+
+          ListTile(
+            leading: const Icon(Icons.delete_forever, color: Colors.red),
+            title: const Text('Удалить аккаунт',
+                style: TextStyle(color: Colors.red)),
+            subtitle: const Text('Удалить все данные и ключи с устройства',
+                style: TextStyle(color: Colors.white38, fontSize: 12)),
+            trailing: const Icon(Icons.chevron_right, color: Colors.red24),
+            onTap: () => _showDeleteAccountDialog(),
+          ),
+
+          const SizedBox(height: 8),
+
           // ── Правовая информация ───────────────────────────────────────────
           _sectionHeader('⚖️  ПРАВОВАЯ ИНФОРМАЦИЯ'),
 
@@ -484,6 +518,95 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ──────────────────────────────────────────────────────────────────────────
   // Вспомогательные виджеты
   // ──────────────────────────────────────────────────────────────────────────
+
+  void _showDeleteAccountDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        bool confirmed = false;
+        return StatefulBuilder(
+          builder: (ctx, setS) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1F3C),
+            title: Row(
+              children: [
+                const Icon(Icons.warning_amber, color: Colors.red, size: 22),
+                const SizedBox(width: 8),
+                Text('Удалить аккаунт',
+                    style: GoogleFonts.orbitron(color: Colors.red, fontSize: 13)),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '⚠️ Это действие необратимо. Будут удалены:',
+                  style: TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+                const SizedBox(height: 8),
+                const Text('• Все сообщения и медиафайлы',
+                    style: TextStyle(color: Colors.white54, fontSize: 12)),
+                const Text('• Ключи шифрования',
+                    style: TextStyle(color: Colors.white54, fontSize: 12)),
+                const Text('• Список контактов и настройки',
+                    style: TextStyle(color: Colors.white54, fontSize: 12)),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+                  ),
+                  child: const Text(
+                    '🔑 Восстановление невозможно без файла резервной копии. '
+                    'Убедись, что ты сделал бэкап.',
+                    style: TextStyle(color: Colors.orange, fontSize: 11),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Checkbox(
+                      value: confirmed,
+                      activeColor: Colors.red,
+                      onChanged: (v) => setS(() => confirmed = v ?? false),
+                    ),
+                    const Expanded(
+                      child: Text('Я понимаю, что данные нельзя восстановить',
+                          style: TextStyle(color: Colors.white70, fontSize: 12)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: confirmed
+                    ? () {
+                        Navigator.pop(ctx);
+                        if (widget.onDeleteAccount != null) {
+                          widget.onDeleteAccount!();
+                        }
+                      }
+                    : null,
+                child: const Text('УДАЛИТЬ ВСЁ'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
   void _showChangelog(BuildContext context) {
     const changes = [
