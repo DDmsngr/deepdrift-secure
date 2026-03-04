@@ -483,7 +483,9 @@ class SocketService {
   /// должен подписать нонс этим же ключом.
   /// Отправляет групповое сообщение — один раз, зашифрованное симметричным
   /// ключом группы. Сервер делает fan-out всем участникам.
-  void sendGroupMessage({
+  /// Отправляет групповое сообщение с ACK — аналогично sendMessage().
+  /// Возвращает Future<bool>: true если хотя бы один участник был онлайн.
+  Future<bool> sendGroupMessage({
     required String   groupId,
     required String   encryptedText,
     required String   signature,
@@ -495,6 +497,15 @@ class SocketService {
     String?  mimeType,
     String?  replyToId,
   }) {
+    final completer    = Completer<bool>();
+    final timeoutTimer = Timer(PENDING_MSG_TIMEOUT, () {
+      if (_pendingMessages.containsKey(msgId)) {
+        _pendingMessages.remove(msgId);
+        if (!completer.isCompleted) completer.complete(false);
+      }
+    });
+    _pendingMessages[msgId] = _PendingAck(completer, timeoutTimer);
+
     final payload = <String, dynamic>{
       'type':           'message',
       'target_uid':     groupId,
@@ -510,6 +521,7 @@ class SocketService {
       if (replyToId  != null) 'replyToId':  replyToId,
     };
     send(payload);
+    return completer.future;
   }
 
   /// Запрашивает зашифрованный групповой ключ с сервера.
