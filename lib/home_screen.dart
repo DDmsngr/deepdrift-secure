@@ -191,11 +191,9 @@ class _HomeScreenState extends State<HomeScreen>
       setState(() => _connectionStatus = 'ПОДКЛЮЧЕНИЕ...');
 
       // SECURITY FIX: пароль не читается из хранилища — только salt + ключи
-      final savedSalt       = _storage.getSetting('user_salt');
+      final savedSalt = _storage.getSetting('user_salt');
       // SECURITY FIX: auth_token читается из Keychain/Keystore
-      final authToken       = await _storage.getAuthToken();
-      final savedX25519Key  = _storage.getSetting('encrypted_x25519_key');
-      final savedEd25519Key = _storage.getSetting('encrypted_ed25519_key');
+      final authToken = await _storage.getAuthToken();
 
       if (savedSalt == null) {
         if (mounted) await _showPasswordSetupDialog();
