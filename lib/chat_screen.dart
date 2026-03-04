@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:uuid/uuid.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
@@ -66,7 +67,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   bool   _isTyping = false;
   Timer? _typingTimer;
-  bool   _targetIsTyping = false;
+  // Для личных чатов: одно значение. Для групп: Map<uid, bool>
+  bool   _targetIsTyping   = false;
+  final  Map<String, bool> _groupTypingMap = {};
 
   bool _isLoadingMore    = false;
   bool _hasMoreMessages  = true;
@@ -118,7 +121,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     // Запрещаем скриншоты и запись экрана в чате — приватность E2EE
-    // _enableSecureScreen();
+    _enableSecureScreen();
     _messageController.addListener(_onTextChanged);
     _scrollController.addListener(_onScroll);
 
@@ -548,6 +551,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     // 2. Перешифровываем pending_decrypt сообщения из истории.
+    // Для групп: убеждаемся что ключ загружен перед попыткой дешифровки.
     // ВАЖНО: обновляем только текст. Медиафайлы НЕ скачиваем автоматически —
     // пользователь нажмёт кнопку повтора сам. Иначе каждый reconnect
     // триггерит лавину HTTP-запросов к /download.
@@ -1014,7 +1018,7 @@ class _ChatScreenState extends State<ChatScreen> {
       // Сохраняем ПЕРЕД отправкой — если приложение свернут/убит не потеряем
       await _storage.saveMessage(widget.targetUid, myMsg);
 
-      _socket.sendGroupMessage(
+      final delivered = await _socket.sendGroupMessage(
         groupId:      widget.targetUid,
         encryptedText: encrypted,
         signature:    signature,
@@ -1027,11 +1031,21 @@ class _ChatScreenState extends State<ChatScreen> {
         replyToId:    replyId,
       );
 
+      // Обновляем статус: delivered если хотя бы один участник онлайн
       if (mounted) {
         setState(() {
           final idx = _messages.indexWhere((m) => m['id'] == msgId);
-          if (idx != -1) _messages[idx]['status'] = 'sent';
+          if (idx != -1) {
+            _messages[idx]['status'] = delivered ? 'delivered' : 'sent';
+          }
         });
+        // Обновляем в Hive
+        final updatedMsg = Map<String, dynamic>.from(
+          _messages.firstWhere((m) => m['id'] == msgId, orElse: () => {}),
+        );
+        if (updatedMsg.isNotEmpty) {
+          await _storage.saveMessage(widget.targetUid, updatedMsg);
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -2206,6 +2220,25 @@ class _ChatScreenState extends State<ChatScreen> {
             Column(
               children: [
                 if (_replyToText != null) _buildReplyBanner(),
+                // Предупреждение о лимите сообщений
+                if (_messages.length >= 900)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    color: Colors.orange.withValues(alpha: 0.15),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.warning_amber, color: Colors.orange, size: 16),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Достигнут лимит ${_messages.length}/1000 сообщений. '
+                            'Старые сообщения будут удалены автоматически.',
+                            style: const TextStyle(color: Colors.orange, fontSize: 11),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 Expanded(
                   child: ListView.builder(
                     controller:  _scrollController,
@@ -2287,7 +2320,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       radius: 18,
                       backgroundColor: isGroup ? const Color(0xFF0A2A3A) : const Color(0xFF0A0E27),
                       backgroundImage: (!isGroup && avatar != null && avatar.isNotEmpty)
-                          ? NetworkImage('$SERVER_HTTP_URL/download/$avatar')
+                          ? CachedNetworkImageProvider('$SERVER_HTTP_URL/download/$avatar')
                           : null,
                       child: isGroup
                           ? const Icon(Icons.group, color: Color(0xFF00D9FF), size: 18)
