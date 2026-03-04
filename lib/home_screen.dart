@@ -46,6 +46,7 @@ class _HomeScreenState extends State<HomeScreen>
   String?      _myUid;
   List<String> _chats = [];
   final Map<String, Map<String, bool>> _groupTypingUsers = {};
+  final Map<String, bool> _directTypingUsers = {}; // uid → isTyping
   bool         _isConnected      = false;
   bool         _isReady          = false;
   String       _connectionStatus = 'ОФФЛАЙН';
@@ -254,6 +255,9 @@ class _HomeScreenState extends State<HomeScreen>
           final isTyping = data['typing'] == true;
           if (groupId != null && fromUid != null) {
             _groupTypingUsers.putIfAbsent(groupId, () => {})[fromUid] = isTyping;
+            if (mounted) setState(() {});
+          } else if (fromUid != null) {
+            _directTypingUsers[fromUid] = isTyping;
             if (mounted) setState(() {});
           }
         }
@@ -1542,6 +1546,21 @@ class _HomeScreenState extends State<HomeScreen>
         final lastText  = meta['lastMessageText'] as String? ?? 'Нет сообщений';
         final nearLimit = totalMsgs >= 900;
 
+        // Typing indicator
+        final bool isTypingNow;
+        final String typingText;
+        if (isGroup) {
+          final typingMap = _groupTypingUsers[uid] ?? {};
+          final typingUids = typingMap.entries.where((e) => e.value).map((e) => e.key).toList();
+          isTypingNow = typingUids.isNotEmpty;
+          typingText  = typingUids.length == 1
+              ? '${_storage.getContactDisplayName(typingUids.first)} печатает...'
+              : '${typingUids.length} человека печатают...';
+        } else {
+          isTypingNow = _directTypingUsers[uid] == true;
+          typingText  = 'печатает...';
+        }
+
         return ListTile(
           leading: Stack(children: [
             _buildSquircleAvatar(uid),
@@ -1562,7 +1581,21 @@ class _HomeScreenState extends State<HomeScreen>
             Expanded(child: Text(name, overflow: TextOverflow.ellipsis,
                 style: TextStyle(color: Colors.white, fontWeight: unread > 0 ? FontWeight.bold : FontWeight.normal))),
           ]),
-          subtitle: Text(
+          subtitle: isTypingNow
+              ? Row(mainAxisSize: MainAxisSize.min, children: [
+                  const SizedBox(
+                    width: 14, height: 14,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 1.5, color: Colors.cyanAccent),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(typingText,
+                      style: const TextStyle(
+                          color: Colors.cyanAccent,
+                          fontSize: 12,
+                          fontStyle: FontStyle.italic)),
+                ])
+              : Text(
             nearLimit ? '⚠️ Лимит ($totalMsgs/1000) — $lastText' : lastText,
             style: TextStyle(
                 color: nearLimit ? Colors.orange.withValues(alpha: 0.8) : (unread > 0 ? Colors.white54 : Colors.white24),
