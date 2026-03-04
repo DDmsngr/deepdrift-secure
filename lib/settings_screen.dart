@@ -459,13 +459,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _switchTile(
             icon:     Icons.lock_clock_outlined,
             title:    'Блокировать при уходе в фон',
-            subtitle: 'Запрашивать пароль при возврате в приложение',
+            subtitle: _appLockEnabled
+                ? 'PIN установлен — нажми чтобы изменить'
+                : 'Придумай PIN для блокировки экрана',
             value:    _appLockEnabled,
             onChanged: (val) async {
+              if (val) {
+                // Включаем → сначала задать PIN
+                final pinSet = await _showSetPinDialog();
+                if (!pinSet) return; // отменил — не включаем
+              } else {
+                // Выключаем → спрашиваем текущий PIN для подтверждения
+                final ok = await _showConfirmPinDialog();
+                if (!ok) return;
+                await widget.storage.deleteSetting('app_lock_pin');
+              }
               setState(() => _appLockEnabled = val);
               await widget.storage.saveSetting('app_lock_enabled', val);
             },
           ),
+
+          // Кнопка смены PIN (видна только если блокировка включена)
+          if (_appLockEnabled)
+            ListTile(
+              leading: const Icon(Icons.dialpad, color: Color(0xFF00D9FF)),
+              title: const Text('Изменить PIN-код',
+                  style: TextStyle(color: Colors.white70)),
+              subtitle: const Text('Задать новый PIN для блокировки',
+                  style: TextStyle(color: Colors.white38, fontSize: 12)),
+              trailing: const Icon(Icons.chevron_right, color: Colors.white24),
+              onTap: () async {
+                final ok = await _showConfirmPinDialog();
+                if (!ok) return;
+                await _showSetPinDialog();
+              },
+            ),
 
           // ── ОПАСНАЯ ЗОНА ───────────────────────────────────────────────────
           _sectionHeader('ОПАСНАЯ ЗОНА'),
@@ -518,6 +546,202 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // ──────────────────────────────────────────────────────────────────────────
   // Вспомогательные виджеты
   // ──────────────────────────────────────────────────────────────────────────
+
+  /// Диалог установки нового PIN-кода (4–12 цифр).
+  /// Возвращает true если PIN успешно сохранён.
+  Future<bool> _showSetPinDialog() async {
+    final pin1Ctrl = TextEditingController();
+    final pin2Ctrl = TextEditingController();
+    String? errorText;
+    bool saved = false;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1F3C),
+          title: Text('Установить PIN-код',
+              style: GoogleFonts.orbitron(
+                  color: const Color(0xFF00D9FF), fontSize: 14)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Придумай числовой PIN от 4 до 12 цифр.',
+                style: TextStyle(color: Colors.white54, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller:   pin1Ctrl,
+                keyboardType: TextInputType.number,
+                obscureText:  true,
+                maxLength:    12,
+                style: const TextStyle(color: Colors.white, letterSpacing: 6),
+                decoration: InputDecoration(
+                  labelText:     'Новый PIN',
+                  labelStyle:    const TextStyle(color: Colors.white54),
+                  counterStyle:  const TextStyle(color: Colors.white38),
+                  filled:        true,
+                  fillColor:     const Color(0xFF0A0E27),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: Color(0xFF00D9FF)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller:   pin2Ctrl,
+                keyboardType: TextInputType.number,
+                obscureText:  true,
+                maxLength:    12,
+                style: const TextStyle(color: Colors.white, letterSpacing: 6),
+                onSubmitted: (_) async {
+                  final p1 = pin1Ctrl.text;
+                  final p2 = pin2Ctrl.text;
+                  if (p1.length < 4) {
+                    setS(() => errorText = 'Минимум 4 цифры');
+                    return;
+                  }
+                  if (p1 != p2) {
+                    setS(() => errorText = 'PIN-коды не совпадают');
+                    return;
+                  }
+                  await widget.storage.saveSetting('app_lock_pin', p1);
+                  saved = true;
+                  if (ctx.mounted) Navigator.pop(ctx);
+                },
+                decoration: InputDecoration(
+                  labelText:     'Повтори PIN',
+                  labelStyle:    const TextStyle(color: Colors.white54),
+                  counterStyle:  const TextStyle(color: Colors.white38),
+                  errorText:     errorText,
+                  filled:        true,
+                  fillColor:     const Color(0xFF0A0E27),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: const BorderSide(color: Color(0xFF00D9FF)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('ОТМЕНА',
+                  style: TextStyle(color: Colors.white38)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00D9FF),
+                foregroundColor: Colors.black,
+              ),
+              onPressed: () async {
+                final p1 = pin1Ctrl.text;
+                final p2 = pin2Ctrl.text;
+                if (p1.length < 4) {
+                  setS(() => errorText = 'Минимум 4 цифры');
+                  return;
+                }
+                if (p1 != p2) {
+                  setS(() => errorText = 'PIN-коды не совпадают');
+                  return;
+                }
+                await widget.storage.saveSetting('app_lock_pin', p1);
+                saved = true;
+                if (ctx.mounted) Navigator.pop(ctx);
+              },
+              child: const Text('СОХРАНИТЬ'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    pin1Ctrl.dispose();
+    pin2Ctrl.dispose();
+    return saved;
+  }
+
+  /// Диалог подтверждения текущего PIN (для смены или отключения блокировки).
+  Future<bool> _showConfirmPinDialog() async {
+    final pinCtrl   = TextEditingController();
+    String? errText;
+    bool confirmed  = false;
+    final savedPin  = widget.storage.getSetting('app_lock_pin') as String? ?? '';
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1F3C),
+          title: Text('Подтверди PIN',
+              style: GoogleFonts.orbitron(
+                  color: const Color(0xFF00D9FF), fontSize: 14)),
+          content: TextField(
+            controller:   pinCtrl,
+            keyboardType: TextInputType.number,
+            obscureText:  true,
+            maxLength:    12,
+            autofocus:    true,
+            style: const TextStyle(color: Colors.white, letterSpacing: 6),
+            decoration: InputDecoration(
+              labelText:     'Текущий PIN',
+              labelStyle:    const TextStyle(color: Colors.white54),
+              counterStyle:  const TextStyle(color: Colors.white38),
+              errorText:     errText,
+              filled:        true,
+              fillColor:     const Color(0xFF0A0E27),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide.none,
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: Color(0xFF00D9FF)),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('ОТМЕНА',
+                  style: TextStyle(color: Colors.white38)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00D9FF),
+                foregroundColor: Colors.black,
+              ),
+              onPressed: () {
+                if (pinCtrl.text == savedPin) {
+                  confirmed = true;
+                  Navigator.pop(ctx);
+                } else {
+                  setS(() => errText = 'Неверный PIN');
+                  pinCtrl.clear();
+                }
+              },
+              child: const Text('ПОДТВЕРДИТЬ'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    pinCtrl.dispose();
+    return confirmed;
+  }
 
   void _showDeleteAccountDialog() {
     showDialog(
