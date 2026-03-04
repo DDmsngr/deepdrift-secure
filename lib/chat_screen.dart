@@ -1076,9 +1076,9 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       List<XFile> images = [];
       if (source == ImageSource.gallery) {
-        images = await _imagePicker.pickMultiImage(imageQuality: 85);
+        images = await _imagePicker.pickMultiImage(imageQuality: 82, maxWidth: 1920, maxHeight: 1920);
       } else {
-        final image = await _imagePicker.pickImage(source: source, imageQuality: 85);
+        final image = await _imagePicker.pickImage(source: source, imageQuality: 82, maxWidth: 1920, maxHeight: 1920);
         if (image != null) images.add(image);
       }
       if (images.isEmpty) return;
@@ -1573,6 +1573,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _replyToText = message['text'] as String?;
       _replyToId   = message['id']?.toString();
     });
+    _messageController.selection = TextSelection.fromPosition(
+      TextPosition(offset: _messageController.text.length));
   }
 
   void _cancelReply() => setState(() { _replyToText = null; _replyToId = null; });
@@ -2208,6 +2210,7 @@ class _ChatScreenState extends State<ChatScreen> {
       onOpenImage:     _showFullImageFromFile,
       onOpenFile:      (path, name) => _openFile(path, name),
       onRemoveReaction: _removeReaction,
+      onReply: _setReplyTo,
     );
   }
 
