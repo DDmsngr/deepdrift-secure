@@ -8,6 +8,8 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:provider/provider.dart';
 
 import 'notification_service.dart';
+import 'storage_service.dart';
+import 'screens/lock_screen.dart';
 import 'socket_service.dart';
 import 'crypto_service.dart';
 import 'providers/app_providers.dart';
@@ -94,15 +96,15 @@ void main() async {
   await NotificationService().init();
 
   // 7. Глобальный запрет скриншотов и записи экрана — постоянно включён
-  // if (Platform.isAndroid) {
-  //   try {
-  //     const channel = MethodChannel('com.deepdrift.secure/window');
-  //     await channel.invokeMethod('addSecureFlag');
-  //     debugPrint('🔒 FLAG_SECURE enabled globally');
-  //   } catch (e) {
-  //     debugPrint('FLAG_SECURE global error: $e');
-  //   }
-  // }
+  if (Platform.isAndroid) {
+    try {
+      const channel = MethodChannel('com.deepdrift.secure/window');
+      await channel.invokeMethod('addSecureFlag');
+      debugPrint('🔒 FLAG_SECURE enabled globally');
+    } catch (e) {
+      debugPrint('FLAG_SECURE global error: $e');
+    }
+  }
 
   runApp(const DeepDriftApp());
 }
@@ -118,6 +120,15 @@ class DeepDriftApp extends StatefulWidget {
 
 class _DeepDriftAppState extends State<DeepDriftApp>
     with WidgetsBindingObserver {
+
+  final _storage = StorageService();
+
+  // true  → показываем LockScreen поверх всего
+  bool _showLock = false;
+  // Когда приложение ушло в фон — время фона. Нужно чтобы не блокировать
+  // при кратких уходах (< 3 секунды), например при системном диалоге.
+  DateTime? _pausedAt;
+  static const _lockDelay = Duration(seconds: 3);
 
   @override
   void initState() {
@@ -136,15 +147,30 @@ class _DeepDriftAppState extends State<DeepDriftApp>
     super.didChangeAppLifecycleState(state);
     debugPrint('🔄 App lifecycle: $state');
     switch (state) {
-      case AppLifecycleState.resumed:
-        SocketService().onAppResumed();
-        break;
       case AppLifecycleState.paused:
         SocketService().onAppPaused();
+        _pausedAt = DateTime.now();
+        break;
+      case AppLifecycleState.resumed:
+        SocketService().onAppResumed();
+        _checkLock();
         break;
       default:
         break;
     }
+  }
+
+  void _checkLock() {
+    final lockEnabled = _storage.getSetting('app_lock_enabled', defaultValue: false) as bool;
+    if (!lockEnabled) return;
+    // Блокируем только если были в фоне дольше _lockDelay
+    final pausedAt = _pausedAt;
+    if (pausedAt == null) return;
+    final inBackground = DateTime.now().difference(pausedAt);
+    if (inBackground >= _lockDelay) {
+      if (mounted) setState(() => _showLock = true);
+    }
+    _pausedAt = null;
   }
 
   @override
@@ -164,6 +190,17 @@ class _DeepDriftAppState extends State<DeepDriftApp>
 
         // Позволяет навигировать к чату по тапу на уведомление
         navigatorKey: NotificationService.navigatorKey,
+        builder: (context, child) {
+          if (_showLock) {
+            return LockScreen(
+              storage: _storage,
+              onUnlocked: () {
+                if (mounted) setState(() => _showLock = false);
+              },
+            );
+          }
+          return child ?? const SizedBox.shrink();
+        },
 
         theme: ThemeData(
           brightness:              Brightness.dark,
