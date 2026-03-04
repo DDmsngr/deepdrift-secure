@@ -118,7 +118,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     // Запрещаем скриншоты и запись экрана в чате — приватность E2EE
-    //_enableSecureScreen();
+    // _enableSecureScreen();
     _messageController.addListener(_onTextChanged);
     _scrollController.addListener(_onScroll);
 
