@@ -1,4 +1,5 @@
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// Сервис для локального хранения данных приложения.
 ///
@@ -20,6 +21,23 @@ class StorageService {
   static const String _reactionsBox = 'reactions';
 
   static const int MAX_MESSAGES_PER_CHAT = 1000;
+
+  // SECURITY FIX: auth_token хранится в Keychain/Keystore, а не в Hive
+  final _secureStorage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
+
+  // Сохранить auth_token в защищённом хранилище
+  Future<void> saveAuthToken(String token) =>
+      _secureStorage.write(key: 'auth_token', value: token);
+
+  // Получить auth_token из защищённого хранилища
+  Future<String?> getAuthToken() =>
+      _secureStorage.read(key: 'auth_token');
+
+  // Удалить auth_token (при выходе / wipe)
+  Future<void> deleteAuthToken() =>
+      _secureStorage.delete(key: 'auth_token');
 
   // 🟡-5 FIX: Per-key mutex через sequential Future chain.
   // Ключ — chatWith (или любой другой ключ операции).
@@ -639,6 +657,7 @@ class StorageService {
     await Hive.box(_settingsBox).clear();
     await Hive.box(_metadataBox).clear();
     await Hive.box(_reactionsBox).clear();
+    await _secureStorage.deleteAll(); // SECURITY FIX: удаляем и токен из Keystore
   }
 
   // ──────────────────────────────────────────────────────────────────────────
