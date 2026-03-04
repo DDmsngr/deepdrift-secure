@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:uuid/uuid.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
@@ -69,7 +68,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _typingTimer;
   // Для личных чатов: одно значение. Для групп: Map<uid, bool>
   bool   _targetIsTyping   = false;
-  final  Map<String, bool> _groupTypingMap = {};
+  final Map<String, bool> _groupTypingMap = {};
 
   bool _isLoadingMore    = false;
   bool _hasMoreMessages  = true;
@@ -698,9 +697,23 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _handleTypingIndicator(Map<String, dynamic> data) {
-    if (data['from_uid'] == widget.targetUid && mounted) {
-      setState(() => _targetIsTyping = data['typing'] == true);
-      if (_targetIsTyping) _scrollToBottom();
+    if (!mounted) return;
+    final fromUid  = data['from_uid'] as String?;
+    final isTyping = data['typing'] == true;
+    final isGroup  = _storage.isGroup(widget.targetUid);
+
+    if (isGroup && fromUid != null) {
+      setState(() {
+        if (isTyping) {
+          _groupTypingMap[fromUid] = true;
+        } else {
+          _groupTypingMap.remove(fromUid);
+        }
+      });
+      if (isTyping) _scrollToBottom();
+    } else if (fromUid == widget.targetUid) {
+      setState(() => _targetIsTyping = isTyping);
+      if (isTyping) _scrollToBottom();
     }
   }
 
@@ -1702,14 +1715,6 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _disableSecureScreen() async {
-    if (!Platform.isAndroid || _debugMode) return;
-    try {
-      await _secureChannel.invokeMethod('clearSecureFlag');
-    } catch (e) {
-      debugPrint('Screenshot protection disable error: $e');
-    }
-  }
 
   /// Открывает фото профиля контакта на весь экран с Hero-анимацией и pinch-to-zoom.
   // ──────────────────────────────────────────────────────────────────────────
@@ -2320,7 +2325,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       radius: 18,
                       backgroundColor: isGroup ? const Color(0xFF0A2A3A) : const Color(0xFF0A0E27),
                       backgroundImage: (!isGroup && avatar != null && avatar.isNotEmpty)
-                          ? CachedNetworkImageProvider('$SERVER_HTTP_URL/download/$avatar')
+                          ? NetworkImage('$SERVER_HTTP_URL/download/$avatar')
                           : null,
                       child: isGroup
                           ? const Icon(Icons.group, color: Color(0xFF00D9FF), size: 18)
@@ -2340,10 +2345,22 @@ class _ChatScreenState extends State<ChatScreen> {
                     children: [
                       Text(displayName, style: GoogleFonts.orbitron(fontSize: 14)),
                       if (isGroup)
-                        Text(
-                          '\${groupMembers.length} участников',
-                          style: const TextStyle(fontSize: 10, color: Colors.white54),
-                        )
+                        Builder(builder: (_) {
+                          final typers = _groupTypingMap.keys
+                              .map(_storage.getContactDisplayName)
+                              .toList();
+                          if (typers.isEmpty) {
+                            return Text(
+                              '\${groupMembers.length} участников',
+                              style: const TextStyle(fontSize: 10, color: Colors.white54),
+                            );
+                          }
+                          final who = typers.length == 1
+                              ? typers[0]
+                              : '\${typers.length} человека';
+                          return Text('\$who печатает...',
+                              style: const TextStyle(fontSize: 10, color: Colors.cyan));
+                        })
                       else if (_targetIsTyping)
                         const Text('typing...', style: TextStyle(fontSize: 10, color: Colors.cyan))
                       else if (isOnline)
