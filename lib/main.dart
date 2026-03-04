@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -90,6 +92,17 @@ void main() async {
   // 6. Инициализация локального хранилища и сервисов
   await Hive.initFlutter();
   await NotificationService().init();
+
+  // 7. Глобальный запрет скриншотов и записи экрана — постоянно включён
+  // if (Platform.isAndroid) {
+  //   try {
+  //     const channel = MethodChannel('com.deepdrift.secure/window');
+  //     await channel.invokeMethod('addSecureFlag');
+  //     debugPrint('🔒 FLAG_SECURE enabled globally');
+  //   } catch (e) {
+  //     debugPrint('FLAG_SECURE global error: $e');
+  //   }
+  // }
 
   runApp(const DeepDriftApp());
 }
