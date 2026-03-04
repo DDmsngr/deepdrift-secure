@@ -9,7 +9,7 @@ import 'package:provider/provider.dart';
 
 import 'notification_service.dart';
 import 'storage_service.dart';
-import 'screens/lock_screen.dart';
+import 'lock_screen.dart';
 import 'socket_service.dart';
 import 'crypto_service.dart';
 import 'providers/app_providers.dart';
