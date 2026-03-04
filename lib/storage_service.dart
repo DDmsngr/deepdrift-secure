@@ -112,6 +112,7 @@ class StorageService {
 
       await box.put(chatWith, trimmed);
       await _updateChatMetadataInternal(chatWith, msg);
+      _invalidateSortedContacts();
     });
   }
 
@@ -243,6 +244,7 @@ class StorageService {
       }
     });
     if (displayName != null) await setContactDisplayName(uid, displayName);
+    _invalidateSortedContacts();
   }
 
   /// Возвращает список UID всех контактов.
@@ -255,7 +257,11 @@ class StorageService {
   List<String> getContactsList() => getContacts();
 
   /// Закреплённые вверху, затем по времени последнего сообщения.
+  /// Результат кэшируется до следующего изменения данных (_invalidateSortedContacts).
   List<String> getContactsSortedByActivity() {
+    if (!_sortedContactsDirty && _sortedContactsCache != null) {
+      return _sortedContactsCache!;
+    }
     final contacts = getContacts();
     final box      = Hive.box(_metadataBox);
 
@@ -276,6 +282,8 @@ class StorageService {
           .compareTo(_parseTime(aData['lastMessageTime']));
     });
 
+    _sortedContactsCache = contacts;
+    _sortedContactsDirty  = false;
     return contacts;
   }
 
@@ -290,6 +298,7 @@ class StorageService {
     final meta = Hive.box(_metadataBox);
     await meta.delete('pinned_$uid');
     await meta.delete('muted_$uid');
+    _invalidateSortedContacts();
   }
 
   Future<void> setContactDisplayName(String uid, String displayName) async =>
@@ -560,6 +569,21 @@ class StorageService {
       };
     }
     return null;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Полное удаление аккаунта
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /// Удаляет все локальные данные приложения: сообщения, контакты, ключи, настройки.
+  /// Вызывается при удалении аккаунта. После этого приложение перезапускается.
+  Future<void> wipeAllData() async {
+    _invalidateSortedContacts();
+    await Hive.box(_msgBox).clear();
+    await Hive.box(_contactsBox).clear();
+    await Hive.box(_settingsBox).clear();
+    await Hive.box(_metadataBox).clear();
+    await Hive.box(_reactionsBox).clear();
   }
 
   // ──────────────────────────────────────────────────────────────────────────
