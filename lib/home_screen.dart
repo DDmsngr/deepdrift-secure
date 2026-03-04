@@ -22,6 +22,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'models/chat_models.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tab indices
@@ -86,7 +87,14 @@ class _HomeScreenState extends State<HomeScreen>
     NotificationService().setOpenChatCallback(_openChatWithUid);
     _setup();
     _statusCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (_isConnected) _socket.checkStatuses(_chats);
+      if (!_isConnected) return;
+      // PERFORMANCE FIX: шлём только контакты, чей статус не обновлялся > 5 минут
+      final staleThreshold = DateTime.now().millisecondsSinceEpoch - 5 * 60 * 1000;
+      final stale = _chats.where((uid) =>
+          _storage.getContactLastSeen(uid) < staleThreshold &&
+          !_storage.isGroup(uid) && !_storage.isChannel(uid)
+      ).toList();
+      if (stale.isNotEmpty) _socket.checkStatuses(stale);
     });
   }
 
@@ -184,7 +192,8 @@ class _HomeScreenState extends State<HomeScreen>
 
       // SECURITY FIX: пароль не читается из хранилища — только salt + ключи
       final savedSalt       = _storage.getSetting('user_salt');
-      final authToken       = _storage.getSetting('auth_token');
+      // SECURITY FIX: auth_token читается из Keychain/Keystore
+      final authToken       = await _storage.getAuthToken();
       final savedX25519Key  = _storage.getSetting('encrypted_x25519_key');
       final savedEd25519Key = _storage.getSetting('encrypted_ed25519_key');
 
@@ -597,7 +606,7 @@ class _HomeScreenState extends State<HomeScreen>
                         width: 80, height: 80,
                         color: const Color(0xFF0A0E27),
                         child: hasAvatar
-                            ? Image.network('https://deepdrift-backend.onrender.com/download/$currentAvatar', fit: BoxFit.cover)
+                            ? CachedNetworkImage(imageUrl: 'https://deepdrift-backend.onrender.com/download/$currentAvatar', fit: BoxFit.cover, placeholder: (_, __) => const Center(child: CircularProgressIndicator(color: Color(0xFF00D9FF), strokeWidth: 2)), errorWidget: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white38))
                             : const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan),
                       ),
                     ),
@@ -1428,9 +1437,10 @@ class _HomeScreenState extends State<HomeScreen>
         width: size, height: size,
         color: isGroup ? const Color(0xFF0A2A3A) : isChannel ? const Color(0xFF1A0A3A) : const Color(0xFF1A1F3C),
         child: hasAvatar
-            ? Image.network('https://deepdrift-backend.onrender.com/download/$avatar',
+            ? CachedNetworkImage(imageUrl: 'https://deepdrift-backend.onrender.com/download/$avatar',
                 width: size, height: size, fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => _avatarFallback(name, isGroup, isChannel, radius))
+                placeholder: (_, __) => _avatarFallback(name, isGroup, isChannel, radius),
+                errorWidget: (_, __, ___) => _avatarFallback(name, isGroup, isChannel, radius))
             : _avatarFallback(name, isGroup, isChannel, radius),
       ),
     );
@@ -1629,7 +1639,7 @@ class _HomeScreenState extends State<HomeScreen>
                     borderRadius: BorderRadius.circular(8),
                     child: Container(width: 32, height: 32, color: Colors.cyan.withValues(alpha: 0.2),
                         child: hasMyAvatar
-                            ? Image.network('https://deepdrift-backend.onrender.com/download/$avatarUrl', fit: BoxFit.cover)
+                            ? CachedNetworkImage(imageUrl: 'https://deepdrift-backend.onrender.com/download/$avatarUrl', fit: BoxFit.cover, placeholder: (_, __) => const Icon(Icons.person, size: 20, color: Colors.cyan), errorWidget: (_, __, ___) => const Icon(Icons.person, size: 20, color: Colors.cyan))
                             : const Icon(Icons.person, size: 20, color: Colors.cyan)),
                   ),
                 ),
