@@ -55,7 +55,6 @@ class _HomeScreenState extends State<HomeScreen>
 
 
   Timer? _statusCheckTimer;
-  Timer? _reconnectDebounce;
 
   // ──────────────────────────────────────────────────────────────────────────
   // Lifecycle
@@ -94,7 +93,6 @@ class _HomeScreenState extends State<HomeScreen>
     WidgetsBinding.instance.removeObserver(this);
     _socketSub?.cancel();
     _statusCheckTimer?.cancel();
-    _reconnectDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -102,12 +100,8 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // Дебаунс 500мс — Android шлёт несколько resumed подряд при запуске
-      _reconnectDebounce?.cancel();
-      _reconnectDebounce = Timer(const Duration(milliseconds: 500), () {
-        if (!_socket.isConnected) _socket.forceReconnect();
-        _socket.checkStatuses(_chats);
-      });
+      if (!_socket.isConnected) _socket.forceReconnect();
+      _socket.checkStatuses(_chats);
     }
   }
 
@@ -256,7 +250,6 @@ class _HomeScreenState extends State<HomeScreen>
           if (mounted) setState(() {});
         }
         if (type == 'message') _handleIncomingMessageQuietly(data);
-        if (type == 'group_invited') _handleGroupInvited(data);
         if (type == 'message' || type == 'status_update' ||
             type == 'message_deleted' || type == 'user_status') {
           setState(() => _chats = _storage.getContactsSortedByActivity());
@@ -300,59 +293,6 @@ class _HomeScreenState extends State<HomeScreen>
     final msgId     = data['id']?.toString();
     if (senderUid == null || msgId == null) return;
     if (_storage.hasMessage(senderUid, msgId)) return;
-
-    // ── Новый контакт — показываем баннер запроса ────────────────────────────
-    final isKnown = _storage.getContacts().contains(senderUid);
-    if (!isKnown && mounted) {
-      await _storage.addContact(senderUid);
-      setState(() => _chats = _storage.getContactsSortedByActivity());
-      _socket.requestPublicKey(senderUid);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        backgroundColor: const Color(0xFF0D1B3E),
-        duration: const Duration(seconds: 8),
-        content: Row(children: [
-          Container(
-            width: 38, height: 38,
-            decoration: BoxDecoration(
-              color: const Color(0xFF00D9FF).withValues(alpha: 0.15),
-              shape: BoxShape.circle,
-              border: Border.all(color: const Color(0xFF00D9FF).withValues(alpha: 0.4)),
-            ),
-            child: Center(child: Text(
-              senderUid.isNotEmpty ? senderUid[0] : '?',
-              style: const TextStyle(
-                  color: Color(0xFF00D9FF), fontWeight: FontWeight.bold, fontSize: 16),
-            )),
-          ),
-          const SizedBox(width: 12),
-          Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('📩 Входящий запрос',
-                  style: TextStyle(
-                      color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-              Text('ID $senderUid хочет написать тебе',
-                  style: const TextStyle(color: Colors.white54, fontSize: 11)),
-            ],
-          )),
-        ]),
-        action: SnackBarAction(
-          label: 'ОТКРЫТЬ',
-          textColor: const Color(0xFF00D9FF),
-          onPressed: () {
-            if (_myUid == null) return;
-            Navigator.push(context, MaterialPageRoute(
-              builder: (_) => ChatScreen(
-                  myUid: _myUid!, targetUid: senderUid, cipher: _cipher),
-            )).then((_) {
-              if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
-            });
-          },
-        ),
-      ));
-    }
-
     try {
       // Сначала пробуем загрузить ключи из кэша — иначе decryptText вернёт
       // '[⚠️ No encryption key]' и мы сохраним ошибку в Hive навсегда.
@@ -426,104 +366,6 @@ class _HomeScreenState extends State<HomeScreen>
   // ──────────────────────────────────────────────────────────────────────────
 
   /// Открывает markdown-документ (ToS / Privacy) из любого контекста (включая диалоги).
-  Future<void> _handleGroupInvited(Map<String, dynamic> data) async {
-    final groupId    = data['group_id']   as String?;
-    final groupName  = data['group_name'] as String? ?? data['group_id'] as String? ?? '';
-    final creatorUid = data['creator']    as String? ?? '';
-    final members    = (data['members']   as List?)?.map((e) => e.toString()).toList() ?? [];
-    if (groupId == null || groupId.isEmpty) return;
-    if (_storage.getGroupMembers(groupId).isNotEmpty) return;
-    await _storage.saveGroup(
-      groupId:    groupId,
-      groupName:  groupName,
-      members:    members,
-      creatorUid: creatorUid,
-    );
-    if (mounted) {
-      setState(() => _chats = _storage.getContactsSortedByActivity());
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Тебя добавили в группу «$groupName»'),
-        backgroundColor: const Color(0xFF1A1F3C),
-        action: SnackBarAction(
-          label: 'ОТКРЫТЬ',
-          textColor: const Color(0xFF00D9FF),
-          onPressed: () {
-            if (_myUid == null) return;
-            Navigator.push(context, MaterialPageRoute(
-              builder: (_) => ChatScreen(myUid: _myUid!, targetUid: groupId, cipher: _cipher),
-            )).then((_) {
-              if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
-            });
-          },
-        ),
-        duration: const Duration(seconds: 6),
-      ));
-    }
-  }
-
-  void _showSecurityCode(String uid, String contactName) async {
-    final code = await _cipher.getSecurityCode(uid);
-    if (!mounted) return;
-    if (code == 'NOT_ESTABLISHED') {
-      _showError('Ключ не установлен — сначала открой чат с $contactName');
-      return;
-    }
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1A1F3C),
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(width: 36, height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
-              Row(children: [
-                const Icon(Icons.verified_user, color: Color(0xFF00D9FF)),
-                const SizedBox(width: 10),
-                Text('Отпечаток сессии',
-                    style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 14)),
-              ]),
-              const SizedBox(height: 12),
-              const Text('Сравни этот код с кодом собеседника голосом или лично.\nЕсли коды совпадают — соединение защищено.',
-                style: TextStyle(color: Colors.white54, fontSize: 12, height: 1.5),
-                textAlign: TextAlign.center),
-              const SizedBox(height: 20),
-              Container(
-                width: double.infinity, padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0A0E27), borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF00D9FF).withValues(alpha: 0.4))),
-                child: Text(code, style: const TextStyle(color: Color(0xFF00D9FF),
-                    fontFamily: 'monospace', fontSize: 20,
-                    fontWeight: FontWeight.bold, letterSpacing: 2),
-                    textAlign: TextAlign.center)),
-              const SizedBox(height: 10),
-              Text('С кем: $contactName ($uid)',
-                  style: const TextStyle(color: Colors.white38, fontSize: 11)),
-              const SizedBox(height: 16),
-              SizedBox(width: double.infinity, child: OutlinedButton.icon(
-                icon: const Icon(Icons.copy, color: Color(0xFF00D9FF), size: 18),
-                label: const Text('Скопировать код',
-                    style: TextStyle(color: Color(0xFF00D9FF))),
-                style: OutlinedButton.styleFrom(side: const BorderSide(color: Color(0xFF00D9FF))),
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: 'DDChat Security Code\n$contactName ($uid)\n$code'));
-                  _showSuccess('Код скопирован');
-                },
-              )),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   void _showLegalDocFromContext(BuildContext ctx, {
     required String title,
     required String assetPath,
@@ -1956,11 +1798,24 @@ class _HomeScreenState extends State<HomeScreen>
     // Устанавливаем ключ себе сразу (создатель тоже участник)
     _cipher.setGroupKey(groupId, groupKeyBytes);
 
-    // Шифруем ключ для каждого участника его personal shared secret
+    // Шаг 1: запрашиваем публичные ключи всех участников у которых нет shared secret
+    final needKeys = <String>[];
+    for (final uid in memberUids) {
+      if (!_cipher.hasSharedSecret(uid)) {
+        await _cipher.tryLoadCachedKeys(uid, _storage);
+        if (!_cipher.hasSharedSecret(uid)) needKeys.add(uid);
+      }
+    }
+    if (needKeys.isNotEmpty) {
+      for (final uid in needKeys) _socket.requestPublicKey(uid);
+      // Ждём key exchange — даём 2.5с чтобы сервер успел прислать pubkey
+      await Future.delayed(const Duration(milliseconds: 2500));
+    }
+
+    // Шаг 2: Шифруем ключ для каждого участника его personal shared secret
     final encryptedKeys = <String, String>{};
     for (final uid in memberUids) {
       if (!_cipher.hasSharedSecret(uid)) {
-        // Пробуем загрузить из кэша
         await _cipher.tryLoadCachedKeys(uid, _storage);
       }
       if (_cipher.hasSharedSecret(uid)) {
@@ -1969,6 +1824,9 @@ class _HomeScreenState extends State<HomeScreen>
         } catch (e) {
           debugPrint('⚠️ Could not encrypt group key for $uid: $e');
         }
+      } else {
+        // Ключа нет даже после ожидания — сохраним uid для повторной попытки
+        debugPrint('⚠️ No key for $uid — group key not distributed to them yet');
       }
     }
 
@@ -2160,20 +2018,6 @@ class _HomeScreenState extends State<HomeScreen>
               },
             ),
 
-            // Проверить отпечаток E2E
-            if (!_storage.isGroup(uid))
-              ListTile(
-                leading: const Icon(Icons.verified_user_outlined, color: Colors.cyan),
-                title: const Text('Проверить отпечаток',
-                    style: TextStyle(color: Colors.white)),
-                subtitle: const Text('Убедись что чат не перехвачен',
-                    style: TextStyle(color: Colors.white38, fontSize: 11)),
-                onTap: () {
-                  Navigator.pop(context);
-                  _showSecurityCode(uid, name);
-                },
-              ),
-
             // Очистить историю
             ListTile(
               leading: const Icon(Icons.cleaning_services_outlined, color: Colors.orange),
@@ -2335,10 +2179,7 @@ class _HomeScreenState extends State<HomeScreen>
       itemCount: _chats.length,
       itemBuilder: (c, i) {
         final uid      = _chats[i];
-        final isGroup  = _storage.isGroup(uid);
-        final name     = isGroup
-            ? _storage.getGroupName(uid)
-            : _storage.getContactDisplayName(uid);
+        final name     = _storage.getContactDisplayName(uid);
         final avatar   = _storage.getContactAvatar(uid);
         final meta     = _storage.getChatMetadata(uid);
         final unread   = meta['unreadCount'] as int? ?? 0;
@@ -2346,6 +2187,8 @@ class _HomeScreenState extends State<HomeScreen>
         final isPinned = _storage.isContactPinned(uid);
         final isMuted  = _storage.isContactMuted(uid);
         final hasAvatar = avatar != null && avatar.isNotEmpty && avatar != 'null';
+
+        final isGroup = _storage.isGroup(uid);
 
         return ListTile(
           leading: Stack(
