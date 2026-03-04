@@ -9,15 +9,18 @@ import 'storage_service.dart';
 import 'crypto_service.dart';
 
 class SettingsScreen extends StatefulWidget {
-  final StorageService storage;
-  final SecureCipher   cipher;
-  final String         myUid;
+  final StorageService  storage;
+  final SecureCipher    cipher;
+  final String          myUid;
+  /// Callback для открытия диалога "Восстановить / Сменить аккаунт" из HomeScreen
+  final VoidCallback?   onSwitchAccount;
 
   const SettingsScreen({
     super.key,
     required this.storage,
     required this.cipher,
     required this.myUid,
+    this.onSwitchAccount,
   });
 
   @override
@@ -359,6 +362,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (val) async {
               setState(() => _autoSavePhotos = val);
               await widget.storage.saveSetting('auto_save_photos', val);
+            },
+          ),
+
+          // ── АККАУНТ ────────────────────────────────────────────────────────
+          _sectionHeader('АККАУНТ'),
+
+          ListTile(
+            leading: const Icon(Icons.switch_account, color: Color(0xFF00D9FF)),
+            title: const Text('Сменить аккаунт',
+                style: TextStyle(color: Colors.white)),
+            subtitle: const Text('Восстановить другой аккаунт из файла резервной копии',
+                style: TextStyle(color: Colors.white38, fontSize: 12)),
+            trailing: const Icon(Icons.chevron_right, color: Colors.white24),
+            onTap: () {
+              if (widget.onSwitchAccount != null) {
+                Navigator.pop(context); // Закрываем настройки
+                Future.delayed(const Duration(milliseconds: 300), () {
+                  widget.onSwitchAccount!();
+                });
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Вернитесь на главный экран для смены аккаунта'),
+                  ),
+                );
+              }
             },
           ),
 
