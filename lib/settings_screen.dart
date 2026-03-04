@@ -199,7 +199,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         // новый пароль + новый нонс = новый ключ шифрования.
                         final newKeys = await widget.cipher.exportBothKeys(newCtrl.text);
 
-                        await widget.storage.saveSetting('user_password',       newCtrl.text);
+                        // SECURITY FIX: пароль не сохраняется — только зашифрованные ключи
                         await widget.storage.saveSetting('encrypted_x25519_key', newKeys['x25519']!);
                         await widget.storage.saveSetting('encrypted_ed25519_key', newKeys['ed25519']!);
 
