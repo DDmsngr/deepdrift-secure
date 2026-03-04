@@ -504,7 +504,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: TextStyle(color: Colors.red)),
             subtitle: const Text('Удалить все данные и ключи с устройства',
                 style: TextStyle(color: Colors.white38, fontSize: 12)),
-            trailing: const Icon(Icons.chevron_right, color: Colors.red24),
+            trailing: const Icon(Icons.chevron_right, color: Colors.red),
             onTap: () => _showDeleteAccountDialog(),
           ),
 
