@@ -85,6 +85,7 @@ class _HomeScreenState extends State<HomeScreen>
     _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(() => setState(() {}));
     NotificationService().setOpenChatCallback(_openChatWithUid);
+    NotificationService().setForeground(true); // Приложение открыто
     _setup();
     _statusCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (!_isConnected) return;
@@ -101,6 +102,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     NotificationService().clearOpenChatCallback();
+    NotificationService().setForeground(false);
     WidgetsBinding.instance.removeObserver(this);
     _socketSub?.cancel();
     _statusCheckTimer?.cancel();
@@ -112,8 +114,11 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      NotificationService().setForeground(true);
       if (!_socket.isConnected) _socket.forceReconnect();
       _socket.checkStatuses(_chats);
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      NotificationService().setForeground(false);
     }
   }
 
@@ -225,6 +230,9 @@ class _HomeScreenState extends State<HomeScreen>
 
         if (type == 'uid_assigned') {
           setState(() { _isConnected = true; _connectionStatus = 'В СЕТИ'; });
+          // Сохраняем upload_token для последующих загрузок файлов (аватары и т.д.)
+          final uploadToken = data['upload_token'] as String?;
+          _socket.setUploadToken(uploadToken);
           _registerPublicKeysOnServer();
           _socket.checkStatuses(_storage.getContacts());
           _registerAccountOnServer();
@@ -378,12 +386,16 @@ class _HomeScreenState extends State<HomeScreen>
     final msgId     = data['id']?.toString();
     if (senderUid == null || msgId == null) return;
 
-    final storageKey = (groupId != null && groupId.isNotEmpty) ? groupId : senderUid;
+    final storageKey  = (groupId != null && groupId.isNotEmpty) ? groupId : senderUid;
+    final isGroupMsg  = groupId != null && groupId.isNotEmpty;
+    // Для групп используем groupId как ключ шифрования, для личных — senderUid
+    final cryptoKey   = isGroupMsg ? groupId : senderUid;
+
     if (_storage.hasMessage(storageKey, msgId)) return;
 
     // SECURITY FIX: незнакомцы идут в очередь запросов, а не сразу в контакты
     final contacts = _storage.getContacts();
-    if (!contacts.contains(senderUid) && groupId == null) {
+    if (!contacts.contains(senderUid) && !isGroupMsg) {
       await _storage.addIncomingRequest(senderUid);
       _socket.getProfile(senderUid);
       await NotificationService().showMessageNotification(
@@ -395,14 +407,28 @@ class _HomeScreenState extends State<HomeScreen>
       return;
     }
 
+    // Если группа не добавлена ещё в список — добавляем
+    if (isGroupMsg && !contacts.contains(groupId)) {
+      _socket.requestGroupKey(groupId);
+      _socket.getProfile(groupId); // Запрашиваем имя группы
+    } else if (isGroupMsg) {
+      // Если имя группы — это ID (ещё не загружено), запрашиваем
+      final gName = _storage.getGroupName(groupId);
+      if (gName == groupId || gName.isEmpty) {
+        _socket.getProfile(groupId);
+      }
+    }
+
     try {
-      if (!_cipher.hasSharedSecret(senderUid)) await _cipher.tryLoadCachedKeys(senderUid, _storage);
+      if (!_cipher.hasSharedSecret(cryptoKey)) {
+        await _cipher.tryLoadCachedKeys(cryptoKey, _storage);
+      }
 
       final encryptedText = data['encrypted_text'] as String? ?? '';
       final String decrypted;
 
-      if (_cipher.hasSharedSecret(senderUid)) {
-        decrypted = await _cipher.decryptText(encryptedText, fromUid: senderUid);
+      if (_cipher.hasSharedSecret(cryptoKey)) {
+        decrypted = await _cipher.decryptText(encryptedText, fromUid: cryptoKey);
       } else {
         final pendingMsg = {
           'id': msgId, 'text': '', 'isMe': false,
@@ -416,7 +442,7 @@ class _HomeScreenState extends State<HomeScreen>
         await _storage.saveMessage(storageKey, pendingMsg);
         await NotificationService().showMessageNotification(
           fromUid: storageKey,
-          displayName: (groupId != null) ? _storage.getGroupName(groupId) : _storage.getContactDisplayName(senderUid),
+          displayName: isGroupMsg ? _storage.getGroupName(groupId) : _storage.getContactDisplayName(senderUid),
           messageText: 'Новое зашифрованное сообщение',
         );
         if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
@@ -434,12 +460,12 @@ class _HomeScreenState extends State<HomeScreen>
         'signatureStatus': SignatureStatus.unknown.index,
       };
       await _storage.saveMessage(storageKey, msg);
-      _socket.sendReadReceipt(senderUid, msgId);
+      if (!isGroupMsg) _socket.sendReadReceipt(senderUid, msgId);
 
       // IMPROVEMENT: preview текста в уведомлении + имя отправителя в группах
       final senderName  = _storage.getContactDisplayName(senderUid);
       final previewText = decrypted.length > 60 ? '${decrypted.substring(0, 60)}…' : decrypted;
-      final displayName = (groupId != null) ? '${_storage.getGroupName(groupId)} · $senderName' : senderName;
+      final displayName = isGroupMsg ? '${_storage.getGroupName(groupId)} · $senderName' : senderName;
       await NotificationService().showMessageNotification(
         fromUid: storageKey, displayName: displayName, messageText: previewText,
       );
@@ -1118,6 +1144,19 @@ class _HomeScreenState extends State<HomeScreen>
           const SizedBox(height: 12),
           TextField(controller: nameC, style: const TextStyle(color: Colors.white),
               decoration: const InputDecoration(labelText: 'Имя (необязательно)', filled: true, fillColor: Color(0xFF0A0E27))),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.qr_code_scanner, color: Color(0xFF00D9FF)),
+              label: const Text('Сканировать QR-код', style: TextStyle(color: Color(0xFF00D9FF))),
+              style: OutlinedButton.styleFrom(side: const BorderSide(color: Color(0xFF00D9FF))),
+              onPressed: () {
+                Navigator.pop(context);
+                _openQrScanner();
+              },
+            ),
+          ),
         ]),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('ОТМЕНА')),
@@ -1288,9 +1327,10 @@ class _HomeScreenState extends State<HomeScreen>
   // ─────────────────────────────────────────────────────────────────────────
 
   void _showContactOptions(String uid) {
-    final name     = _storage.getContactDisplayName(uid);
-    final isPinned = _storage.isContactPinned(uid);
-    final isMuted  = _storage.isContactMuted(uid);
+    final name      = _storage.getContactDisplayName(uid);
+    final isPinned  = _storage.isContactPinned(uid);
+    final isMuted   = _storage.isContactMuted(uid);
+    final isGroup   = _storage.isGroup(uid);
     showModalBottomSheet(
       context: context, backgroundColor: const Color(0xFF1A1F3C),
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
@@ -1308,14 +1348,16 @@ class _HomeScreenState extends State<HomeScreen>
             ]),
           ),
           const Divider(color: Colors.white12, height: 1),
+          // ── Добавить в избранное ───────────────────────────────────────────
           ListTile(
-            leading: Icon(isPinned ? Icons.push_pin : Icons.push_pin_outlined, color: isPinned ? Colors.amber : Colors.white70),
-            title: Text(isPinned ? 'Открепить' : 'Закрепить сверху', style: TextStyle(color: isPinned ? Colors.amber : Colors.white)),
+            leading: Icon(isPinned ? Icons.star : Icons.star_outline, color: isPinned ? Colors.amber : Colors.white70),
+            title: Text(isPinned ? 'Убрать из избранного' : 'Добавить в избранное',
+                style: TextStyle(color: isPinned ? Colors.amber : Colors.white)),
             onTap: () async {
               Navigator.pop(context);
               await _storage.setContactPinned(uid, !isPinned);
               setState(() => _chats = _storage.getContactsSortedByActivity());
-              _showSuccess(isPinned ? 'Откреплено' : '📌 $name закреплен');
+              _showSuccess(isPinned ? 'Убрано из избранного' : '⭐ $name добавлен в избранное');
             },
           ),
           ListTile(leading: const Icon(Icons.edit_outlined, color: Colors.white70),
@@ -1337,9 +1379,10 @@ class _HomeScreenState extends State<HomeScreen>
           ListTile(leading: const Icon(Icons.cleaning_services_outlined, color: Colors.orange),
               title: const Text('Очистить историю', style: TextStyle(color: Colors.orange)),
               onTap: () { Navigator.pop(context); _confirmClearHistory(uid, name); }),
-          ListTile(leading: const Icon(Icons.person_remove_outlined, color: Colors.red),
-              title: Text('Удалить "$name"', style: const TextStyle(color: Colors.red)),
-              onTap: () { Navigator.pop(context); _confirmDeleteContact(uid, name); }),
+          if (!isGroup)
+            ListTile(leading: const Icon(Icons.person_remove_outlined, color: Colors.red),
+                title: Text('Удалить "$name"', style: const TextStyle(color: Colors.red)),
+                onTap: () { Navigator.pop(context); _confirmDeleteContact(uid, name); }),
           const SizedBox(height: 8),
         ]),
       ),
