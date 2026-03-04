@@ -2355,10 +2355,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               style: const TextStyle(fontSize: 10, color: Colors.white54),
                             );
                           }
-                          final who = typers.length == 1
-                              ? typers[0]
-                              : '\${typers.length} человека';
-                          return Text('\$who печатает...',
+                          return Text('\${typers.length == 1 ? typers[0] : '\${typers.length} человека'} печатает...',
                               style: const TextStyle(fontSize: 10, color: Colors.cyan));
                         })
                       else if (_targetIsTyping)
