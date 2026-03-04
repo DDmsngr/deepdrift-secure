@@ -16,6 +16,7 @@ import 'socket_service.dart';
 import 'crypto_service.dart';
 import 'notification_service.dart';
 import 'settings_screen.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'providers/app_providers.dart';
 import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
@@ -34,6 +35,8 @@ class _HomeScreenState extends State<HomeScreen>
 
   String?      _myUid;
   List<String> _chats = [];
+  // uid → typing state (для групповых чатов)
+  final Map<String, Map<String, bool>> _groupTypingUsers = {};
   bool         _isConnected     = false;
   bool         _isReady         = false;
   String       _connectionStatus = 'ОФФЛАЙН';
@@ -249,10 +252,20 @@ class _HomeScreenState extends State<HomeScreen>
           );
           if (mounted) setState(() {});
         }
+        // ── FIX: typing_indicator в групповых чатах на уровне HomeScreen ──
+        if (type == 'typing_indicator') {
+          final groupId  = data['group_id'] as String?;
+          final fromUid  = data['from_uid'] as String?;
+          final isTyping = data['typing'] == true;
+          if (groupId != null && fromUid != null) {
+            _groupTypingUsers.putIfAbsent(groupId, () => {})[fromUid] = isTyping;
+            if (mounted) setState(() {});
+          }
+        }
         if (type == 'message') _handleIncomingMessageQuietly(data);
 
         // ── FIX: Уведомление о добавлении в группу ────────────────────────
-        if (type == 'group_added' || type == 'group_created') {
+        if (type == 'group_invited' || type == 'group_added' || type == 'group_created') {
           _handleGroupAdded(data);
         }
 
@@ -661,7 +674,7 @@ class _HomeScreenState extends State<HomeScreen>
                       radius: 40,
                       backgroundColor: const Color(0xFF0A0E27),
                       backgroundImage: hasAvatar
-                          ? NetworkImage('https://deepdrift-backend.onrender.com/download/$currentAvatar')
+                          ? CachedNetworkImageProvider('https://deepdrift-backend.onrender.com/download/$currentAvatar')
                           : null,
                       child: !hasAvatar
                           ? const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan)
@@ -1144,6 +1157,17 @@ class _HomeScreenState extends State<HomeScreen>
 
   /// Алиас для вызова из Settings — открывает диалог смены аккаунта
   void _showRestoreAccountDialog() => _showImportKeysDialog();
+
+  /// Полностью удаляет локальные данные аккаунта и перезапускает приложение.
+  Future<void> _deleteAccount() async {
+    await _storage.wipeAllData();
+    // Отключаемся от сервера
+    try { _socket.dispose(); } catch (_) {}
+    if (mounted) {
+      // Перезапускаем приложение через замену маршрута на SplashScreen
+      Navigator.of(context).pushNamedAndRemoveUntil('/', (_) => false);
+    }
+  }
 
   /// Пошаговый мастер восстановления аккаунта.
   ///
@@ -2274,7 +2298,7 @@ class _HomeScreenState extends State<HomeScreen>
                     ? const Color(0xFF0A2A3A)
                     : const Color(0xFF1A1F3C),
                 backgroundImage: (!isGroup && hasAvatar)
-                    ? NetworkImage('https://deepdrift-backend.onrender.com/download/$avatar')
+                    ? CachedNetworkImageProvider('https://deepdrift-backend.onrender.com/download/$avatar')
                     : null,
                 child: isGroup
                     ? const Icon(Icons.group, color: Color(0xFF00D9FF), size: 22)
@@ -2339,15 +2363,22 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ],
           ),
-          subtitle: Text(
-            meta['lastMessageText'] as String? ?? 'Нет сообщений',
-            style: TextStyle(
-              color: unread > 0 ? Colors.white54 : Colors.white24,
-              fontSize: 12,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
+          subtitle: Builder(builder: (ctx) {
+            final totalMsgs = meta['totalMessages'] as int? ?? 0;
+            final lastText  = meta['lastMessageText'] as String? ?? 'Нет сообщений';
+            final nearLimit = totalMsgs >= 900;
+            return Text(
+              nearLimit ? '⚠️ Лимит сообщений ($totalMsgs/1000) — $lastText' : lastText,
+              style: TextStyle(
+                color: nearLimit
+                    ? Colors.orange.withValues(alpha: 0.8)
+                    : (unread > 0 ? Colors.white54 : Colors.white24),
+                fontSize: 12,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            );
+          }),
           onTap: () {
             Navigator.push(
               context,
@@ -2458,6 +2489,7 @@ class _HomeScreenState extends State<HomeScreen>
                       cipher:          _cipher,
                       myUid:           _myUid ?? '',
                       onSwitchAccount: _showRestoreAccountDialog,
+                      onDeleteAccount: _deleteAccount,
                     ),
                   ),
                 ),
@@ -2470,7 +2502,7 @@ class _HomeScreenState extends State<HomeScreen>
                     radius: 16,
                     backgroundColor: Colors.cyan.withValues(alpha: 0.2),
                     backgroundImage: hasMyAvatar
-                        ? NetworkImage(
+                        ? CachedNetworkImageProvider(
                             'https://deepdrift-backend.onrender.com/download/$avatarUrl')
                         : null,
                     child: !hasMyAvatar
