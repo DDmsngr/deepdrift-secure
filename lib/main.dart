@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -95,16 +94,8 @@ void main() async {
   await Hive.initFlutter();
   await NotificationService().init();
 
-  // 7. Глобальный запрет скриншотов и записи экрана — постоянно включён
-  if (Platform.isAndroid) {
-    try {
-      const channel = MethodChannel('com.deepdrift.secure/window');
-      await channel.invokeMethod('addSecureFlag');
-      debugPrint('🔒 FLAG_SECURE enabled globally');
-    } catch (e) {
-      debugPrint('FLAG_SECURE global error: $e');
-    }
-  }
+  // FLAG_SECURE управляется через настройки приложения (не глобально при старте)
+  // Включить можно в Настройках → Безопасность → Запрет скриншотов
 
   runApp(const DeepDriftApp());
 }
@@ -128,7 +119,7 @@ class _DeepDriftAppState extends State<DeepDriftApp>
   // Когда приложение ушло в фон — время фона. Нужно чтобы не блокировать
   // при кратких уходах (< 3 секунды), например при системном диалоге.
   DateTime? _pausedAt;
-  static const _lockDelay = Duration(seconds: 3);
+  static const _lockDelay = Duration(minutes: 5); // Пароль только после 5 минут в фоне
 
   @override
   void initState() {
