@@ -16,7 +16,6 @@ import 'socket_service.dart';
 import 'crypto_service.dart';
 import 'notification_service.dart';
 import 'settings_screen.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'providers/app_providers.dart';
 import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
@@ -674,7 +673,7 @@ class _HomeScreenState extends State<HomeScreen>
                       radius: 40,
                       backgroundColor: const Color(0xFF0A0E27),
                       backgroundImage: hasAvatar
-                          ? CachedNetworkImageProvider('https://deepdrift-backend.onrender.com/download/$currentAvatar')
+                          ? NetworkImage('https://deepdrift-backend.onrender.com/download/$currentAvatar')
                           : null,
                       child: !hasAvatar
                           ? const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan)
@@ -2298,7 +2297,7 @@ class _HomeScreenState extends State<HomeScreen>
                     ? const Color(0xFF0A2A3A)
                     : const Color(0xFF1A1F3C),
                 backgroundImage: (!isGroup && hasAvatar)
-                    ? CachedNetworkImageProvider('https://deepdrift-backend.onrender.com/download/$avatar')
+                    ? NetworkImage('https://deepdrift-backend.onrender.com/download/$avatar')
                     : null,
                 child: isGroup
                     ? const Icon(Icons.group, color: Color(0xFF00D9FF), size: 22)
@@ -2502,7 +2501,7 @@ class _HomeScreenState extends State<HomeScreen>
                     radius: 16,
                     backgroundColor: Colors.cyan.withValues(alpha: 0.2),
                     backgroundImage: hasMyAvatar
-                        ? CachedNetworkImageProvider(
+                        ? NetworkImage(
                             'https://deepdrift-backend.onrender.com/download/$avatarUrl')
                         : null,
                     child: !hasMyAvatar
