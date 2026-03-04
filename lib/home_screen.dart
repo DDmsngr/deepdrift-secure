@@ -250,6 +250,12 @@ class _HomeScreenState extends State<HomeScreen>
           if (mounted) setState(() {});
         }
         if (type == 'message') _handleIncomingMessageQuietly(data);
+
+        // ── FIX: Уведомление о добавлении в группу ────────────────────────
+        if (type == 'group_added' || type == 'group_created') {
+          _handleGroupAdded(data);
+        }
+
         if (type == 'message' || type == 'status_update' ||
             type == 'message_deleted' || type == 'user_status') {
           setState(() => _chats = _storage.getContactsSortedByActivity());
@@ -288,11 +294,60 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  /// Обрабатывает событие добавления в группу другим пользователем
+  Future<void> _handleGroupAdded(Map<String, dynamic> data) async {
+    final groupId   = data['group_id'] as String?;
+    final groupName = data['group_name'] as String? ?? groupId ?? 'Новая группа';
+    final creatorUid = data['creator_uid'] as String? ?? data['from_uid'] as String? ?? '';
+    final rawMembers = data['members'];
+    final members = rawMembers is List
+        ? rawMembers.map((e) => e.toString()).toList()
+        : <String>[];
+
+    if (groupId == null) return;
+
+    // Сохраняем группу локально
+    await _storage.saveGroup(
+      groupId:    groupId,
+      groupName:  groupName,
+      members:    members,
+      creatorUid: creatorUid,
+    );
+
+    // Запрашиваем групповой ключ у создателя
+    _socket.requestGroupKey(groupId);
+
+    // Показываем уведомление
+    final creatorName = _storage.getContactDisplayName(creatorUid);
+    await NotificationService().showMessageNotification(
+      fromUid:     groupId,
+      displayName: groupName,
+      messageText: '$creatorName добавил(а) вас в группу',
+    );
+
+    if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+  }
+
   Future<void> _handleIncomingMessageQuietly(Map<String, dynamic> data) async {
     final senderUid = data['from_uid'] as String?;
+    final groupId   = data['group_id'] as String?;
     final msgId     = data['id']?.toString();
     if (senderUid == null || msgId == null) return;
-    if (_storage.hasMessage(senderUid, msgId)) return;
+
+    // Для группового сообщения — ключ хранилища это groupId, иначе senderUid
+    final storageKey = (groupId != null && groupId.isNotEmpty) ? groupId : senderUid;
+    if (_storage.hasMessage(storageKey, msgId)) return;
+
+    // ── FIX: Уведомления от незнакомых контактов ──────────────────────────
+    // Если отправитель не в контактах — добавляем его автоматически
+    final contacts = _storage.getContacts();
+    if (!contacts.contains(senderUid) && groupId == null) {
+      debugPrint('📩 [HomeScreen] Unknown sender: $senderUid — auto-adding to contacts');
+      await _storage.addContact(senderUid);
+      _socket.getProfile(senderUid);
+      if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+    }
+
     try {
       // Сначала пробуем загрузить ключи из кэша — иначе decryptText вернёт
       // '[⚠️ No encryption key]' и мы сохраним ошибку в Hive навсегда.
@@ -327,7 +382,14 @@ class _HomeScreenState extends State<HomeScreen>
           'fileSize':       data['fileSize'],
           'signatureStatus': SignatureStatus.unknown.index,
         };
-        await _storage.saveMessage(senderUid, pendingMsg);
+        await _storage.saveMessage(storageKey, pendingMsg);
+        // Показываем уведомление даже при pending_decrypt
+        final senderName = _storage.getContactDisplayName(senderUid);
+        await NotificationService().showMessageNotification(
+          fromUid:     storageKey,
+          displayName: (groupId != null) ? _storage.getGroupName(groupId) : senderName,
+          messageText: 'Новое зашифрованное сообщение',
+        );
         if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
         return;
       }
@@ -353,8 +415,15 @@ class _HomeScreenState extends State<HomeScreen>
         // Подпись не верифицируем в тихом режиме — сделает ChatScreen при открытии
         'signatureStatus': SignatureStatus.unknown.index,
       };
-      await _storage.saveMessage(senderUid, msg);
+      await _storage.saveMessage(storageKey, msg);
       _socket.sendReadReceipt(senderUid, msgId);
+      // Показываем уведомление
+      final senderName2 = _storage.getContactDisplayName(senderUid);
+      await NotificationService().showMessageNotification(
+        fromUid:     storageKey,
+        displayName: (groupId != null) ? _storage.getGroupName(groupId) : senderName2,
+        messageText: 'Новое зашифрованное сообщение',
+      );
       if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
     } catch (e) {
       debugPrint('Quiet save error: $e');
@@ -1072,6 +1141,9 @@ class _HomeScreenState extends State<HomeScreen>
       _showError('Ошибка при создании файла: $e');
     }
   }
+
+  /// Алиас для вызова из Settings — открывает диалог смены аккаунта
+  void _showRestoreAccountDialog() => _showImportKeysDialog();
 
   /// Пошаговый мастер восстановления аккаунта.
   ///
@@ -2179,7 +2251,11 @@ class _HomeScreenState extends State<HomeScreen>
       itemCount: _chats.length,
       itemBuilder: (c, i) {
         final uid      = _chats[i];
-        final name     = _storage.getContactDisplayName(uid);
+        final isGroupChat = _storage.isGroup(uid);
+        // ── FIX: название группы — используем getGroupName для групп ──────
+        final name     = isGroupChat
+            ? _storage.getGroupName(uid)
+            : _storage.getContactDisplayName(uid);
         final avatar   = _storage.getContactAvatar(uid);
         final meta     = _storage.getChatMetadata(uid);
         final unread   = meta['unreadCount'] as int? ?? 0;
@@ -2188,7 +2264,7 @@ class _HomeScreenState extends State<HomeScreen>
         final isMuted  = _storage.isContactMuted(uid);
         final hasAvatar = avatar != null && avatar.isNotEmpty && avatar != 'null';
 
-        final isGroup = _storage.isGroup(uid);
+        final isGroup = isGroupChat;
 
         return ListTile(
           leading: Stack(
@@ -2378,9 +2454,10 @@ class _HomeScreenState extends State<HomeScreen>
                   context,
                   MaterialPageRoute(
                     builder: (_) => SettingsScreen(
-                      storage: _storage,
-                      cipher:  _cipher,
-                      myUid:   _myUid ?? '',
+                      storage:         _storage,
+                      cipher:          _cipher,
+                      myUid:           _myUid ?? '',
+                      onSwitchAccount: _showRestoreAccountDialog,
                     ),
                   ),
                 ),
