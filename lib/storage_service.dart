@@ -533,6 +533,52 @@ class StorageService {
   /// Возвращает true если uid — группа.
   bool isGroup(String uid) => uid.startsWith('g_');
 
+  /// Возвращает true если uid — канал.
+  bool isChannel(String uid) => uid.startsWith('ch_');
+
+  // ── Входящие запросы на переписку (SECURITY FIX) ──────────────────────────
+  // Вместо автоматического добавления незнакомцев в контакты —
+  // сохраняем их в отдельную очередь. Пользователь подтверждает вручную.
+
+  static const String _incomingRequestsKey = 'incoming_requests';
+
+  /// Добавляет uid в очередь входящих запросов (если его ещё нет в контактах).
+  Future<void> addIncomingRequest(String uid) async {
+    await _withLock(_incomingRequestsKey, () async {
+      final box      = Hive.box(_metadataBox);
+      final dynamic raw = box.get(_incomingRequestsKey);
+      final requests = (raw is List) ? raw.map((e) => e.toString()).toList() : <String>[];
+      if (!requests.contains(uid)) {
+        requests.add(uid);
+        await box.put(_incomingRequestsKey, requests);
+      }
+    });
+  }
+
+  /// Возвращает список UID, ожидающих подтверждения.
+  List<String> getIncomingRequests() {
+    final dynamic raw = Hive.box(_metadataBox).get(_incomingRequestsKey);
+    if (raw is List) return raw.map((e) => e.toString()).toList();
+    return [];
+  }
+
+  /// Принять запрос — переносит uid из очереди в контакты.
+  Future<void> acceptIncomingRequest(String uid) async {
+    await removeIncomingRequest(uid);
+    await addContact(uid);
+  }
+
+  /// Отклонить запрос — удаляет из очереди.
+  Future<void> removeIncomingRequest(String uid) async {
+    await _withLock(_incomingRequestsKey, () async {
+      final box      = Hive.box(_metadataBox);
+      final dynamic raw = box.get(_incomingRequestsKey);
+      final requests = (raw is List) ? raw.map((e) => e.toString()).toList() : <String>[];
+      requests.remove(uid);
+      await box.put(_incomingRequestsKey, requests);
+    });
+  }
+
   /// Возвращает имя группы (или uid если не найдено).
   String getGroupName(String groupId) {
     final box  = Hive.box(_metadataBox);
