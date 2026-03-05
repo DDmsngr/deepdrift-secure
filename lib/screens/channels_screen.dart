@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:uuid/uuid.dart';
 
@@ -41,6 +42,12 @@ class _ChannelsScreenState extends State<ChannelsScreen> {
         setState(() => _searchResults = results);
       }
       if (type == 'channel_created' || type == 'channel_joined') {
+        // Сохраняем имя канала из ответа сервера
+        final channelId   = data['channel_id'] as String?;
+        final channelName = data['channel_name'] as String?;
+        if (channelId != null && channelName != null && channelName.isNotEmpty) {
+          _storage.setContactDisplayName(channelId, channelName);
+        }
         if (mounted) setState(() {});
       }
     });
@@ -294,19 +301,32 @@ class _ChannelsScreenState extends State<ChannelsScreen> {
           fontSize: 11,
         ),
       ),
-      trailing: unread > 0
-          ? CircleAvatar(
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (unread > 0)
+            CircleAvatar(
               radius: 10,
               backgroundColor: const Color(0xFF00D9FF),
-              child: Text(
-                '$unread',
-                style: const TextStyle(
-                    color: Colors.black,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold),
-              ),
-            )
-          : null,
+              child: Text('$unread',
+                  style: const TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold)),
+            ),
+          IconButton(
+            icon: const Icon(Icons.share_outlined, color: Colors.white38, size: 20),
+            tooltip: 'Поделиться каналом',
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: channelId));
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('ID канала скопирован: $channelId'),
+                  backgroundColor: const Color(0xFF1A4A2E),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(
