@@ -7,6 +7,10 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 
 import 'storage_service.dart';
 import 'crypto_service.dart';
+import 'identity_service.dart';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 
 class SettingsScreen extends StatefulWidget {
   final StorageService  storage;
@@ -744,23 +748,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _showDeleteAccountDialog() {
+    final pwdCtrl = TextEditingController();
+    bool confirmed = false;
+    bool isLoading = false;
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) {
-        bool confirmed = false;
-        return StatefulBuilder(
-          builder: (ctx, setS) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1F3C),
-            title: Row(
-              children: [
-                const Icon(Icons.warning_amber, color: Colors.red, size: 22),
-                const SizedBox(width: 8),
-                Text('Удалить аккаунт',
-                    style: GoogleFonts.orbitron(color: Colors.red, fontSize: 13)),
-              ],
-            ),
-            content: Column(
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1F3C),
+          title: Row(
+            children: [
+              const Icon(Icons.warning_amber, color: Colors.red, size: 22),
+              const SizedBox(width: 8),
+              Text('Удалить аккаунт',
+                  style: GoogleFonts.orbitron(color: Colors.red, fontSize: 13)),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -789,7 +796,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     style: TextStyle(color: Colors.orange, fontSize: 11),
                   ),
                 ),
+                const SizedBox(height: 16),
+                // ── Поле пароля ───────────────────────────────────────────
+                TextField(
+                  controller: pwdCtrl,
+                  obscureText: true,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Введи пароль для подтверждения',
+                    labelStyle: TextStyle(color: Colors.white54),
+                    filled: true, fillColor: Color(0xFF0A0E27),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
                 const SizedBox(height: 12),
+                // ── Чекбокс ───────────────────────────────────────────────
                 Row(
                   children: [
                     Checkbox(
@@ -805,30 +826,59 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ],
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38)),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: (confirmed && !isLoading) ? Colors.red : Colors.white12,
+                foregroundColor: Colors.white,
               ),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  foregroundColor: Colors.white,
-                ),
-                onPressed: confirmed
-                    ? () {
+              onPressed: (confirmed && !isLoading)
+                  ? () async {
+                      // Проверяем пароль
+                      final savedPwd = widget.storage.getSetting('user_password') as String?;
+                      if (pwdCtrl.text != savedPwd) {
+                        setS(() {});
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Неверный пароль'), backgroundColor: Colors.red),
+                        );
+                        return;
+                      }
+                      setS(() => isLoading = true);
+                      try {
+                        await Hive.deleteFromDisk();
+                        await IdentityService().clearAll();
+                        try {
+                          final appDir = await getApplicationDocumentsDirectory();
+                          final mediaDir = Directory('${appDir.path}/deepdrift_media');
+                          if (await mediaDir.exists()) await mediaDir.delete(recursive: true);
+                        } catch (_) {}
                         Navigator.pop(ctx);
                         if (widget.onDeleteAccount != null) {
                           widget.onDeleteAccount!();
+                        } else {
+                          SystemNavigator.pop();
                         }
+                      } catch (e) {
+                        setS(() => isLoading = false);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Ошибка: $e'), backgroundColor: Colors.red),
+                        );
                       }
-                    : null,
-                child: const Text('УДАЛИТЬ ВСЁ'),
-              ),
-            ],
-          ),
-        );
-      },
+                    }
+                  : null,
+              child: isLoading
+                  ? const SizedBox(width: 16, height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('УДАЛИТЬ ВСЁ'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

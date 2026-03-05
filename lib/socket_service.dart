@@ -57,12 +57,6 @@ class SocketService {
 
   bool _isInBackground = false;
 
-  // Токен загрузки файлов — получаем из uid_assigned
-  String? _uploadToken;
-
-  /// Сохраняет upload_token, полученный при подключении (uid_assigned)
-  void setUploadToken(String? token) { _uploadToken = token; }
-
   // Очередь запросов офлайн-сообщений, накопившихся до uid_assigned.
   final _pendingOfflineRequests = <String>{};
 
@@ -118,11 +112,9 @@ class SocketService {
         'file': await MultipartFile.fromFile(file.path, filename: fileName),
       });
       _uploadProgressController.add(0.01);
-      final options = Options(headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!});
       final response = await _dio.post(
         HTTP_UPLOAD_URL,
         data: formData,
-        options: options,
         onSendProgress: (sent, total) {
           _uploadProgressController.add(sent / total);
         },
@@ -276,27 +268,18 @@ class SocketService {
 
       // ── profile_response: кэшируем профиль контакта ──────────────────────
       if (msgType == 'profile_response') {
-        final uid      = data['uid'] as String;
-        final nickname = data['nickname'] as String? ?? '';
-        final isGroup  = data['is_group'] == true || uid.startsWith('g_');
-        await _storage.setContactDisplayName(uid, nickname);
-        if (isGroup) {
-          // Для группы обновляем имя через saveGroup если оно изменилось
-          final members   = (data['members'] as List?)?.map((e) => e.toString()).toList() ?? [];
-          final groupName = data['group_name'] as String? ?? nickname;
-          if (groupName.isNotEmpty && groupName != uid) {
-            await _storage.saveGroup(groupId: uid, groupName: groupName, members: members, creatorUid: '');
-          }
-        } else {
-          if (data['avatar_id'] != null && (data['avatar_id'] as String).isNotEmpty) {
-            await _storage.setContactAvatar(uid, data['avatar_id'] as String);
-          }
-          await _storage.setContactStatus(
-            uid,
-            data['status'] == 'online',
-            data['last_seen'] as int?,
-          );
+        await _storage.setContactDisplayName(
+          data['uid'] as String,
+          data['nickname'] as String? ?? '',
+        );
+        if (data['avatar_id'] != null) {
+          await _storage.setContactAvatar(data['uid'] as String, data['avatar_id'] as String);
         }
+        await _storage.setContactStatus(
+          data['uid'] as String,
+          data['status'] == 'online',
+          data['last_seen'] as int?,
+        );
       }
 
       // ── user_status: обновляем online/last_seen ───────────────────────────
