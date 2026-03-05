@@ -63,6 +63,9 @@ dependencies:
   file_picker: ^8.0.0
   path_provider: ^2.1.0
 
+  # Биометрическая аутентификация
+  local_auth: ^2.3.0
+
   # Запрет скриншотов (FLAG_SECURE на Android, iOS secure)
 
   # Шэринг (сохранить файл / отправить на почту)

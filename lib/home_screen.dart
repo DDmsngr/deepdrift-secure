@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'dart:io';
 import 'package:flutter/material.dart';
+// ignore: unused_import
+import 'screens/channels_screen.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -1328,9 +1330,21 @@ class _HomeScreenState extends State<HomeScreen>
     switch (_tabController.index) {
       case _Tab.contacts: _addContact(); break;
       case _Tab.groups:   _createGroupDialog(); break;
-      case _Tab.channels: _showSuccess('Каналы — скоро'); break;
+      case _Tab.channels: _openChannelsScreen(); break;
       default:            _showAddMenu(); break;
     }
+  }
+
+  void _openChannelsScreen() {
+    if (_myUid == null) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChannelsScreen(myUid: _myUid!),
+      ),
+    ).then((_) {
+      if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+    });
   }
 
   void _showAddMenu() {

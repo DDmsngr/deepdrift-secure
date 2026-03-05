@@ -8,6 +8,7 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import 'storage_service.dart';
 import 'crypto_service.dart';
 import 'identity_service.dart';
+import 'theme_service.dart';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -38,6 +39,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool    _autoSavePhotos      = false;
   bool    _notificationsSound  = true;
   bool    _appLockEnabled      = false;
+  bool    _isDarkMode          = true;
   String? _myPublicKeyFingerprint;
   bool    _loadingFingerprint  = false;
 
@@ -47,6 +49,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _autoSavePhotos     = widget.storage.getSetting('auto_save_photos',    defaultValue: false);
     _notificationsSound = widget.storage.getSetting('notifications_sound', defaultValue: true);
     _appLockEnabled     = widget.storage.getSetting('app_lock_enabled',    defaultValue: false);
+    _isDarkMode         = (widget.storage.getSetting('app_theme_mode') as String? ?? 'dark') != 'light';
     _loadFingerprint();
   }
 
@@ -357,6 +360,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (val) async {
               setState(() => _notificationsSound = val);
               await widget.storage.saveSetting('notifications_sound', val);
+            },
+          ),
+
+          // ── ВНЕШНИЙ ВИД ────────────────────────────────────────────────────
+          _sectionHeader('ВНЕШНИЙ ВИД'),
+
+          _switchTile(
+            icon:     Icons.dark_mode_outlined,
+            title:    'Тёмная тема',
+            subtitle: 'Переключить между светлой и тёмной темой',
+            value:    _isDarkMode,
+            onChanged: (val) async {
+              setState(() => _isDarkMode = val);
+              final modeName = val ? 'dark' : 'light';
+              await widget.storage.saveSetting('app_theme_mode', modeName);
+              appThemeMode.value = val ? ThemeMode.dark : ThemeMode.light;
             },
           ),
 

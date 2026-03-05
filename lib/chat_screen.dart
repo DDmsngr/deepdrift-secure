@@ -94,6 +94,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   bool _isSearching = false;
 
+  // ── Group admin settings ──────────────────────────────────────────────────
+  bool _onlyAdminsCanPost = false;
+
   bool    _isRecording     = false;
   String? _voiceTempPath;
   Timer?  _recordingTimer;
@@ -126,6 +129,14 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollController.addListener(_onScroll);
 
     _reactions = _storage.loadReactions(widget.targetUid);
+
+    // Загружаем настройку "только админы" для групп
+    if (_storage.isGroup(widget.targetUid)) {
+      _onlyAdminsCanPost = _storage.getSetting(
+        'group_only_admin_${widget.targetUid}',
+        defaultValue: false,
+      ) as bool;
+    }
 
     // Порядок важен:
     // 1. Запустить listener ДО всего — чтобы не пропустить key_response
@@ -289,6 +300,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // ──────────────────────────────────────────────────────────────────────────
 
   Future<String?> _uploadFileEncrypted(File file) async {
+    if (!_keysExchanged) { _showError("Encryption keys not ready"); return null; }
     try {
       final bytes         = await file.readAsBytes();
       final encryptedBytes = await widget.cipher.encryptFileBytes(bytes, targetUid: widget.targetUid);
@@ -689,6 +701,8 @@ class _ChatScreenState extends State<ChatScreen> {
           _messageIds.add(msgId);
         });
         _scrollToBottom();
+        // Звук входящего сообщения
+        SystemSound.play(SystemSoundType.alert);
         _storage.saveMessage(widget.targetUid, msg);
         _sendReadReceipt(msgId);
       }
@@ -932,6 +946,8 @@ class _ChatScreenState extends State<ChatScreen> {
           _replyToId   = null;
         });
         _scrollToBottom();
+        // Звук отправленного сообщения
+        SystemSound.play(SystemSoundType.click);
       }
 
       // Сохраняем ПЕРЕД отправкой — если приложение свернут/убит не потеряем
@@ -986,6 +1002,15 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
+    // Проверяем ограничение "только администратор"
+    if (_onlyAdminsCanPost) {
+      final creator = _storage.getGroupCreator(widget.targetUid);
+      if (creator != widget.myUid) {
+        _showError('Только администратор может отправлять сообщения в эту группу');
+        return;
+      }
+    }
+
     final msgId     = _uuid.v4();
     final now       = DateTime.now().millisecondsSinceEpoch;
     final replyId   = _replyToId;
@@ -1027,6 +1052,8 @@ class _ChatScreenState extends State<ChatScreen> {
           _replyToId   = null;
         });
         _scrollToBottom();
+        // Звук отправленного группового сообщения
+        SystemSound.play(SystemSoundType.click);
       }
 
       // Сохраняем ПЕРЕД отправкой — если приложение свернут/убит не потеряем
@@ -1723,61 +1750,98 @@ class _ChatScreenState extends State<ChatScreen> {
   // ──────────────────────────────────────────────────────────────────────────
 
   void _showGroupMembersDialog(String groupName, List<String> members) {
+    final creator  = _storage.getGroupCreator(widget.targetUid);
+    final isAdmin  = creator == widget.myUid;
+
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1F3C),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (_) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            margin: const EdgeInsets.only(top: 12, bottom: 8),
-            width: 36, height: 4,
-            decoration: BoxDecoration(
-              color: Colors.white24, borderRadius: BorderRadius.circular(2),
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setSheet) => Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 8),
+              width: 36, height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24, borderRadius: BorderRadius.circular(2),
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            child: Row(
-              children: [
-                const Icon(Icons.group, color: Color(0xFF00D9FF), size: 20),
-                const SizedBox(width: 10),
-                Text(
-                  'Участники: ${members.length}',
-                  style: GoogleFonts.orbitron(
-                      color: const Color(0xFF00D9FF), fontSize: 13),
-                ),
-              ],
-            ),
-          ),
-          const Divider(color: Colors.white12, height: 1),
-          Flexible(
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: members.length,
-              itemBuilder: (_, i) {
-                final uid  = members[i];
-                final name = _storage.getContactDisplayName(uid);
-                return ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: const Color(0xFF0A2A3A),
-                    child: Text(
-                      name.isNotEmpty ? name[0].toUpperCase() : '?',
-                      style: const TextStyle(color: Colors.cyan),
-                    ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.group, color: Color(0xFF00D9FF), size: 20),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Участники: ${members.length}',
+                    style: GoogleFonts.orbitron(
+                        color: const Color(0xFF00D9FF), fontSize: 13),
                   ),
-                  title: Text(name, style: const TextStyle(color: Colors.white)),
-                  subtitle: Text(uid,
-                      style: const TextStyle(color: Colors.white38, fontSize: 11)),
-                );
-              },
+                ],
+              ),
             ),
-          ),
-          const SizedBox(height: 16),
-        ],
+            const Divider(color: Colors.white12, height: 1),
+
+            // ── Настройки администратора ─────────────────────────────────────
+            if (isAdmin) ...[
+              SwitchListTile(
+                secondary:     const Icon(Icons.admin_panel_settings,
+                    color: Color(0xFF00D9FF)),
+                title:         const Text('Только администратор',
+                    style: TextStyle(color: Colors.white, fontSize: 14)),
+                subtitle:      const Text('Запретить участникам отправлять сообщения',
+                    style: TextStyle(color: Colors.white38, fontSize: 11)),
+                activeColor:   const Color(0xFF00D9FF),
+                value:         _onlyAdminsCanPost,
+                onChanged: (val) async {
+                  setSheet(() {});
+                  if (mounted) setState(() => _onlyAdminsCanPost = val);
+                  await _storage.saveSetting(
+                      'group_only_admin_${widget.targetUid}', val);
+                  _socket.updateGroupSettings(
+                      widget.targetUid, onlyAdminsCanPost: val);
+                },
+              ),
+              const Divider(color: Colors.white12, height: 1),
+            ],
+
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: members.length,
+                itemBuilder: (_, i) {
+                  final uid  = members[i];
+                  final name = _storage.getContactDisplayName(uid);
+                  final isCreator = uid == creator;
+                  return ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: const Color(0xFF0A2A3A),
+                      child: Text(
+                        name.isNotEmpty ? name[0].toUpperCase() : '?',
+                        style: const TextStyle(color: Colors.cyan),
+                      ),
+                    ),
+                    title: Text(name, style: const TextStyle(color: Colors.white)),
+                    subtitle: Text(
+                      isCreator ? '$uid · Администратор' : uid,
+                      style: TextStyle(
+                        color: isCreator
+                            ? const Color(0xFF00D9FF).withValues(alpha: 0.7)
+                            : Colors.white38,
+                        fontSize: 11,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
       ),
     );
   }
@@ -2280,11 +2344,12 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Container(
                   width: 160, height: 160,
                   decoration: BoxDecoration(
-                    shape: BoxShape.circle,
+                    borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Colors.cyan, width: 3),
                     boxShadow: [BoxShadow(color: Colors.cyan.withValues(alpha: 0.5), blurRadius: 10)],
                   ),
-                  child: ClipOval(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
                     child: AspectRatio(aspectRatio: 1, child: CameraPreview(_cameraController!)),
                   ),
                 ),

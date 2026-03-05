@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:local_auth/local_auth.dart';
 
 import '../storage_service.dart';
 
@@ -26,6 +27,11 @@ class _LockScreenState extends State<LockScreen>
   String _entered = '';
   int    _failCount = 0;
 
+  // Biometric
+  final _localAuth     = LocalAuthentication();
+  bool  _canBiometric  = false;
+  bool  _bioChecked    = false;
+
   late AnimationController _shakeCtrl;
   late Animation<double>   _shakeAnim;
 
@@ -51,6 +57,48 @@ class _LockScreenState extends State<LockScreen>
       TweenSequenceItem(tween: Tween(begin: 10.0, end: -10.0), weight: 2),
       TweenSequenceItem(tween: Tween(begin: -10.0, end: 0.0),  weight: 1),
     ]).animate(_shakeCtrl);
+
+    // Проверяем поддержку биометрии и запускаем автоматически если включена
+    _checkBiometricAndAuthenticate();
+  }
+
+  Future<void> _checkBiometricAndAuthenticate() async {
+    try {
+      final canCheck  = await _localAuth.canCheckBiometrics;
+      final supported = await _localAuth.isDeviceSupported();
+      if (!mounted) return;
+      setState(() => _canBiometric = canCheck && supported);
+      if (_canBiometric) {
+        // Небольшая задержка чтобы дать UI время отрисоваться
+        await Future.delayed(const Duration(milliseconds: 600));
+        if (!mounted || _bioChecked) return;
+        await _authenticateBiometric();
+      }
+    } catch (e) {
+      debugPrint('Biometric check error: $e');
+    }
+  }
+
+  Future<void> _authenticateBiometric() async {
+    if (_bioChecked) return;
+    _bioChecked = true;
+    try {
+      final authenticated = await _localAuth.authenticate(
+        localizedReason: 'Разблокируй DDChat',
+        options: const AuthenticationOptions(
+          stickyAuth:  true,
+          biometricOnly: false,
+        ),
+      );
+      if (authenticated && mounted) {
+        widget.onUnlocked();
+      } else {
+        if (mounted) setState(() => _bioChecked = false); // allow retry
+      }
+    } catch (e) {
+      debugPrint('Biometric auth error: $e');
+      if (mounted) setState(() => _bioChecked = false);
+    }
   }
 
   @override
@@ -129,12 +177,13 @@ class _LockScreenState extends State<LockScreen>
               child: Text(
                 _failCount > 0
                     ? 'Неверный PIN — попытка $_failCount'
-                    : 'Введи PIN-код',
+                    : (_canBiometric ? 'Введи PIN-код или используй биометрию' : 'Введи PIN-код'),
                 key: ValueKey(_failCount),
                 style: TextStyle(
                   color: _failCount > 0 ? Colors.red[300] : Colors.white38,
                   fontSize: 13,
                 ),
+                textAlign: TextAlign.center,
               ),
             ),
 
@@ -199,8 +248,25 @@ class _LockScreenState extends State<LockScreen>
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
-              // Пустое место слева
-              const SizedBox(width: 72, height: 72),
+              // Биометрия (если доступна) или пустое место
+              SizedBox(
+                width: 72,
+                height: 72,
+                child: _canBiometric
+                    ? TextButton(
+                        onPressed: () {
+                          setState(() => _bioChecked = false);
+                          _authenticateBiometric();
+                        },
+                        style: TextButton.styleFrom(
+                          shape: const CircleBorder(),
+                          foregroundColor: const Color(0xFF00D9FF),
+                        ),
+                        child: const Icon(Icons.fingerprint,
+                            color: Color(0xFF00D9FF), size: 34),
+                      )
+                    : const SizedBox.shrink(),
+              ),
               _digitKey('0'),
               // Стереть
               SizedBox(

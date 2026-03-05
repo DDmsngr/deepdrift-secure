@@ -640,6 +640,57 @@ class SocketService {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
+  // Channels API
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /// Создаёт новый канал. Сервер уведомляет подписчиков событием channel_created.
+  void createChannel(String channelId, String channelName) {
+    send({
+      'type':         'create_channel',
+      'channel_id':   channelId,
+      'channel_name': channelName,
+    });
+    debugPrint('📢 Creating channel: $channelId ($channelName)');
+  }
+
+  /// Подписывается на существующий канал.
+  void joinChannel(String channelId) {
+    send({'type': 'join_channel', 'channel_id': channelId});
+    debugPrint('📢 Joining channel: $channelId');
+  }
+
+  /// Отписывается от канала.
+  void leaveChannel(String channelId) {
+    send({'type': 'leave_channel', 'channel_id': channelId});
+    debugPrint('📢 Leaving channel: $channelId');
+  }
+
+  /// Обновляет настройки группы (напр. ограничение "только admins могут писать").
+  void updateGroupSettings(String groupId, {bool? onlyAdminsCanPost}) {
+    send({
+      'type':                 'update_group_settings',
+      'group_id':             groupId,
+      if (onlyAdminsCanPost != null)
+        'only_admins_can_post': onlyAdminsCanPost,
+    });
+  }
+
+  /// Поиск каналов по запросу. Ответ приходит как channel_search_results.
+  void searchChannels(String query) {
+    send({'type': 'search_channels', 'query': query});
+  }
+
+  /// Отправляет сообщение в канал. Только владелец может публиковать.
+  void sendChannelMessage(String channelId, String text, String msgId) {
+    send({
+      'type':       'channel_message',
+      'channel_id': channelId,
+      'text':       text,
+      'id':         msgId,
+    });
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
   // Публичные геттеры
   // ──────────────────────────────────────────────────────────────────────────
 
