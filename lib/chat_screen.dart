@@ -123,10 +123,12 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    // Запрещаем скриншоты и запись экрана в чате — приватность E2EE
     _enableSecureScreen();
     _messageController.addListener(_onTextChanged);
     _scrollController.addListener(_onScroll);
+
+    // Берём актуальный токен из глобального синглтона
+    _uploadToken = StorageService.uploadToken;
 
     _reactions = _storage.loadReactions(widget.targetUid);
 
@@ -311,9 +313,9 @@ class _ChatScreenState extends State<ChatScreen> {
         'file': await MultipartFile.fromFile(tempFile.path, filename: tempFile.path.split('/').last),
       });
       if (mounted) setState(() => _uploadProgress = 0.0);
-      // 🔴-5 FIX: Прикрепляем upload_token к HTTP-запросу
+      // Используем самый свежий токен из синглтона
       final options = Options(
-        headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!},
+        headers: {if (StorageService.uploadToken != null) 'X-Upload-Token': StorageService.uploadToken!},
       );
       final response = await _dio.post(
         '$SERVER_HTTP_URL/upload',
@@ -334,14 +336,35 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<String?> _downloadFileEncrypted(String fileId, String? fileName) async {
-    // Не пытаемся скачать файл, если он уже помечен как недоступный
     if (_failedDownloads.contains(fileId)) return null;
+    
+    // Хелпер для одной попытки скачивания
+    Future<http.Response> _doGet() async {
+      // Всегда берём самый свежий токен из синглтона
+      final token = StorageService.uploadToken ?? _uploadToken;
+      return http.get(
+        Uri.parse('$SERVER_HTTP_URL/download/$fileId'),
+        headers: {if (token != null) 'X-Upload-Token': token},
+      );
+    }
+
     try {
       final appDir  = await getApplicationDocumentsDirectory();
-      final response = await http.get(
-        Uri.parse('$SERVER_HTTP_URL/download/$fileId'),
-        headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!},
-      );
+      var response = await _doGet();
+
+      // При 401 — ждём до 3 секунд пока сокет переподключится и выдаст новый токен
+      if (response.statusCode == 401) {
+        for (int i = 0; i < 3; i++) {
+          await Future.delayed(const Duration(seconds: 1));
+          final newToken = StorageService.uploadToken;
+          if (newToken != null && newToken != _uploadToken) {
+            _uploadToken = newToken;
+          }
+          response = await _doGet();
+          if (response.statusCode != 401) break;
+        }
+      }
+
       if (response.statusCode == 404) {
         // Файл удалён с сервера (истёк срок, или был на ephemeral диске).
         // Помечаем как недоступный в памяти И в Hive — больше не ретраим
@@ -422,9 +445,10 @@ class _ChatScreenState extends State<ChatScreen> {
       final type = data['type'];
       switch (type) {
         case 'uid_assigned':
-          // Сохраняем upload_token для авторизации HTTP-запросов
+          // Обновляем глобальный токен
           if (data['upload_token'] != null) {
             _uploadToken = data['upload_token'] as String;
+            StorageService.setUploadToken(_uploadToken!);
           }
           break;
         case 'message':             _handleIncomingMessage(data);  break;
@@ -1542,7 +1566,7 @@ class _ChatScreenState extends State<ChatScreen> {
       final formData = FormData.fromMap({
         'file': await MultipartFile.fromFile(tempFile.path, filename: tempFile.path.split('/').last),
       });
-      final options  = Options(headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!});
+      final options  = Options(headers: {if (StorageService.uploadToken != null) 'X-Upload-Token': StorageService.uploadToken!});
       final response = await _dio.post('$SERVER_HTTP_URL/upload', data: formData, options: options);
       if (await tempFile.exists()) await tempFile.delete();
       if (response.statusCode == 200 && response.data['status'] == 'success') {
