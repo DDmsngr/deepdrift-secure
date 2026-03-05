@@ -27,7 +27,54 @@ import 'package:path_provider/path_provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'models/chat_models.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:firebase_core/firebase_core.dart';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Entry point
+// ─────────────────────────────────────────────────────────────────────────────
+
+Future<void> _firebaseMessagingBackgroundHandler(dynamic message) async {}
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Hive
+  await Hive.initFlutter();
+
+  // Firebase (push notifications)
+  try {
+    await Firebase.initializeApp();
+  } catch (_) {
+    // Firebase не настроен — продолжаем без push-уведомлений
+  }
+
+  // Notification service
+  await NotificationService().init();
+
+  // Cipher
+  final cipher = SecureCipher();
+
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => CipherProvider(cipher)),
+        ChangeNotifierProvider(create: (_) => SocketProvider()),
+        ChangeNotifierProvider(create: (_) => StorageProvider()),
+      ],
+      child: MaterialApp(
+        title: 'DDChat',
+        debugShowCheckedModeBanner: false,
+        navigatorKey: NotificationService.navigatorKey,
+        theme: ThemeData.dark().copyWith(
+          scaffoldBackgroundColor: const Color(0xFF0A0E27),
+          colorScheme: const ColorScheme.dark(primary: Color(0xFF00D9FF)),
+        ),
+        home: const HomeScreen(),
+      ),
+    ),
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tab indices
