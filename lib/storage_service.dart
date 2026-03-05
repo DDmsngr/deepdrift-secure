@@ -22,6 +22,12 @@ class StorageService {
 
   static const int MAX_MESSAGES_PER_CHAT = 1000;
 
+  // upload_token — синглтон в памяти, обновляется при каждом uid_assigned
+  // Используется во всех HTTP-запросах к /upload и /download
+  static String? _uploadTokenCache;
+  static String? get uploadToken => _uploadTokenCache;
+  static void setUploadToken(String token) { _uploadTokenCache = token; }
+
   // SECURITY FIX: auth_token хранится в Keychain/Keystore, а не в Hive
   final _secureStorage = const FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
