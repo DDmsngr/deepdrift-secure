@@ -248,9 +248,10 @@ class _HomeScreenState extends State<HomeScreen>
         final type = data['type'];
 
         if (type == 'uid_assigned') {
-          // Сохраняем upload_token для авторизации HTTP-запросов к /download и /upload
+          // Сохраняем upload_token глобально — все экраны используют один токен
           if (data['upload_token'] != null) {
             _uploadToken = data['upload_token'] as String;
+            StorageService.setUploadToken(_uploadToken!);
           }
           setState(() { _isConnected = true; _connectionStatus = 'В СЕТИ'; });
           _registerPublicKeysOnServer();
@@ -621,10 +622,26 @@ class _HomeScreenState extends State<HomeScreen>
       );
     }
     return FutureBuilder<http.Response>(
-      future: http.get(
-        Uri.parse('https://deepdrift-backend.onrender.com/download/$fileId'),
-        headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!},
-      ),
+      future: () async {
+        // Retry up to 4 times с паузой — ждём пока сокет выдаст токен
+        for (int attempt = 0; attempt < 4; attempt++) {
+          final token = StorageService.uploadToken ?? _uploadToken;
+          final response = await http.get(
+            Uri.parse('https://deepdrift-backend.onrender.com/download/$fileId'),
+            headers: {if (token != null) 'X-Upload-Token': token},
+          );
+          if (response.statusCode == 200) return response;
+          if (response.statusCode == 404) return response;
+          // 401 — токен ещё не готов, ждём
+          await Future.delayed(Duration(seconds: attempt + 1));
+        }
+        // Последняя попытка
+        final token = StorageService.uploadToken ?? _uploadToken;
+        return http.get(
+          Uri.parse('https://deepdrift-backend.onrender.com/download/$fileId'),
+          headers: {if (token != null) 'X-Upload-Token': token},
+        );
+      }(),
       builder: (_, snap) {
         if (snap.connectionState == ConnectionState.done &&
             snap.hasData && snap.data!.statusCode == 200) {
@@ -654,7 +671,7 @@ class _HomeScreenState extends State<HomeScreen>
         'https://deepdrift-backend.onrender.com/upload',
         data: formData,
         options: dio_pkg.Options(
-          headers: {if (_uploadToken != null) 'X-Upload-Token': _uploadToken!},
+          headers: {if (StorageService.uploadToken != null) 'X-Upload-Token': StorageService.uploadToken!},
         ),
       );
       if (resp.statusCode == 200 && resp.data['status'] == 'success') {
