@@ -27,7 +27,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'models/chat_models.dart';
-
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tab indices
@@ -122,6 +123,8 @@ class _HomeScreenState extends State<HomeScreen>
       if (!_socket.isConnected) _socket.forceReconnect();
       _socket.checkStatuses(_chats);
     }
+    // Ключи не сбрасываем при сворачивании — пользователь не должен
+    // вводить пароль каждый раз при возврате в приложение.
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -197,9 +200,7 @@ class _HomeScreenState extends State<HomeScreen>
     try {
       setState(() => _connectionStatus = 'ПОДКЛЮЧЕНИЕ...');
 
-      // SECURITY FIX: пароль не читается из хранилища — только salt + ключи
       final savedSalt = _storage.getSetting('user_salt');
-      // SECURITY FIX: auth_token читается из Keychain/Keystore
       final authToken = await _storage.getAuthToken();
 
       if (savedSalt == null) {
@@ -208,8 +209,24 @@ class _HomeScreenState extends State<HomeScreen>
       }
 
       if (!_cipher.isInitialized) {
-        if (mounted) await _showUnlockWithPasswordDialog();
-        return;
+        // Пробуем автоматически разблокировать из Keychain (без запроса пароля)
+        final cachedPassword = await _storage.getCachedPassword();
+
+        if (cachedPassword != null) {
+          try {
+            final x25519Key  = _storage.getSetting('encrypted_x25519_key') as String?;
+            final ed25519Key = _storage.getSetting('encrypted_ed25519_key') as String?;
+            await _cipher.init(cachedPassword, savedSalt,
+                encryptedX25519Key: x25519Key, encryptedEd25519Key: ed25519Key);
+          } catch (_) {
+            // Кэш устарел — просим пароль
+            if (mounted) await _showUnlockWithPasswordDialog();
+            return;
+          }
+        } else {
+          if (mounted) await _showUnlockWithPasswordDialog();
+          return;
+        }
       }
 
       _socket.init(_cipher);
@@ -335,6 +352,8 @@ class _HomeScreenState extends State<HomeScreen>
                     await _cipher.init(pwdCtrl.text, salt,
                         encryptedX25519Key: x25519Key, encryptedEd25519Key: ed25519Key);
                     if (!_cipher.isInitialized) { setS(() => error = 'Неверный пароль'); return; }
+                    // Кэшируем пароль в Keychain — не будем спрашивать снова
+                    await _storage.cachePassword(pwdCtrl.text);
                     Navigator.pop(ctx);
                     await _autoConnect();
                   } catch (_) {
@@ -764,10 +783,10 @@ class _HomeScreenState extends State<HomeScreen>
     await _cipher.init(password, salt);
     final keys = await _cipher.exportBothKeys(password);
     await _idService.saveUID(uid);
-    // SECURITY FIX: пароль НЕ сохраняется
     await _storage.saveSetting('user_salt', salt);
     await _storage.saveSetting('encrypted_x25519_key', keys['x25519']!);
     await _storage.saveSetting('encrypted_ed25519_key', keys['ed25519']!);
+    await _storage.cachePassword(password); // Keychain — не спрашиваем при следующем запуске
     await _cacheKeyFingerprint();
     if (mounted) setState(() => _myUid = uid);
     if (mounted) await _showStep3KeyBackup(uid, password, keys);
@@ -1328,7 +1347,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _onFabTapped() {
     switch (_tabController.index) {
-      case _Tab.contacts: _addContact(); break;
+      case _Tab.contacts: _showAddMenu(); break;  // меню с QR + добавить
       case _Tab.groups:   _createGroupDialog(); break;
       case _Tab.channels: _openChannelsScreen(); break;
       default:            _showAddMenu(); break;
