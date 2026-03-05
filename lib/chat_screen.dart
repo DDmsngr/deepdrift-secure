@@ -46,7 +46,7 @@ class _ChatScreenState extends State<ChatScreen> {
   static const String SERVER_HTTP_URL = 'https://deepdrift-backend.onrender.com';
   /// true  → FLAG_SECURE выключен (можно скриншотить для отладки).
   /// false → FLAG_SECURE включён в боевой версии.
-  static const bool _debugMode = false;
+  static const bool _debugMode = true;
 
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _messageIds = {};
@@ -2240,6 +2240,13 @@ class _ChatScreenState extends State<ChatScreen> {
   // Логика отображения вынесена в lib/widgets/message_bubble.dart.
   // _ChatScreenState остаётся ответственным только за колбэки (действия).
   Widget _buildMessage(Map<String, dynamic> msg, int index) {
+    final isGroup  = _storage.isGroup(widget.targetUid);
+    final fromUid  = msg['from'] as String?;
+    final isMe     = fromUid == widget.myUid;
+    final senderName = (isGroup && !isMe && fromUid != null)
+        ? _storage.getContactDisplayName(fromUid)
+        : null;
+
     return _SwipeToReply(
       onReply: () => _setReplyTo(msg),
       child: MessageBubble(
@@ -2253,6 +2260,7 @@ class _ChatScreenState extends State<ChatScreen> {
         onOpenImage:     _showFullImageFromFile,
         onOpenFile:      (path, name) => _openFile(path, name),
         onRemoveReaction: _removeReaction,
+        senderName:      senderName,
       ),
     );
   }
@@ -2417,7 +2425,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               .toList();
                           if (typers.isEmpty) {
                             return Text(
-                              '\${groupMembers.length} участников',
+                              '${groupMembers.length} участников',
                               style: const TextStyle(fontSize: 10, color: Colors.white54),
                             );
                           }
