@@ -39,6 +39,16 @@ class StorageService {
   Future<void> deleteAuthToken() =>
       _secureStorage.delete(key: 'auth_token');
 
+  // Кэш пароля в Keychain/Keystore — чтобы не просить каждый раз при старте
+  Future<void> cachePassword(String password) =>
+      _secureStorage.write(key: 'user_password_cache', value: password);
+
+  Future<String?> getCachedPassword() =>
+      _secureStorage.read(key: 'user_password_cache');
+
+  Future<void> deleteCachedPassword() =>
+      _secureStorage.delete(key: 'user_password_cache');
+
   // 🟡-5 FIX: Per-key mutex через sequential Future chain.
   // Ключ — chatWith (или любой другой ключ операции).
   // Значение — последняя Future в цепочке для этого ключа.
