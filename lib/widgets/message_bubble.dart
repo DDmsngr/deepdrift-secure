@@ -22,6 +22,7 @@ class MessageBubble extends StatefulWidget {
   final void Function(String? filePath, String name) onOpenFile;
   final void Function(String msgId, String emoji)    onRemoveReaction;
   final void Function(Map<String, dynamic>)?         onReply;   // ← свайп-ответ
+  final String? senderName; // имя отправителя для групповых сообщений
 
   const MessageBubble({
     super.key,
@@ -36,6 +37,7 @@ class MessageBubble extends StatefulWidget {
     required this.onOpenFile,
     required this.onRemoveReaction,
     this.onReply,
+    this.senderName,
   });
 
   @override
@@ -183,6 +185,18 @@ class _MessageBubbleState extends State<MessageBubble>
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // Имя отправителя в групповых сообщениях
+                          if (!isMe && widget.senderName != null) ...[
+                            Text(
+                              widget.senderName!,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF00D9FF),
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                          ],
                           // Forwarded label
                           if (widget.msg['forwardedFrom'] != null) ...[
                             Row(mainAxisSize: MainAxisSize.min, children: [
