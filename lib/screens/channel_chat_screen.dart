@@ -43,7 +43,7 @@ class _ChannelChatScreenState extends State<ChannelChatScreen> {
     super.initState();
 
     // Load stored messages
-    final stored = _storage.getMessages(widget.channelId);
+    final stored = _storage.getHistory(widget.channelId);
     for (final m in stored) {
       final id = m['id']?.toString();
       if (id != null && !_messageIds.contains(id)) {
