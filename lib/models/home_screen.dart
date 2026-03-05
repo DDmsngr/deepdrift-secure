@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:typed_data';
+
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
@@ -25,7 +25,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'models/chat_models.dart';
-import 'package:cached_network_image/cached_network_image.dart';
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tab indices
@@ -585,7 +585,14 @@ class _HomeScreenState extends State<HomeScreen>
   // CachedNetworkImage не поддерживает кастомные заголовки.
   // Используем FutureBuilder + http.get + MemoryImage, результат кэшируем.
 
-  Widget _avatarImage(String fileId, {double radius = 20}) {
+  Widget _avatarImage(String? fileId, {double radius = 20}) {
+    if (fileId == null || fileId.isEmpty || fileId == 'null') {
+      return CircleAvatar(
+        radius: radius,
+        backgroundColor: const Color(0xFF1A1F3C),
+        child: const Icon(Icons.person, color: Colors.cyan),
+      );
+    }
     if (_avatarCache.containsKey(fileId)) {
       return CircleAvatar(
         radius: radius,
@@ -670,7 +677,7 @@ class _HomeScreenState extends State<HomeScreen>
                         width: 80, height: 80,
                         color: const Color(0xFF0A0E27),
                         child: hasAvatar
-                            ? _avatarImage(currentAvatar!, radius: 40)
+                            ? _avatarImage(currentAvatar, radius: 40)
                             : const Icon(Icons.add_a_photo, size: 30, color: Colors.cyan),
                       ),
                     ),
@@ -1501,7 +1508,7 @@ class _HomeScreenState extends State<HomeScreen>
         width: size, height: size,
         color: isGroup ? const Color(0xFF0A2A3A) : isChannel ? const Color(0xFF1A0A3A) : const Color(0xFF1A1F3C),
         child: hasAvatar
-            ? _avatarImage(avatar!, radius: size / 2)
+            ? _avatarImage(avatar, radius: size / 2)
             : _avatarFallback(name, isGroup, isChannel, radius),
       ),
     );
@@ -1700,7 +1707,7 @@ class _HomeScreenState extends State<HomeScreen>
                     borderRadius: BorderRadius.circular(8),
                     child: Container(width: 32, height: 32, color: Colors.cyan.withValues(alpha: 0.2),
                         child: hasMyAvatar
-                            ? _avatarImage(avatarUrl!, radius: 16)
+                            ? _avatarImage(avatarUrl, radius: 16)
                             : const Icon(Icons.person, size: 20, color: Colors.cyan)),
                   ),
                 ),
