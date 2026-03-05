@@ -46,3 +46,12 @@ class IdentityService {
     await prefs.remove(_contactsKey);
   }
 }
+
+extension IdentityServiceDelete on IdentityService {
+  // Удаляет UID при удалении аккаунта
+  Future<void> deleteUID() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_uidKey);
+    await prefs.remove(_contactsKey);
+  }
+}
