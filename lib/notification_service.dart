@@ -69,11 +69,6 @@ class NotificationService {
   // (cold start, быстрый background tap) — uid кэшируется здесь.
   String? _pendingUid;
 
-  // true = приложение активно (foreground). Пуши не показываем когда открыто.
-  bool _isForeground = false;
-
-  void setForeground(bool isForeground) { _isForeground = isForeground; }
-
   // ──────────────────────────────────────────────────────────────────────────
   // Публичный API для HomeScreen
   // ──────────────────────────────────────────────────────────────────────────
@@ -176,8 +171,6 @@ class NotificationService {
     required String displayName,
     required String messageText,
   }) async {
-    // Не показываем системный пуш пока приложение открыто — сообщение видно в UI
-    if (_isForeground) return;
     final androidDetails = AndroidNotificationDetails(
       'chat_messages',
       'Chat Messages',
