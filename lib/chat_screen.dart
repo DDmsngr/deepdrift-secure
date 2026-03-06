@@ -18,6 +18,7 @@ import 'package:camera/camera.dart';
 import 'crypto_service.dart';
 import 'socket_service.dart';
 import 'storage_service.dart';
+import 'notification_service.dart';
 import 'models/chat_models.dart';
 import 'widgets/message_bubble.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -130,6 +131,9 @@ class _ChatScreenState extends State<ChatScreen> {
     // Берём актуальный токен из глобального синглтона
     _uploadToken = StorageService.uploadToken;
 
+    // Регистрируем чат как активный — пуши для него подавляются
+    NotificationService.setActiveChat(widget.targetUid);
+
     _reactions = _storage.loadReactions(widget.targetUid);
 
     // Загружаем настройку "только админы" для групп
@@ -168,7 +172,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
-    // Скриншоты заблокированы глобально — не снимаем флаг при выходе из чата
+    // Снимаем активный чат — пуши снова разрешены
+    NotificationService.setActiveChat(null);
     _socketSub?.cancel();
     _typingTimer?.cancel();
     _keyExchangeTimeout?.cancel();
@@ -857,11 +862,17 @@ class _ChatScreenState extends State<ChatScreen> {
   // ──────────────────────────────────────────────────────────────────────────
 
   Future<void> _markAllAsRead() async {
+    final myUid = _storage.getMyUid() ?? '';
+    final isGroup = _storage.isGroup(widget.targetUid);
+    // В группах сообщения приходят от разных UIDs, не от targetUid
+    // Отмечаем все входящие (не мои) как прочитанные
     final unreadIds = _messages
-        .where((m) => m['from'] == widget.targetUid && m['status'] != 'read')
+        .where((m) => m['from'] != myUid && m['status'] != 'read')
         .map((m) => m['id'].toString())
         .toList();
-    for (final id in unreadIds) { _sendReadReceipt(id); }
+    if (!isGroup) {
+      for (final id in unreadIds) { _sendReadReceipt(id); }
+    }
     if (unreadIds.isNotEmpty) await _storage.markAllAsRead(widget.targetUid);
   }
 
