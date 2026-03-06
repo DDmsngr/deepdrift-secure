@@ -27,6 +27,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'models/chat_models.dart';
+import 'lock_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tab indices
@@ -50,6 +51,7 @@ class _HomeScreenState extends State<HomeScreen>
   String?      _myUid;
   String?      _uploadToken;         // X-Upload-Token для загрузки/скачивания аватаров
   final Map<String, Uint8List> _avatarCache = {}; // кэш байтов аватаров
+  final Map<String, Future<http.Response>> _avatarFutureCache = {}; // кэш Future — не стартуем новый при каждом rebuild
   List<String> _chats = [];
   final Map<String, Map<String, bool>> _groupTypingUsers = {};
   bool         _isConnected      = false;
@@ -116,13 +118,38 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   @override
+  bool _isLocked = false;
+
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      // Запоминаем что приложение ушло в фон — при возврате проверим пин
+      final pinEnabled = _storage.getSetting('app_lock_enabled') as bool? ?? false;
+      final pin = _storage.getSetting('app_lock_pin') as String? ?? '';
+      if (pinEnabled && pin.isNotEmpty) _isLocked = true;
+    }
     if (state == AppLifecycleState.resumed) {
       if (!_socket.isConnected) _socket.forceReconnect();
       _socket.checkStatuses(_chats);
+      // Показываем экран блокировки если нужен PIN
+      if (_isLocked) {
+        _isLocked = false;
+        _showLockScreen();
+      }
     }
-    // Ключи не сбрасываем при сворачивании — пользователь не должен
-    // вводить пароль каждый раз при возврате в приложение.
+  }
+
+  void _showLockScreen() {
+    if (!mounted) return;
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        opaque: true,
+        barrierDismissible: false,
+        pageBuilder: (_, __, ___) => LockScreen(
+          storage: _storage,
+          onUnlocked: () => Navigator.of(context).pop(),
+        ),
+      ),
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -410,6 +437,22 @@ class _HomeScreenState extends State<HomeScreen>
     final storageKey = (groupId != null && groupId.isNotEmpty) ? groupId : senderUid;
     if (_storage.hasMessage(storageKey, msgId)) return;
 
+    // Если сообщение из группы — убеждаемся что группа с именем сохранена
+    if (groupId != null && groupId.isNotEmpty) {
+      final existingName = _storage.getContactDisplayName(groupId);
+      // Если имя не сохранено (только raw groupId) — запросить у сервера
+      if (existingName == groupId) {
+        final groupName = data['group_name'] as String?;
+        if (groupName != null && groupName.isNotEmpty) {
+          _storage.setContactDisplayName(groupId, groupName);
+        }
+        if (!_storage.getContacts().contains(groupId)) {
+          await _storage.saveGroup(groupId: groupId, groupName: groupName ?? groupId, members: [], creatorUid: senderUid ?? '');
+          _socket.requestGroupKey(groupId);
+        }
+      }
+    }
+
     // SECURITY FIX: незнакомцы идут в очередь запросов, а не сразу в контакты
     final contacts = _storage.getContacts();
     if (!contacts.contains(senderUid) && groupId == null) {
@@ -619,33 +662,36 @@ class _HomeScreenState extends State<HomeScreen>
         backgroundImage: MemoryImage(_avatarCache[fileId]!),
       );
     }
-    return FutureBuilder<http.Response>(
-      future: () async {
-        // Retry up to 4 times с паузой — ждём пока сокет выдаст токен
-        for (int attempt = 0; attempt < 4; attempt++) {
-          final token = StorageService.uploadToken ?? _uploadToken;
-          final response = await http.get(
-            Uri.parse('https://deepdrift-backend.onrender.com/download/$fileId'),
-            headers: {if (token != null) 'X-Upload-Token': token},
-          );
-          if (response.statusCode == 200) return response;
-          if (response.statusCode == 404) return response;
-          // 401 — токен ещё не готов, ждём
-          await Future.delayed(Duration(seconds: attempt + 1));
-        }
-        // Последняя попытка
+    // Кэшируем Future — иначе FutureBuilder перезапускает запрос при каждом rebuild (DDoS)
+    _avatarFutureCache[fileId] ??= () async {
+      for (int attempt = 0; attempt < 4; attempt++) {
         final token = StorageService.uploadToken ?? _uploadToken;
-        return http.get(
+        final response = await http.get(
           Uri.parse('https://deepdrift-backend.onrender.com/download/$fileId'),
           headers: {if (token != null) 'X-Upload-Token': token},
         );
-      }(),
+        if (response.statusCode == 200) return response;
+        if (response.statusCode == 404) return response;
+        await Future.delayed(Duration(seconds: attempt + 1));
+      }
+      final token = StorageService.uploadToken ?? _uploadToken;
+      return http.get(
+        Uri.parse('https://deepdrift-backend.onrender.com/download/$fileId'),
+        headers: {if (token != null) 'X-Upload-Token': token},
+      );
+    }();
+
+    return FutureBuilder<http.Response>(
+      future: _avatarFutureCache[fileId],
       builder: (_, snap) {
         if (snap.connectionState == ConnectionState.done &&
             snap.hasData && snap.data!.statusCode == 200) {
           final bytes = snap.data!.bodyBytes;
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) setState(() => _avatarCache[fileId] = bytes);
+            if (mounted) setState(() {
+              _avatarCache[fileId] = bytes;
+              _avatarFutureCache.remove(fileId); // Сбрасываем Future-кэш — байты уже есть
+            });
           });
           return CircleAvatar(radius: radius, backgroundImage: MemoryImage(bytes));
         }
