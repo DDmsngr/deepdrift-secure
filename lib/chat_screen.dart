@@ -862,7 +862,7 @@ class _ChatScreenState extends State<ChatScreen> {
   // ──────────────────────────────────────────────────────────────────────────
 
   Future<void> _markAllAsRead() async {
-    final myUid = _storage.getMyUid() ?? '';
+    final myUid = widget.myUid;
     final isGroup = _storage.isGroup(widget.targetUid);
     // В группах сообщения приходят от разных UIDs, не от targetUid
     // Отмечаем все входящие (не мои) как прочитанные
