@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:local_auth/local_auth.dart';
 
-import '../storage_service.dart';
+import 'storage_service.dart';
 
 /// Экран блокировки с числовым PIN-кодом (4–12 цифр).
 /// PIN хранится отдельно от пароля шифрования.
