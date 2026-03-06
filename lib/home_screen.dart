@@ -442,11 +442,12 @@ class _HomeScreenState extends State<HomeScreen>
       // Если имя не сохранено (только raw groupId) — запросить у сервера
       if (existingName == groupId) {
         final groupName = data['group_name'] as String?;
+        final resolvedName = (groupName != null && groupName.isNotEmpty) ? groupName : groupId;
         if (groupName != null && groupName.isNotEmpty) {
           _storage.setContactDisplayName(groupId, groupName);
         }
         if (!_storage.getContacts().contains(groupId)) {
-          await _storage.saveGroup(groupId: groupId, groupName: groupName ?? groupId!, members: [], creatorUid: senderUid ?? '');
+          await _storage.saveGroup(groupId: groupId, groupName: resolvedName, members: [], creatorUid: senderUid ?? '');
           _socket.requestGroupKey(groupId);
         }
       }
