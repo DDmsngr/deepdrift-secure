@@ -447,7 +447,7 @@ class _HomeScreenState extends State<HomeScreen>
           _storage.setContactDisplayName(groupId, groupName);
         }
         if (!_storage.getContacts().contains(groupId)) {
-          await _storage.saveGroup(groupId: groupId, groupName: resolvedName, members: [], creatorUid: senderUid ?? '');
+          await _storage.saveGroup(groupId: groupId, groupName: resolvedName, members: [], creatorUid: senderUid);
           _socket.requestGroupKey(groupId);
         }
       }
