@@ -54,20 +54,17 @@ class NotificationService {
   factory NotificationService() => _instance;
   NotificationService._internal();
 
-  // GlobalKey передаётся в MaterialApp — даёт доступ к NavigatorState
-  // из любого места без BuildContext.
   static final navigatorKey = GlobalKey<NavigatorState>();
 
   final FirebaseMessaging              _fcm               = FirebaseMessaging.instance;
   final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
 
-  // Callback, который HomeScreen регистрирует когда готов к навигации.
-  // Принимает fromUid и открывает нужный чат.
   void Function(String fromUid)? _openChatCallback;
-
-  // Если уведомление пришло до того, как HomeScreen зарегистрировал callback
-  // (cold start, быстрый background tap) — uid кэшируется здесь.
   String? _pendingUid;
+
+  // UID чата который сейчас открыт — не показываем пуш для него
+  static String? activeChatUid;
+  static void setActiveChat(String? uid) { activeChatUid = uid; }
 
   // ──────────────────────────────────────────────────────────────────────────
   // Публичный API для HomeScreen
@@ -171,6 +168,8 @@ class NotificationService {
     required String displayName,
     required String messageText,
   }) async {
+    // Не показываем пуш если этот чат сейчас открыт на экране
+    if (activeChatUid == fromUid) return;
     final androidDetails = AndroidNotificationDetails(
       'chat_messages',
       'Chat Messages',
