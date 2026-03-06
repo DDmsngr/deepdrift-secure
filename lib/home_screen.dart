@@ -117,7 +117,6 @@ class _HomeScreenState extends State<HomeScreen>
     super.dispose();
   }
 
-  @override
   bool _isLocked = false;
 
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -447,7 +446,7 @@ class _HomeScreenState extends State<HomeScreen>
           _storage.setContactDisplayName(groupId, groupName);
         }
         if (!_storage.getContacts().contains(groupId)) {
-          await _storage.saveGroup(groupId: groupId, groupName: groupName ?? groupId, members: [], creatorUid: senderUid ?? '');
+          await _storage.saveGroup(groupId: groupId, groupName: groupName ?? groupId!, members: [], creatorUid: senderUid ?? '');
           _socket.requestGroupKey(groupId);
         }
       }
