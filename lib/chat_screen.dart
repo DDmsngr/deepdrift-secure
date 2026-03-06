@@ -633,6 +633,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final msgId     = data['id']?.toString();
     if (msgId == null || _messageIds.contains(msgId)) return;
 
+    // ── ВАЖНО: добавляем ID сразу, до async-дешифровки.
+    // Без этого несколько копий одного сообщения (из global queue + specific queue)
+    // одновременно пройдут проверку выше и запустят параллельные загрузки медиа.
+    _messageIds.add(msgId);
+
     final encrypted = data['encrypted_text'];
     final signature = data['signature'];
     final msgTyp    = (data['messageType'] as String? ?? 'text').toMsgType();
