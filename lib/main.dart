@@ -19,6 +19,10 @@ import 'splash_screen.dart';
 // ВАЖНО: должна быть top-level функцией (не методом класса)
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  // Если у сообщения есть notification-поле, Android уже показал его нативно —
+  // не показываем дубликат через FlutterLocalNotifications.
+  if (message.notification != null) return;
+
   // Инициализируем плагин локальных уведомлений в фоновом изоляте
   const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
   const initSettings = InitializationSettings(android: androidInit);
