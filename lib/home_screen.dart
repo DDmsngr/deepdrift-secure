@@ -121,13 +121,16 @@ class _HomeScreenState extends State<HomeScreen>
 
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) {
+      // Сообщаем сокету что уходим в фон — он НЕ будет пытаться переподключиться
+      _socket.onAppPaused();
       // Запоминаем что приложение ушло в фон — при возврате проверим пин
       final pinEnabled = _storage.getSetting('app_lock_enabled') as bool? ?? false;
       final pin = _storage.getSetting('app_lock_pin') as String? ?? '';
       if (pinEnabled && pin.isNotEmpty) _isLocked = true;
     }
     if (state == AppLifecycleState.resumed) {
-      if (!_socket.isConnected) _socket.forceReconnect();
+      // Всегда форс-переподключаемся — forceReconnect() сбрасывает _isConnecting/backgound флаг
+      _socket.forceReconnect();
       _socket.checkStatuses(_chats);
       // Показываем экран блокировки если нужен PIN
       if (_isLocked) {
