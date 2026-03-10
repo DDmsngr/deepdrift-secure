@@ -2,24 +2,47 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:cryptography/cryptography.dart';
 import 'package:crypto/crypto.dart';
-import 'storage_service.dart';
+import '../storage_service.dart';
+import '../config/app_config.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ФОРМАТ ХРАНЕНИЯ ЗАШИФРОВАННЫХ КЛЮЧЕЙ (v2):
 //
-//   base64( argon2_nonce[16] | chacha20_nonce[12] | ciphertext | poly1305_mac[16] )
+//   base64( version_byte[1] | argon2_nonce[16] | chacha20_nonce[12] | ciphertext | poly1305_mac[16] )
 //
-// Первые 16 байт — случайный KDF-нонс для Argon2id (уникален при каждом экспорте/
-// смене пароля). Остальное — стандартный ChaCha20-Poly1305 SecretBox.
+// version_byte = 0x02 для текущего формата.
+// Первые 16 байт после version — случайный KDF-нонс для Argon2id.
+// Остальное — стандартный ChaCha20-Poly1305 SecretBox.
 //
-// ВАЖНО: при изменении формата увеличивать _kStorageVersion и добавлять миграцию.
+// Legacy формат (v1): без version byte, без Argon2 nonce.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Уровень безопасности Argon2id.
+enum Argon2SecurityLevel {
+  /// Быстрый (для слабых устройств): 16 MB, 2 итерации
+  low(memory: 16384, iterations: 2, label: 'Быстрый'),
+
+  /// Стандартный: 32 MB, 3 итерации
+  standard(memory: 32768, iterations: 3, label: 'Стандартный'),
+
+  /// Высокий (для мощных устройств): 64 MB, 4 итерации
+  high(memory: 65536, iterations: 4, label: 'Высокий');
+
+  final int memory;
+  final int iterations;
+  final String label;
+  const Argon2SecurityLevel({
+    required this.memory,
+    required this.iterations,
+    required this.label,
+  });
+}
 
 /// Сервис E2E-шифрования: X25519 ECDH + ChaCha20-Poly1305 + Ed25519
 class SecureCipher {
   // ── Алгоритмы ──────────────────────────────────────────────────────────────
-  final _algo   = Chacha20.poly1305Aead();
-  final _x25519 = X25519();
+  final _algo    = Chacha20.poly1305Aead();
+  final _x25519  = X25519();
   final _ed25519 = Ed25519();
 
   // ── Ключи текущего пользователя ────────────────────────────────────────────
@@ -33,24 +56,26 @@ class SecureCipher {
 
   bool _isInitialized = false;
 
+  // ── Настройки ──────────────────────────────────────────────────────────────
+  Argon2SecurityLevel _securityLevel = Argon2SecurityLevel.standard;
+
+  Argon2SecurityLevel get securityLevel => _securityLevel;
+  set securityLevel(Argon2SecurityLevel level) => _securityLevel = level;
+
   // ── Константы формата ──────────────────────────────────────────────────────
-  /// Длина Argon2 KDF-нонса, который сохраняется перед шифртекстом.
+  static const int _kVersionByteLength = 1;
   static const int _kArgon2NonceLength = 16;
 
   // ═══════════════════════════════════════════════════════════════════════════
   // ИНИЦИАЛИЗАЦИЯ
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Генерирует случайную соль для хранения (используется при первой регистрации).
   static String generateSalt() {
     final random = Random.secure();
     final saltBytes = List<int>.generate(32, (_) => random.nextInt(256));
     return base64Encode(saltBytes);
   }
 
-  /// Инициализирует шифровальщик.
-  /// Если [encryptedX25519Key] и [encryptedEd25519Key] переданы — восстанавливает
-  /// ключи из зашифрованного хранилища. Иначе генерирует новую пару ключей.
   Future<void> init(
     String password,
     String userSalt, {
@@ -77,13 +102,6 @@ class SecureCipher {
   // ЭКСПОРТ / ИМПОРТ КЛЮЧЕЙ (защита паролем)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Шифрует приватные ключи паролем и возвращает base64-строки для хранения.
-  ///
-  /// Формат каждой строки:
-  ///   base64( random_argon2_nonce[16] | chacha_nonce[12] | ciphertext | mac[16] )
-  ///
-  /// Argon2-нонс генерируется случайно при каждом вызове — это значит, что
-  /// два пользователя с одинаковым паролем получат разные ключи шифрования.
   Future<Map<String, String>> exportBothKeys(String password) async {
     if (_myX25519KeyPair == null || _myEd25519KeyPair == null) {
       throw StateError('Cipher not initialized');
@@ -104,46 +122,95 @@ class SecureCipher {
     }
   }
 
-  /// Шифрует [plainBytes] с помощью пароля и случайного Argon2-нонса.
-  /// Возвращает: base64( argon2_nonce[16] | chacha_nonce | ciphertext | mac )
+  /// Шифрует [plainBytes] с помощью пароля.
+  /// Формат v2: version_byte[1] | argon2_nonce[16] | chacha_nonce | ciphertext | mac
   Future<String> _encryptWithPassword(List<int> plainBytes, String password) async {
-    // 1. Генерируем случайный KDF-нонс (16 байт, криптостойкий PRNG)
     final argon2Nonce = _randomBytes(_kArgon2NonceLength);
-
-    // 2. Выводим ключ из пароля + свежего нонса
     final passwordKey = await _derivePassKey(password, argon2Nonce);
+    final secretBox   = await _algo.encrypt(plainBytes, secretKey: passwordKey);
 
-    // 3. Шифруем данные
-    final secretBox = await _algo.encrypt(plainBytes, secretKey: passwordKey);
-
-    // 4. Сохраняем: argon2Nonce || ChaCha20-Poly1305 SecretBox
-    final combined = [...argon2Nonce, ...secretBox.concatenation()];
+    // Version byte + argon2Nonce + SecretBox
+    final combined = [
+      AppConfig.cryptoFormatVersion,   // version byte
+      ...argon2Nonce,
+      ...secretBox.concatenation(),
+    ];
     return base64Encode(combined);
   }
 
-  /// Расшифровывает данные, зашифрованные через [_encryptWithPassword].
-  /// Ожидает формат: base64( argon2_nonce[16] | chacha_nonce | ciphertext | mac )
+  /// Расшифровывает данные. Автоматически определяет формат.
   Future<List<int>> _decryptWithPassword(String b64, String password) async {
     final combined = base64Decode(b64);
+    final format = _detectFormat(combined);
 
-    if (combined.length < _kArgon2NonceLength) {
-      throw CryptoException('Corrupted key data: too short');
+    switch (format) {
+      case _CryptoFormat.v2:
+        return _decryptV2(combined, password);
+      case _CryptoFormat.v1:
+        return _decryptV1(combined, password);
+      case _CryptoFormat.legacy:
+        debugLog('⚠️ [Crypto] Decrypting legacy format — re-export recommended!');
+        return _decryptLegacy(combined, password);
     }
+  }
 
-    // 1. Читаем сохранённый Argon2-нонс
-    final argon2Nonce = combined.sublist(0, _kArgon2NonceLength);
-    final cipherData  = combined.sublist(_kArgon2NonceLength);
-
-    // 2. Восстанавливаем ключ из пароля + сохранённого нонса
+  Future<List<int>> _decryptV2(List<int> combined, String password) async {
+    // Skip version byte
+    final argon2Nonce = combined.sublist(_kVersionByteLength, _kVersionByteLength + _kArgon2NonceLength);
+    final cipherData  = combined.sublist(_kVersionByteLength + _kArgon2NonceLength);
     final passwordKey = await _derivePassKey(password, argon2Nonce);
-
-    // 3. Расшифровываем
     final box = SecretBox.fromConcatenation(
       cipherData,
       nonceLength: _algo.nonceLength,
       macLength:   _algo.macAlgorithm.macLength,
     );
     return _algo.decrypt(box, secretKey: passwordKey);
+  }
+
+  Future<List<int>> _decryptV1(List<int> combined, String password) async {
+    // v1: argon2_nonce[16] | chacha_nonce | ciphertext | mac (без version byte)
+    final argon2Nonce = combined.sublist(0, _kArgon2NonceLength);
+    final cipherData  = combined.sublist(_kArgon2NonceLength);
+    final passwordKey = await _derivePassKey(password, argon2Nonce);
+    final box = SecretBox.fromConcatenation(
+      cipherData,
+      nonceLength: _algo.nonceLength,
+      macLength:   _algo.macAlgorithm.macLength,
+    );
+    return _algo.decrypt(box, secretKey: passwordKey);
+  }
+
+  Future<List<int>> _decryptLegacy(List<int> combined, String password) async {
+    final legacyNonce = List<int>.generate(16, (i) => i);
+    final passwordKey = await _derivePassKey(password, legacyNonce);
+    final box = SecretBox.fromConcatenation(
+      combined,
+      nonceLength: _algo.nonceLength,
+      macLength:   _algo.macAlgorithm.macLength,
+    );
+    return _algo.decrypt(box, secretKey: passwordKey);
+  }
+
+  /// Определяет формат зашифрованных данных.
+  _CryptoFormat _detectFormat(List<int> raw) {
+    if (raw.isEmpty) return _CryptoFormat.legacy;
+
+    // v2: первый байт = 0x02
+    if (raw[0] == 0x02 && raw.length >= _kVersionByteLength + _kArgon2NonceLength + _algo.nonceLength + _algo.macAlgorithm.macLength) {
+      return _CryptoFormat.v2;
+    }
+
+    // v1: достаточная длина для argon2_nonce + chacha + mac, но нет version byte
+    if (raw.length >= _kArgon2NonceLength + _algo.nonceLength + _algo.macAlgorithm.macLength) {
+      // Проверяем НЕ legacy ли это — legacy начинается с chacha nonce [0,1,2,...,11]
+      bool looksLikeStaticNonce = true;
+      for (int i = 0; i < 12 && i < raw.length; i++) {
+        if (raw[i] != i) { looksLikeStaticNonce = false; break; }
+      }
+      if (!looksLikeStaticNonce) return _CryptoFormat.v1;
+    }
+
+    return _CryptoFormat.legacy;
   }
 
   Future<void> _importBothKeys(
@@ -179,6 +246,9 @@ class SecureCipher {
     final publicKey = await _myEd25519KeyPair!.extractPublicKey();
     return base64Encode(publicKey.bytes);
   }
+
+  /// Возвращает auth Ed25519 pubkey (для отправки на сервер при регистрации).
+  Future<String> getAuthPublicKey() async => getMySigningKey();
 
   // ═══════════════════════════════════════════════════════════════════════════
   // SHARED SECRET (ECDH)
@@ -240,32 +310,24 @@ class SecureCipher {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Групповые ключи (shared symmetric key)
+  // Групповые ключи
   // ──────────────────────────────────────────────────────────────────────────
 
-  /// Генерирует 32 случайных байта — групповой симметричный ключ.
-  /// Использует Random.secure() — криптографически стойкий PRNG.
   List<int> generateGroupKey() {
     final rng = Random.secure();
     return List<int>.generate(32, (_) => rng.nextInt(256));
   }
 
-  /// Устанавливает симметричный ключ группы напрямую из байт.
-  /// После вызова encryptText(groupId) / decryptText(groupId) работают штатно.
   void setGroupKey(String groupId, List<int> keyBytes) {
     _sharedSecrets[groupId] = SecretKey(keyBytes);
     debugLog('🔑 [Crypto] Group key set for $groupId');
   }
 
-  /// Шифрует групповой ключ для конкретного участника.
-  /// Использует его personal shared secret — результат безопасен для передачи через сервер.
   Future<String> encryptGroupKeyFor(String memberUid, List<int> keyBytes) async {
     final keyB64 = base64Encode(keyBytes);
     return encryptText(keyB64, targetUid: memberUid);
   }
 
-  /// Расшифровывает групповой ключ, полученный от создателя группы.
-  /// [fromUid] — UID создателя (его shared secret использован для шифрования).
   Future<List<int>> decryptGroupKey(String fromUid, String encryptedB64) async {
     final keyB64 = await decryptText(encryptedB64, fromUid: fromUid);
     return base64Decode(keyB64);
@@ -282,32 +344,16 @@ class SecureCipher {
   // SECURITY FINGERPRINT
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Возвращает fingerprint сессии для верификации отсутствия MITM.
-  ///
-  /// **Алгоритм:**
-  /// 1. Берём оба X25519-публичных ключа (мой и контакта).
-  /// 2. Сортируем их лексикографически — обе стороны должны получить
-  ///    одинаковый fingerprint, независимо от того, кто его считает.
-  /// 3. SHA-256( sorted_key_A | sorted_key_B ) → 64 hex-символа.
-  /// 4. Отображаем первые 40 символов в группах по 5: "XXXXX XXXXX XXXXX ..."
-  ///
-  /// Пользователи сравнивают fingerprint голосом/в реальной жизни —
-  /// если они совпадают у обоих, MITM отсутствует.
-  ///
-  /// ⚠️ Метод async — необходим await при вызове.
   Future<String> getSecurityCode(String targetUid) async {
     if (!_contactPublicKeys.containsKey(targetUid) || _myX25519KeyPair == null) {
       return 'NOT_ESTABLISHED';
     }
 
     try {
-      // 1. Мой публичный ключ
-      final myPublicKey   = await _myX25519KeyPair!.extractPublicKey();
-      final myBytes       = myPublicKey.bytes;
-      // 2. Ключ контакта
-      final theirBytes    = _contactPublicKeys[targetUid]!.bytes;
+      final myPublicKey = await _myX25519KeyPair!.extractPublicKey();
+      final myBytes     = myPublicKey.bytes;
+      final theirBytes  = _contactPublicKeys[targetUid]!.bytes;
 
-      // 3. Детерминированная сортировка — оба участника получат одинаковый хэш
       final List<int> first;
       final List<int> second;
       if (_compareByteArrays(myBytes, theirBytes) <= 0) {
@@ -318,12 +364,10 @@ class SecureCipher {
         second = myBytes;
       }
 
-      // 4. SHA-256 от конкатенации обоих ключей
       final combined  = [...first, ...second];
       final hash      = sha256.convert(combined);
       final hexString = hash.toString().toUpperCase();
 
-      // 5. Форматируем как 8 групп по 5 символов (40 из 64 hex-символов)
       final buffer = StringBuffer();
       for (int i = 0; i < 8; i++) {
         if (i > 0) buffer.write(' ');
@@ -336,8 +380,6 @@ class SecureCipher {
     }
   }
 
-  /// Лексикографическое сравнение двух byte-массивов одинаковой длины.
-  /// Возвращает отрицательное значение, 0 или положительное — как Comparator.
   int _compareByteArrays(List<int> a, List<int> b) {
     for (int i = 0; i < a.length && i < b.length; i++) {
       if (a[i] != b[i]) return a[i] - b[i];
@@ -385,7 +427,6 @@ class SecureCipher {
       final clearBytes = await _algo.decrypt(box, secretKey: _sharedSecrets[fromUid]!);
       return utf8.decode(clearBytes);
     } on SecretBoxAuthenticationError {
-      // MAC проверка провалилась — сообщение повреждено или подделано
       return '[⚠️ Authentication failed]';
     } catch (e) {
       debugLog('❌ [Crypto] Decryption error: $e');
@@ -397,7 +438,6 @@ class SecureCipher {
   // ШИФРОВАНИЕ ФАЙЛОВ
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Шифрует байты файла. Возвращает: nonce[12] | ciphertext | mac[16]
   Future<List<int>> encryptFileBytes(
     List<int> fileBytes, {
     required String targetUid,
@@ -419,7 +459,6 @@ class SecureCipher {
     }
   }
 
-  /// Расшифровывает байты файла.
   Future<List<int>> decryptFileBytes(
     List<int> encryptedBytes, {
     required String fromUid,
@@ -446,7 +485,6 @@ class SecureCipher {
   // ПОДПИСИ Ed25519
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Подписывает [text] приватным Ed25519-ключом текущего пользователя.
   Future<String> signMessage(String text) async {
     if (_myEd25519KeyPair == null) throw StateError('Cipher not initialized');
     try {
@@ -460,11 +498,6 @@ class SecureCipher {
     }
   }
 
-  /// Подписывает серверный challenge для аутентификации.
-  ///
-  /// [nonceB64] — base64-encoded случайные байты, полученные от сервера.
-  /// Возвращает base64-encoded Ed25519-подпись raw байтов нонса.
-  /// Сервер проверяет подпись зарегистрированным публичным ключом пользователя.
   Future<String> signChallenge(String nonceB64) async {
     if (_myEd25519KeyPair == null) throw StateError('Cipher not initialized');
     try {
@@ -476,14 +509,6 @@ class SecureCipher {
     }
   }
 
-  /// Проверяет Ed25519-подпись сообщения от [fromUid].
-  ///
-  /// Возвращает `true` если подпись верна, `false` если:
-  /// - подпись повреждена или не совпадает,
-  /// - публичный ключ подписи для [fromUid] ещё не установлен.
-  ///
-  /// **Важно:** вызывающий код обязан реагировать на `false` —
-  /// помечать сообщение предупреждением или отвергать его.
   Future<bool> verifySignature(
     String text,
     String signatureB64,
@@ -506,8 +531,6 @@ class SecureCipher {
   // LEGACY EXPORT (одиночный X25519-ключ, для совместимости бекапов)
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Экспортирует только X25519-приватный ключ. Используйте [exportBothKeys]
-  /// для полного резервного копирования.
   Future<String> exportPrivateKey(String password) async {
     if (_myX25519KeyPair == null) throw StateError('Cipher not initialized');
     try {
@@ -518,23 +541,9 @@ class SecureCipher {
     }
   }
 
-  /// Импортирует X25519-приватный ключ. Поддерживает как новый формат (с
-  /// Argon2-нонсом), так и устаревший (со статичным нонсом — для миграции
-  /// старых пользователей).
   Future<void> importPrivateKey(String encryptedKeyB64, String password) async {
     try {
-      List<int> privateKeyBytes;
-
-      final raw = base64Decode(encryptedKeyB64);
-      if (_isLegacyFormat(raw)) {
-        // Старый формат: без префикса Argon2-нонса, статичный нонс [0..15]
-        debugLog('⚠️ [Crypto] Importing legacy key format — re-export after import!');
-        privateKeyBytes = await _decryptWithPasswordLegacy(encryptedKeyB64, password);
-      } else {
-        // Новый формат: с случайным Argon2-нонсом
-        privateKeyBytes = await _decryptWithPassword(encryptedKeyB64, password);
-      }
-
+      final privateKeyBytes = await _decryptWithPassword(encryptedKeyB64, password);
       _myX25519KeyPair = await _x25519.newKeyPairFromSeed(privateKeyBytes);
       _isInitialized   = true;
     } catch (e) {
@@ -546,55 +555,18 @@ class SecureCipher {
   // ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /// Выводит ключ Argon2id из пароля и случайного [nonce].
   Future<SecretKey> _derivePassKey(String password, List<int> nonce) async {
     return Argon2id(
-      memory:      32768,
-      iterations:  3,
+      memory:      _securityLevel.memory,
+      iterations:  _securityLevel.iterations,
       parallelism: 4,
       hashLength:  32,
     ).deriveKeyFromPassword(password: password, nonce: nonce);
   }
 
-  /// Генерирует [length] криптографически случайных байт.
   List<int> _randomBytes(int length) {
     final random = Random.secure();
     return List<int>.generate(length, (_) => random.nextInt(256));
-  }
-
-  /// Эвристика: если длина декодированных данных не кратна ожидаемому для нового
-  /// формата (≥ 16 + 12 + 0 + 16 = 44 байт) — считаем файл старым форматом.
-  /// Более точно: старый формат начинается с chacha-нонса (12 байт, не 16).
-  bool _isLegacyFormat(List<int> raw) {
-    // Новый формат: argon2_nonce[16] + chacha_nonce[12] + ciphertext + mac[16]
-    // минимум 44 байта. Но если первые 16 байт — аргон2-нонс, длина будет >= 44.
-    // Старый формат: chacha_nonce[12] + ciphertext + mac[16], длина минимум 28.
-    // Эвристика: если длина < 44 или первые 16 байт выглядят как [0,1,2,...,15].
-    if (raw.length < _kArgon2NonceLength + _algo.nonceLength + _algo.macAlgorithm.macLength) {
-      return true;
-    }
-    // Проверяем сигнатуру старого нонса [0,1,2,...,15] начиная с byte 0
-    bool looksLikeStaticNonce = true;
-    for (int i = 0; i < 12; i++) {
-      if (raw[i] != i) { looksLikeStaticNonce = false; break; }
-    }
-    return looksLikeStaticNonce;
-  }
-
-  /// Расшифровка в старом (уязвимом) формате — только для миграции.
-  Future<List<int>> _decryptWithPasswordLegacy(
-    String b64,
-    String password,
-  ) async {
-    final legacyNonce = List<int>.generate(16, (i) => i); // старый статичный нонс
-    final passwordKey = await _derivePassKey(password, legacyNonce);
-    final combined    = base64Decode(b64);
-    final box = SecretBox.fromConcatenation(
-      combined,
-      nonceLength: _algo.nonceLength,
-      macLength:   _algo.macAlgorithm.macLength,
-    );
-    return _algo.decrypt(box, secretKey: passwordKey);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -614,10 +586,11 @@ class SecureCipher {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Утилиты
+// Вспомогательные типы
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Логирование только в debug-сборках (не попадает в production логи устройства).
+enum _CryptoFormat { v2, v1, legacy }
+
 void debugLog(String message) {
   assert(() {
     // ignore: avoid_print
@@ -626,7 +599,6 @@ void debugLog(String message) {
   }());
 }
 
-/// Исключение криптографических операций.
 class CryptoException implements Exception {
   final String message;
   const CryptoException(this.message);
