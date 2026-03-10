@@ -365,10 +365,6 @@ class SocketService {
     _flushPendingMessages(deliveredOnline: false);
 
     _messageStream.add({'type': 'connection_status', 'connected': false});
-    // В фоне НЕ пытаемся переподключиться: Flutter приостановлен и не сможет
-    // вовремя подписать auth_challenge — это вызывает бесконечный цикл
-    // "connect → challenge → timeout → disconnect → reconnect".
-    // При возврате в foreground HomeScreen вызывает forceReconnect().
     if (!_isInBackground) _scheduleReconnect();
   }
 
@@ -702,18 +698,18 @@ class SocketService {
   int  get reconnectAttempts => _reconnectAttempts;
 
   void forceReconnect() {
-    // Принудительный сброс всех флагов и таймеров — вызывается при resume.
-    // Намеренно НЕ проверяем _isConnecting: если фоновая попытка зависла,
-    // нам нужно прервать её и начать заново, иначе приложение не переподключится.
+    // Намеренно НЕ проверяем _isConnecting: если фоновая попытка зависла
+    // (auth_challenge не был подписан пока приложение было в фоне),
+    // нам нужно прервать её и начать заново — иначе приложение не переподключится.
     _reconnectAttempts = 0;
     _reconnectTimer?.cancel();
     _connectionTimeoutTimer?.cancel();
     _pingTimer?.cancel();
-    _isConnected  = false;
-    _isConnecting = false;
+    _isConnected    = false;
+    _isConnecting   = false;
     _isInBackground = false;
-    // 300мс задержка: даём onDone старого канала обработаться раньше нового
     _channel?.sink.close();
+    // 300мс задержка: даём onDone старого канала обработаться раньше нового
     Future.delayed(const Duration(milliseconds: 300), _attemptConnection);
   }
 
