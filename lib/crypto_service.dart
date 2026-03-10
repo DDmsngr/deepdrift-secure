@@ -3,7 +3,6 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart' as crypto_lib;
-import 'package:crypto/crypto.dart' as hash_lib;
 
 import 'storage_service.dart';
 
@@ -179,20 +178,16 @@ class SecureCipher {
     return Uint8List.fromList(box.concatenation());
   }
 
-  Future<Uint8List?> decryptFileBytes(Uint8List bytes, {required String fromUid}) async {
-    try {
-      final key = _sharedSecrets[fromUid];
-      if (key == null) return null;
-      final box = crypto_lib.SecretBox.fromConcatenation(
-        bytes,
-        nonceLength: _chacha.nonceLength,
-        macLength:   _chacha.macAlgorithm.macLength,
-      );
-      final clear = await _chacha.decrypt(box, secretKey: key);
-      return Uint8List.fromList(clear);
-    } catch (_) {
-      return null;
-    }
+  Future<Uint8List> decryptFileBytes(Uint8List bytes, {required String fromUid}) async {
+    final key = _sharedSecrets[fromUid];
+    if (key == null) throw StateError('No shared secret for $fromUid');
+    final box = crypto_lib.SecretBox.fromConcatenation(
+      bytes,
+      nonceLength: _chacha.nonceLength,
+      macLength:   _chacha.macAlgorithm.macLength,
+    );
+    final clear = await _chacha.decrypt(box, secretKey: key);
+    return Uint8List.fromList(clear);
   }
 
   // ── Signing ───────────────────────────────────────────────────────────────
@@ -234,8 +229,6 @@ class SecureCipher {
   }
 
   Future<String> encryptGroupKeyFor(String uid, List<int> groupKeyBytes) async {
-    final wrappedKey = crypto_lib.SecretKey(groupKeyBytes);
-    // Encrypt the raw group-key bytes with the peer's shared secret
     final peerKey = _sharedSecrets[uid];
     if (peerKey == null) throw StateError('No shared secret for $uid');
     final box = await _chacha.encrypt(groupKeyBytes, secretKey: peerKey);
