@@ -1,193 +1,285 @@
-import 'package:flutter_test/flutter_test.dart';
+import 'dart:convert';
+import 'dart:math';
+import 'dart:typed_data';
 
-// Эти тесты проверяют базовую логику шифрования.
-// Для полноценного запуска нужен flutter_test и зависимости из pubspec.yaml.
+import 'package:cryptography/cryptography.dart' as crypto_lib;
+import 'package:crypto/crypto.dart' as hash_lib;
 
-// Импорт пути зависит от структуры пакета:
-// import 'package:DDchat/crypto_service.dart';
+import 'storage_service.dart';
 
-void main() {
-  group('SecureCipher', () {
-    // late SecureCipher cipher1;
-    // late SecureCipher cipher2;
+/// Full-featured E2E cipher used throughout the app.
+///
+/// Key pairs:
+///   • X25519  – ECDH for shared-secret derivation (encryption)
+///   • Ed25519 – signing / verification
+///
+/// All state is kept in memory. Keys are persisted (encrypted) via
+/// [StorageService] so that they survive app restarts.
+class SecureCipher {
+  // ── Algorithms ────────────────────────────────────────────────────────────
+  final _chacha   = crypto_lib.Chacha20.poly1305Aead();
+  final _x25519   = crypto_lib.X25519();
+  final _ed25519  = crypto_lib.Ed25519();
+  final _pbkdf2   = crypto_lib.Pbkdf2(
+    macAlgorithm: crypto_lib.Hmac.sha256(),
+    iterations:   100000,
+    bits:         256,
+  );
 
-    // setUp(() async {
-    //   cipher1 = SecureCipher();
-    //   cipher2 = SecureCipher();
-    //   await cipher1.init('password123', SecureCipher.generateSalt());
-    //   await cipher2.init('password456', SecureCipher.generateSalt());
-    // });
+  // ── State ─────────────────────────────────────────────────────────────────
+  bool _initialized = false;
+  bool get isInitialized => _initialized;
 
-    test('generateSalt returns base64 of 32 bytes', () {
-      // final salt = SecureCipher.generateSalt();
-      // final bytes = base64Decode(salt);
-      // expect(bytes.length, 32);
-      expect(true, isTrue); // placeholder
-    });
+  crypto_lib.SimpleKeyPair?   _x25519KeyPair;
+  crypto_lib.SimpleKeyPair?   _ed25519KeyPair;
 
-    test('encrypt/decrypt roundtrip with password', () async {
-      // final cipher = SecureCipher();
-      // await cipher.init('test_password', SecureCipher.generateSalt());
-      //
-      // final exported = await cipher.exportBothKeys('test_password');
-      // expect(exported.containsKey('x25519'), isTrue);
-      // expect(exported.containsKey('ed25519'), isTrue);
-      //
-      // // Reimport
-      // final cipher2 = SecureCipher();
-      // await cipher2.init('test_password', SecureCipher.generateSalt(),
-      //   encryptedX25519Key: exported['x25519'],
-      //   encryptedEd25519Key: exported['ed25519'],
-      // );
-      //
-      // // Ключи должны совпасть
-      // final pub1 = await cipher.getMyPublicKey();
-      // final pub2 = await cipher2.getMyPublicKey();
-      // expect(pub1, pub2);
-      expect(true, isTrue); // placeholder
-    });
+  /// uid → derived shared secret key (ChaCha20 key)
+  final _sharedSecrets = <String, crypto_lib.SecretKey>{};
 
-    test('wrong password throws CryptoException', () async {
-      // final cipher = SecureCipher();
-      // await cipher.init('correct_password', SecureCipher.generateSalt());
-      // final exported = await cipher.exportBothKeys('correct_password');
-      //
-      // final cipher2 = SecureCipher();
-      // expect(
-      //   () => cipher2.init('wrong_password', SecureCipher.generateSalt(),
-      //     encryptedX25519Key: exported['x25519'],
-      //     encryptedEd25519Key: exported['ed25519'],
-      //   ),
-      //   throwsA(isA<CryptoException>()),
-      // );
-      expect(true, isTrue); // placeholder
-    });
+  /// uid → their Ed25519 public key bytes (for signature verification)
+  final _theirSignKeys = <String, crypto_lib.SimplePublicKey>{};
 
-    test('E2E text encryption roundtrip', () async {
-      // final alice = SecureCipher();
-      // final bob = SecureCipher();
-      // await alice.init('alice_pass', SecureCipher.generateSalt());
-      // await bob.init('bob_pass', SecureCipher.generateSalt());
-      //
-      // final alicePub = await alice.getMyPublicKey();
-      // final bobPub = await bob.getMyPublicKey();
-      // final aliceSign = await alice.getMySigningKey();
-      // final bobSign = await bob.getMySigningKey();
-      //
-      // await alice.establishSharedSecret('bob', bobPub, theirSignKeyB64: bobSign);
-      // await bob.establishSharedSecret('alice', alicePub, theirSignKeyB64: aliceSign);
-      //
-      // const message = 'Hello, Bob! This is a secret message.';
-      // final encrypted = await alice.encryptText(message, targetUid: 'bob');
-      // final decrypted = await bob.decryptText(encrypted, fromUid: 'alice');
-      //
-      // expect(decrypted, message);
-      expect(true, isTrue); // placeholder
-    });
+  /// groupId → group AES/ChaCha key bytes
+  final _groupKeys = <String, List<int>>{};
 
-    test('tampered ciphertext fails authentication', () async {
-      // final alice = SecureCipher();
-      // final bob = SecureCipher();
-      // await alice.init('a', SecureCipher.generateSalt());
-      // await bob.init('b', SecureCipher.generateSalt());
-      //
-      // await alice.establishSharedSecret('bob', await bob.getMyPublicKey());
-      // await bob.establishSharedSecret('alice', await alice.getMyPublicKey());
-      //
-      // final encrypted = await alice.encryptText('secret', targetUid: 'bob');
-      // final bytes = base64Decode(encrypted);
-      // bytes[bytes.length - 1] ^= 0xFF; // tamper MAC
-      // final tampered = base64Encode(bytes);
-      //
-      // final result = await bob.decryptText(tampered, fromUid: 'alice');
-      // expect(result.contains('Authentication failed'), isTrue);
-      expect(true, isTrue); // placeholder
-    });
+  // ── Initialisation ────────────────────────────────────────────────────────
 
-    test('signature verification', () async {
-      // final alice = SecureCipher();
-      // await alice.init('a', SecureCipher.generateSalt());
-      //
-      // const text = 'This message is signed';
-      // final signature = await alice.signMessage(text);
-      //
-      // // Bob verifies Alice's signature
-      // final bob = SecureCipher();
-      // await bob.init('b', SecureCipher.generateSalt());
-      //
-      // final alicePub = await alice.getMyPublicKey();
-      // final aliceSign = await alice.getMySigningKey();
-      // await bob.establishSharedSecret('alice', alicePub, theirSignKeyB64: aliceSign);
-      //
-      // final valid = await bob.verifySignature(text, signature, 'alice');
-      // expect(valid, isTrue);
-      //
-      // // Tampered text fails
-      // final invalid = await bob.verifySignature('tampered', signature, 'alice');
-      // expect(invalid, isFalse);
-      expect(true, isTrue); // placeholder
-    });
+  /// Derives a wrapping key from [password]+[salt], then either
+  /// generates fresh key pairs or decrypts the supplied ones.
+  Future<void> init(
+    String password,
+    String salt, {
+    String? encryptedX25519Key,
+    String? encryptedEd25519Key,
+  }) async {
+    _initialized = false;
+    final wrapKey = await _deriveWrapKey(password, salt);
 
-    test('security code is deterministic', () async {
-      // final alice = SecureCipher();
-      // final bob = SecureCipher();
-      // await alice.init('a', SecureCipher.generateSalt());
-      // await bob.init('b', SecureCipher.generateSalt());
-      //
-      // final alicePub = await alice.getMyPublicKey();
-      // final bobPub = await bob.getMyPublicKey();
-      //
-      // await alice.establishSharedSecret('bob', bobPub);
-      // await bob.establishSharedSecret('alice', alicePub);
-      //
-      // final codeAlice = await alice.getSecurityCode('bob');
-      // final codeBob = await bob.getSecurityCode('alice');
-      //
-      // expect(codeAlice, codeBob);
-      // expect(codeAlice, isNot('NOT_ESTABLISHED'));
-      expect(true, isTrue); // placeholder
-    });
+    if (encryptedX25519Key != null && encryptedEd25519Key != null) {
+      // Restore existing keys
+      try {
+        final x25519Bytes  = await _decryptBytes(encryptedX25519Key,  wrapKey);
+        final ed25519Bytes = await _decryptBytes(encryptedEd25519Key, wrapKey);
+        _x25519KeyPair  = await _x25519.newKeyPairFromSeed(x25519Bytes);
+        _ed25519KeyPair = await _ed25519.newKeyPairFromSeed(ed25519Bytes);
+        _initialized = true;
+      } catch (_) {
+        // Wrong password → stay un-initialized so the caller can detect it
+        _initialized = false;
+        return;
+      }
+    } else {
+      // Fresh identity
+      _x25519KeyPair  = await _x25519.newKeyPair();
+      _ed25519KeyPair = await _ed25519.newKeyPair();
+      _initialized = true;
+    }
+  }
 
-    test('group key encrypt/decrypt roundtrip', () async {
-      // final alice = SecureCipher();
-      // final bob = SecureCipher();
-      // await alice.init('a', SecureCipher.generateSalt());
-      // await bob.init('b', SecureCipher.generateSalt());
-      //
-      // // Establish shared secret between Alice and Bob
-      // await alice.establishSharedSecret('bob', await bob.getMyPublicKey());
-      // await bob.establishSharedSecret('alice', await alice.getMyPublicKey());
-      //
-      // // Alice generates group key
-      // final groupKey = alice.generateGroupKey();
-      // expect(groupKey.length, 32);
-      //
-      // // Alice encrypts group key for Bob
-      // final encrypted = await alice.encryptGroupKeyFor('bob', groupKey);
-      //
-      // // Bob decrypts it
-      // final decrypted = await bob.decryptGroupKey('alice', encrypted);
-      // expect(decrypted, groupKey);
-      //
-      // // Both set the group key
-      // alice.setGroupKey('g_test', groupKey);
-      // bob.setGroupKey('g_test', decrypted);
-      //
-      // // Alice sends encrypted group message
-      // final msg = await alice.encryptText('group hello', targetUid: 'g_test');
-      // final plain = await bob.decryptText(msg, fromUid: 'g_test');
-      // expect(plain, 'group hello');
-      expect(true, isTrue); // placeholder
-    });
+  // ── Public key accessors ──────────────────────────────────────────────────
 
-    test('Argon2 security levels affect key derivation', () {
-      // final cipher = SecureCipher();
-      // expect(cipher.securityLevel, Argon2SecurityLevel.standard);
-      //
-      // cipher.securityLevel = Argon2SecurityLevel.high;
-      // expect(cipher.securityLevel.memory, 65536);
-      // expect(cipher.securityLevel.iterations, 4);
-      expect(true, isTrue); // placeholder
-    });
-  });
+  Future<String> getMyPublicKey() async {
+    final pub = await _x25519KeyPair!.extractPublicKey();
+    return base64Encode(pub.bytes);
+  }
+
+  Future<String> getMySigningKey() async {
+    final pub = await _ed25519KeyPair!.extractPublicKey();
+    return base64Encode(pub.bytes);
+  }
+
+  // ── Key export (password-encrypted) ──────────────────────────────────────
+
+  Future<Map<String, String>> exportBothKeys(String password) async {
+    final salt    = generateSalt();
+    final wrapKey = await _deriveWrapKey(password, salt);
+
+    final x25519Seed  = await _x25519KeyPair!.extractPrivateKeyBytes();
+    final ed25519Seed = await _ed25519KeyPair!.extractPrivateKeyBytes();
+
+    return {
+      'x25519':  await _encryptBytes(x25519Seed,  wrapKey),
+      'ed25519': await _encryptBytes(ed25519Seed, wrapKey),
+      'salt':    salt,
+    };
+  }
+
+  // ── Shared-secret establishment ───────────────────────────────────────────
+
+  Future<void> establishSharedSecret(
+    String peerUid,
+    String theirX25519B64, {
+    String? theirSignKeyB64,
+  }) async {
+    final theirPublic = crypto_lib.SimplePublicKey(
+      base64Decode(theirX25519B64),
+      type: crypto_lib.KeyPairType.x25519,
+    );
+    final sharedSecret = await _x25519.sharedSecretKey(
+      keyPair:   _x25519KeyPair!,
+      remotePublicKey: theirPublic,
+    );
+    _sharedSecrets[peerUid] = sharedSecret;
+
+    if (theirSignKeyB64 != null) {
+      _theirSignKeys[peerUid] = crypto_lib.SimplePublicKey(
+        base64Decode(theirSignKeyB64),
+        type: crypto_lib.KeyPairType.ed25519,
+      );
+    }
+  }
+
+  bool hasSharedSecret(String uid) => _sharedSecrets.containsKey(uid);
+
+  void clearSharedSecret(String uid) {
+    _sharedSecrets.remove(uid);
+    _theirSignKeys.remove(uid);
+  }
+
+  /// Load cached public keys from storage and re-establish the shared secret.
+  Future<bool> tryLoadCachedKeys(String uid, StorageService storage) async {
+    final x25519B64  = storage.getCachedX25519Key(uid);
+    final ed25519B64 = storage.getCachedEd25519Key(uid);
+    if (x25519B64 == null) return false;
+    await establishSharedSecret(uid, x25519B64, theirSignKeyB64: ed25519B64);
+    return true;
+  }
+
+  // ── Text encryption / decryption ──────────────────────────────────────────
+
+  Future<String> encryptText(String plaintext, {required String targetUid}) async {
+    final key = _sharedSecrets[targetUid];
+    if (key == null) return '[NO_SHARED_SECRET]';
+    final box = await _chacha.encrypt(utf8.encode(plaintext), secretKey: key);
+    return base64Encode(box.concatenation());
+  }
+
+  Future<String> decryptText(String cipherB64, {required String fromUid}) async {
+    try {
+      final key = _sharedSecrets[fromUid];
+      if (key == null) return '[NO_SHARED_SECRET]';
+      final box = crypto_lib.SecretBox.fromConcatenation(
+        base64Decode(cipherB64),
+        nonceLength: _chacha.nonceLength,
+        macLength:   _chacha.macAlgorithm.macLength,
+      );
+      final clear = await _chacha.decrypt(box, secretKey: key);
+      return utf8.decode(clear);
+    } catch (_) {
+      return '[DECRYPTION_FAILED]';
+    }
+  }
+
+  // ── File bytes encryption / decryption ───────────────────────────────────
+
+  Future<Uint8List> encryptFileBytes(Uint8List bytes, {required String targetUid}) async {
+    final key = _sharedSecrets[targetUid];
+    if (key == null) return bytes;
+    final box = await _chacha.encrypt(bytes, secretKey: key);
+    return Uint8List.fromList(box.concatenation());
+  }
+
+  Future<Uint8List?> decryptFileBytes(Uint8List bytes, {required String fromUid}) async {
+    try {
+      final key = _sharedSecrets[fromUid];
+      if (key == null) return null;
+      final box = crypto_lib.SecretBox.fromConcatenation(
+        bytes,
+        nonceLength: _chacha.nonceLength,
+        macLength:   _chacha.macAlgorithm.macLength,
+      );
+      final clear = await _chacha.decrypt(box, secretKey: key);
+      return Uint8List.fromList(clear);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ── Signing ───────────────────────────────────────────────────────────────
+
+  Future<String> signMessage(String text) async {
+    final sig = await _ed25519.sign(
+      utf8.encode(text),
+      keyPair: _ed25519KeyPair!,
+    );
+    return base64Encode(sig.bytes);
+  }
+
+  Future<bool> verifySignature(String text, String signatureB64, String fromUid) async {
+    final theirKey = _theirSignKeys[fromUid];
+    if (theirKey == null) return false;
+    try {
+      final sig = crypto_lib.Signature(
+        base64Decode(signatureB64),
+        publicKey: theirKey,
+      );
+      return await _ed25519.verify(utf8.encode(text), signature: sig);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Sign a server-issued nonce (used for auth challenge).
+  Future<String> signChallenge(String nonce) => signMessage(nonce);
+
+  // ── Group keys ────────────────────────────────────────────────────────────
+
+  List<int> generateGroupKey() {
+    final rng = Random.secure();
+    return List<int>.generate(32, (_) => rng.nextInt(256));
+  }
+
+  void setGroupKey(String groupId, List<int> key) {
+    _groupKeys[groupId] = key;
+  }
+
+  Future<String> encryptGroupKeyFor(String uid, List<int> groupKeyBytes) async {
+    final wrappedKey = crypto_lib.SecretKey(groupKeyBytes);
+    // Encrypt the raw group-key bytes with the peer's shared secret
+    final peerKey = _sharedSecrets[uid];
+    if (peerKey == null) throw StateError('No shared secret for $uid');
+    final box = await _chacha.encrypt(groupKeyBytes, secretKey: peerKey);
+    return base64Encode(box.concatenation());
+  }
+
+  Future<List<int>> decryptGroupKey(String fromUid, String encryptedB64) async {
+    final peerKey = _sharedSecrets[fromUid];
+    if (peerKey == null) throw StateError('No shared secret for $fromUid');
+    final box = crypto_lib.SecretBox.fromConcatenation(
+      base64Decode(encryptedB64),
+      nonceLength: _chacha.nonceLength,
+      macLength:   _chacha.macAlgorithm.macLength,
+    );
+    return await _chacha.decrypt(box, secretKey: peerKey);
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  /// Generate a random 32-byte salt, base64-encoded.
+  static String generateSalt() {
+    final rng   = Random.secure();
+    final bytes = List<int>.generate(32, (_) => rng.nextInt(256));
+    return base64Encode(bytes);
+  }
+
+  Future<crypto_lib.SecretKey> _deriveWrapKey(String password, String salt) {
+    return _pbkdf2.deriveKey(
+      secretKey: crypto_lib.SecretKey(utf8.encode(password)),
+      nonce:     base64Decode(salt),
+    );
+  }
+
+  Future<String> _encryptBytes(List<int> data, crypto_lib.SecretKey key) async {
+    final box = await _chacha.encrypt(data, secretKey: key);
+    return base64Encode(box.concatenation());
+  }
+
+  Future<List<int>> _decryptBytes(String b64, crypto_lib.SecretKey key) async {
+    final box = crypto_lib.SecretBox.fromConcatenation(
+      base64Decode(b64),
+      nonceLength: _chacha.nonceLength,
+      macLength:   _chacha.macAlgorithm.macLength,
+    );
+    return await _chacha.decrypt(box, secretKey: key);
+  }
 }
