@@ -723,6 +723,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'fileName':        data['fileName'],
         'fileSize':        data['fileSize'],
         'mimeType':        data['mimeType'],
+        'duration':        data['duration'],
         'edited':          data['edited'] ?? false,
         'editedAt':        data['editedAt'],
         'forwardedFrom':   data['forwarded_from'],
@@ -917,6 +918,7 @@ class _ChatScreenState extends State<ChatScreen> {
     int?    fileSize,
     String? mimeType,
     String? forwardedFrom,
+    int?    duration,
   }) async {
     if (_editingMessageId != null) { await _saveEditedMessage(); return; }
 
@@ -931,6 +933,7 @@ class _ChatScreenState extends State<ChatScreen> {
         mediaData: mediaData, filePath: filePath,
         fileName: fileName, fileSize: fileSize, mimeType: mimeType,
         forwardedFrom: forwardedFrom,
+        duration: duration,
       );
       return;
     }
@@ -972,6 +975,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'fileName':        fileName,
         'fileSize':        fileSize,
         'mimeType':        mimeType,
+        'duration':        duration,
         'edited':          false,
         'forwardedFrom':   forwardedFrom,
         'signatureStatus': SignatureStatus.valid.index,
@@ -1002,6 +1006,7 @@ class _ChatScreenState extends State<ChatScreen> {
         fileSize:      fileSize,
         mimeType:      mimeType,
         forwardedFrom: forwardedFrom,
+        duration:      duration,
       );
 
       if (mounted) {
@@ -1294,6 +1299,7 @@ class _ChatScreenState extends State<ChatScreen> {
           text: '🎤 Voice message', messageType: 'voice',
           mediaData: 'FILE_ID:$fileId', filePath: localPath,
           fileName: fileName, fileSize: fileSize, mimeType: 'audio/m4a',
+          duration: _recordingDuration,
         );
         _cleanTempVoiceFile();
         if (mounted) setState(() => _isSendingFile = false);
