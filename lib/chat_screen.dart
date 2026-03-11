@@ -1037,6 +1037,7 @@ class _ChatScreenState extends State<ChatScreen> {
     int?    fileSize,
     String? mimeType,
     String? forwardedFrom,
+    int?    duration,
   }) async {
     final messageText = text ?? '';
     if (messageText.isEmpty && mediaData == null) return;
