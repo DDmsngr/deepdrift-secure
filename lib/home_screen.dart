@@ -158,7 +158,7 @@ class _HomeScreenState extends State<HomeScreen>
   List<String> _filteredChats(int tabIndex) {
     switch (tabIndex) {
       case _Tab.favorites:
-        return _chats.where((uid) => _storage.isContactPinned(uid)).toList();
+        return _chats.where((uid) => _storage.isContactFavorite(uid)).toList();
       case _Tab.contacts:
         return _chats.where((uid) => !_storage.isGroup(uid) && !_storage.isChannel(uid)).toList();
       case _Tab.groups:
@@ -1456,8 +1456,9 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _showContactOptions(String uid) {
     final name     = _storage.getContactDisplayName(uid);
-    final isPinned = _storage.isContactPinned(uid);
-    final isMuted  = _storage.isContactMuted(uid);
+    final isPinned    = _storage.isContactPinned(uid);
+    final isFavorite  = _storage.isContactFavorite(uid);
+    final isMuted     = _storage.isContactMuted(uid);
     showModalBottomSheet(
       context: context, backgroundColor: const Color(0xFF1A1F3C),
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
@@ -1475,6 +1476,18 @@ class _HomeScreenState extends State<HomeScreen>
             ]),
           ),
           const Divider(color: Colors.white12, height: 1),
+          ListTile(
+            leading: Icon(isFavorite ? Icons.star_rounded : Icons.star_border_rounded,
+                color: isFavorite ? const Color(0xFFFFD700) : Colors.white70),
+            title: Text(isFavorite ? 'Убрать из избранного' : 'В избранное',
+                style: TextStyle(color: isFavorite ? const Color(0xFFFFD700) : Colors.white)),
+            onTap: () async {
+              Navigator.pop(context);
+              await _storage.setContactFavorite(uid, !isFavorite);
+              setState(() => _chats = _storage.getContactsSortedByActivity());
+              _showSuccess(isFavorite ? 'Убрано из избранного' : '⭐ $name добавлен в избранное');
+            },
+          ),
           ListTile(
             leading: Icon(isPinned ? Icons.push_pin : Icons.push_pin_outlined, color: isPinned ? Colors.amber : Colors.white70),
             title: Text(isPinned ? 'Открепить' : 'Закрепить сверху', style: TextStyle(color: isPinned ? Colors.amber : Colors.white)),
