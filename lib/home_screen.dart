@@ -121,8 +121,8 @@ class _HomeScreenState extends State<HomeScreen>
 
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) {
-      // Сообщаем сокету что уходим в фон — он НЕ будет пытаться переподключиться
-      // пока в фоне (иначе auth_challenge зависает без ответа → бесконечный цикл)
+      // Сообщаем сокету что уходим в фон — он НЕ будет пытаться переподключаться
+      // пока в фоне (auth_challenge не может быть подписан в паузе)
       _socket.onAppPaused();
       // Запоминаем что приложение ушло в фон — при возврате проверим пин
       final pinEnabled = _storage.getSetting('app_lock_enabled') as bool? ?? false;
@@ -130,8 +130,7 @@ class _HomeScreenState extends State<HomeScreen>
       if (pinEnabled && pin.isNotEmpty) _isLocked = true;
     }
     if (state == AppLifecycleState.resumed) {
-      // Всегда форс-переподключаемся — forceReconnect() сбрасывает _isConnecting
-      // и _isInBackground, даже если фоновая попытка зависла
+      // Всегда forceReconnect — он сбрасывает _isConnecting/_isInBackground/_authFailed
       _socket.forceReconnect();
       _socket.checkStatuses(_chats);
       // Показываем экран блокировки если нужен PIN
