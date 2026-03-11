@@ -125,22 +125,26 @@ class NotificationService {
       // Если пришёл notification-payload — Android покажет баннер сам,
       // дублировать не нужно.
       if (message.notification == null) {
-        final fromUid = message.data['from_uid'] as String? ?? '';
+        final targetUid = (message.data['target_uid'] as String? ?? '').isNotEmpty
+            ? message.data['target_uid'] as String
+            : message.data['from_uid'] as String? ?? '';
         showMessageNotification(
-          fromUid:     fromUid,
-          displayName: 'DDChat: $fromUid',
-          // Никогда не показываем зашифрованный контент в уведомлении
-          messageText: 'New encrypted message',
+          fromUid:     targetUid,
+          displayName: 'DDChat',
+          messageText: 'Новое зашифрованное сообщение',
         );
       }
     });
 
     // ── Сценарий 2: background tap ────────────────────────────────────────
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-      final fromUid = message.data['from_uid'] as String?;
-      debugPrint('📲 App opened from background notification: $fromUid');
-      if (fromUid != null && fromUid.isNotEmpty) {
-        _navigateToChat(fromUid);
+      // target_uid = group_id для группы, from_uid для личного чата
+      final targetUid = (message.data['target_uid'] as String? ?? '').isNotEmpty
+          ? message.data['target_uid'] as String
+          : message.data['from_uid'] as String? ?? '';
+      debugPrint('📲 App opened from background notification: $targetUid');
+      if (targetUid.isNotEmpty) {
+        _navigateToChat(targetUid);
       }
     });
 
@@ -150,11 +154,13 @@ class NotificationService {
     // callback в HomeScreen.
     final initialMessage = await _fcm.getInitialMessage();
     if (initialMessage != null) {
-      final fromUid = initialMessage.data['from_uid'] as String?;
-      debugPrint('📲 App launched from killed state by notification: $fromUid');
-      if (fromUid != null && fromUid.isNotEmpty) {
+      final targetUid = (initialMessage.data['target_uid'] as String? ?? '').isNotEmpty
+          ? initialMessage.data['target_uid'] as String
+          : initialMessage.data['from_uid'] as String? ?? '';
+      debugPrint('📲 App launched from killed state by notification: $targetUid');
+      if (targetUid.isNotEmpty) {
         // Всегда кэшируем при cold start — Navigator точно не готов
-        _pendingUid = fromUid;
+        _pendingUid = targetUid;
       }
     }
   }
