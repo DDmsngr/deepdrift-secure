@@ -315,12 +315,23 @@ class _ChannelsScreenState extends State<ChannelsScreen> {
             icon: const Icon(Icons.share_outlined, color: Colors.white38, size: 20),
             tooltip: 'Поделиться каналом',
             onPressed: () {
-              Clipboard.setData(ClipboardData(text: channelId));
+              final channelName = _storage.getContactDisplayName(channelId);
+              final link = 'deepdrift://channel/$channelId';
+              Clipboard.setData(ClipboardData(text: link));
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text('ID канала скопирован: $channelId'),
+                  content: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Ссылка на «$channelName» скопирована',
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                      Text(link,
+                          style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                    ],
+                  ),
                   backgroundColor: const Color(0xFF1A4A2E),
-                  duration: const Duration(seconds: 2),
+                  duration: const Duration(seconds: 3),
                 ),
               );
             },
