@@ -390,22 +390,93 @@ class _MessageBubbleState extends State<MessageBubble>
         widget.msg['mediaData'] != null) {
       return _retryButton(Icons.mic_rounded, 'Голосовое сообщение');
     }
-    final isPlaying =
-        widget.playingMessageId == widget.msg['id']?.toString();
+    final isPlaying   = widget.playingMessageId == widget.msg['id']?.toString();
+    final accentColor = isMe ? Colors.white : const Color(0xFF00D9FF);
+    final durationSec = widget.msg['duration'] as int?;
+    final durationStr = durationSec != null
+        ? '${(durationSec ~/ 60).toString().padLeft(1, '0')}:${(durationSec % 60).toString().padLeft(2, '0')}'
+        : null;
+
+    // Генерируем псевдо-волну из id сообщения (детерминировано, выглядит живо)
+    final seed = (widget.msg['id']?.toString() ?? '0').hashCode;
+    final bars = List.generate(28, (i) {
+      final h = 0.25 + 0.75 * ((seed * (i + 1) * 2654435761) & 0xFF) / 255.0;
+      return h;
+    });
+
     return GestureDetector(
       onTap: () => widget.onPlayVoice(widget.msg),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(isPlaying ? Icons.pause_circle : Icons.play_circle,
-            color: isMe ? Colors.white : Colors.cyanAccent, size: 36),
-        const SizedBox(width: 8),
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Голосовое',
-              style: TextStyle(color: Colors.white, fontSize: 14)),
-          if (widget.msg['fileSize'] != null)
-            Text(formatFileSize(widget.msg['fileSize']),
-                style: const TextStyle(color: Colors.white54, fontSize: 11)),
+      child: SizedBox(
+        width: 220,
+        child: Row(children: [
+          // Кнопка play/pause
+          Container(
+            width: 40, height: 40,
+            decoration: BoxDecoration(
+              color: accentColor.withValues(alpha: 0.15),
+              shape: BoxShape.circle,
+              border: Border.all(color: accentColor.withValues(alpha: 0.5)),
+            ),
+            child: Icon(
+              isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              color: accentColor, size: 24,
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Волна + время
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Псевдо-волна
+                SizedBox(
+                  height: 28,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: bars.map((h) {
+                      return Expanded(
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 0.8),
+                          height: 28 * h,
+                          decoration: BoxDecoration(
+                            color: isPlaying
+                                ? accentColor
+                                : accentColor.withValues(alpha: 0.55),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      isPlaying ? 'Воспроизведение...' : 'Голосовое',
+                      style: TextStyle(
+                        color: accentColor.withValues(alpha: 0.8),
+                        fontSize: 10,
+                      ),
+                    ),
+                    if (durationStr != null)
+                      Text(
+                        durationStr,
+                        style: const TextStyle(color: Colors.white54, fontSize: 10),
+                      )
+                    else if (widget.msg['fileSize'] != null)
+                      Text(
+                        formatFileSize(widget.msg['fileSize']),
+                        style: const TextStyle(color: Colors.white54, fontSize: 10),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ]),
-      ]),
+      ),
     );
   }
 
