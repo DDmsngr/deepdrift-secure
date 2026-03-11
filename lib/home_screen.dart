@@ -257,12 +257,45 @@ class _HomeScreenState extends State<HomeScreen>
 
       _socket.onAuthFailed = (reason) {
         if (!mounted) return;
-        final msg = reason == 'uid_taken'
-            ? 'Этот ID занят другим устройством. Импортируйте файл ключей.'
-            : 'Ошибка аутентификации: $reason.';
-        _showError(msg);
-        setState(() { _connectionStatus = 'ОШИБКА АВТОРИЗАЦИИ'; _isReady = true; });
-        _showImportKeysDialog();
+        if (reason == 'uid_taken') {
+          setState(() { _connectionStatus = 'ID ЗАНЯТ'; _isReady = true; });
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: const Color(0xFF1A1F3C),
+              title: Row(children: [
+                const Icon(Icons.lock_outline, color: Colors.orange, size: 20),
+                const SizedBox(width: 8),
+                Text('ID ${_myUid ?? ''} занят', style: const TextStyle(color: Colors.white, fontSize: 16)),
+              ]),
+              content: const Text(
+                'Этот ID уже зарегистрирован.\n\n'
+                'Если он ваш — нажмите «Восстановить» и выберите файл резервной копии ключей.\n\n'
+                'Если вы выбрали чужой ID — нажмите «Сменить ID» и введите другой номер.',
+                style: TextStyle(color: Colors.white70, height: 1.5),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () { Navigator.pop(ctx); _showChangeUidDialog(); },
+                  child: const Text('СМЕНИТЬ ID', style: TextStyle(color: Colors.white54)),
+                ),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.restore, size: 16),
+                  label: const Text('ВОССТАНОВИТЬ'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF00D9FF),
+                    foregroundColor: Colors.black,
+                  ),
+                  onPressed: () { Navigator.pop(ctx); _showImportKeysDialog(); },
+                ),
+              ],
+            ),
+          );
+        } else {
+          _showError('Ошибка аутентификации: $reason.');
+          setState(() { _connectionStatus = 'ОШИБКА АВТОРИЗАЦИИ'; _isReady = true; });
+        }
       };
 
       _socket.connect(_serverController.text, _myUid!, authToken: authToken);
@@ -855,7 +888,60 @@ class _HomeScreenState extends State<HomeScreen>
     await _autoConnect();
   }
 
-  Future<String?> _showStep1ChooseUid() async {
+  Future<void> _showChangeUidDialog() async {
+    final uidCtrl = TextEditingController();
+    String? error;
+    await showDialog(
+      context: context, barrierDismissible: false,
+      builder: (c) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1F3C),
+          title: Text('СМЕНИТЬ ID', style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 14)),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text('Введи другой ID из 6 цифр.\nСтарые чаты и ключи будут сохранены.',
+                style: TextStyle(color: Colors.white70, fontSize: 13), textAlign: TextAlign.center),
+            const SizedBox(height: 16),
+            TextField(
+              controller: uidCtrl, keyboardType: TextInputType.number, maxLength: 6,
+              autofocus: true,
+              style: const TextStyle(color: Colors.white, fontSize: 28, letterSpacing: 8, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+              decoration: const InputDecoration(
+                hintText: '000000', hintStyle: TextStyle(color: Colors.white24),
+                filled: true, fillColor: Color(0xFF0A0E27), counterStyle: TextStyle(color: Colors.white38),
+                border: OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF00D9FF))),
+              ),
+            ),
+            if (error != null) ...[
+              const SizedBox(height: 8),
+              Text(error!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+            ],
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('ОТМЕНА')),
+            ElevatedButton(
+              onPressed: () async {
+                final newUid = uidCtrl.text.trim();
+                if (newUid.length != 6 || int.tryParse(newUid) == null) {
+                  setS(() => error = 'ID должен состоять из 6 цифр');
+                  return;
+                }
+                await _idService.saveUID(newUid);
+                setState(() => _myUid = newUid);
+                Navigator.pop(ctx);
+                await _autoConnect();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00D9FF), foregroundColor: Colors.black),
+              child: const Text('ПРИМЕНИТЬ'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+    Future<String?> _showStep1ChooseUid() async {
     final uidCtrl = TextEditingController();
     String? result;
     bool tosAccepted = false;
