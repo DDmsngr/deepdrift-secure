@@ -56,7 +56,6 @@ class SocketService {
   final _pendingMessages = <String, _PendingAck>{};
 
   bool _isInBackground = false;
-  bool _authFailed    = false;  // не переподключаться автоматически после auth_failed
 
   // Очередь запросов офлайн-сообщений, накопившихся до uid_assigned.
   final _pendingOfflineRequests = <String>{};
@@ -214,10 +213,8 @@ class SocketService {
       if (msgType == 'auth_failed' || msgType == 'uid_taken') {
         final reason = data['reason'] as String? ?? msgType!;
         debugPrint('🚫 Auth failed: $reason');
-        _authFailed   = true;   // предотвращаем автоматический переподключение
         _isConnected  = false;
         _isConnecting = false;
-        _connectionTimeoutTimer?.cancel();
         _channel?.sink.close();
         onAuthFailed?.call(reason);
         return;
@@ -368,10 +365,7 @@ class SocketService {
     _flushPendingMessages(deliveredOnline: false);
 
     _messageStream.add({'type': 'connection_status', 'connected': false});
-    // Не переподключаемся если: в фоне ИЛИ только что получили auth_failed
-    // (при auth_failed пользователь должен исправить ключи, не зациклиться)
-    if (!_isInBackground && !_authFailed) _scheduleReconnect();
-    _authFailed = false;
+    if (!_isInBackground) _scheduleReconnect();
   }
 
   void _handleError(Object error) {
@@ -502,6 +496,7 @@ class SocketService {
     int?     fileSize,
     String?  mimeType,
     String?  replyToId,
+    int?     duration,
   }) {
     final completer    = Completer<bool>();
     final timeoutTimer = Timer(PENDING_MSG_TIMEOUT, () {
@@ -525,6 +520,7 @@ class SocketService {
       if (fileSize   != null) 'fileSize':   fileSize,
       if (mimeType   != null) 'mimeType':   mimeType,
       if (replyToId  != null) 'replyToId':  replyToId,
+      if (duration   != null) 'duration':   duration,
     };
     send(payload);
     return completer.future;
@@ -578,6 +574,7 @@ class SocketService {
     int?    fileSize,
     String? mimeType,
     String? forwardedFrom, // 🟡-1 FIX
+    int?    duration,
   }) {
     // 🟡-6 FIX: создаём Completer + таймаут в 30 секунд
     final completer = Completer<bool>();
@@ -603,6 +600,7 @@ class SocketService {
       'fileSize':       fileSize,
       'mimeType':       mimeType,
       if (forwardedFrom != null) 'forwarded_from': forwardedFrom, // 🟡-1 FIX
+      if (duration != null) 'duration': duration,
     });
 
     return completer.future;
@@ -704,19 +702,15 @@ class SocketService {
   int  get reconnectAttempts => _reconnectAttempts;
 
   void forceReconnect() {
-    // Намеренно НЕ проверяем _isConnecting: если фоновая попытка зависла
-    // (auth_challenge не был подписан пока приложение было в фоне),
-    // нам нужно прервать её и начать заново.
+    // Защита: если уже устанавливаем соединение — не запускаем второе
+    if (_isConnecting) return;
     _reconnectAttempts = 0;
     _reconnectTimer?.cancel();
     _connectionTimeoutTimer?.cancel();
-    _pingTimer?.cancel();
-    _isConnected    = false;
-    _isConnecting   = false;
-    _isInBackground = false;
-    _authFailed     = false;   // при ручном resume разрешаем попытку
+    _isConnected  = false;
+    _isConnecting = false;
+    // 300мс задержка: даём onDone обработаться раньше чем запустим новое соединение
     _channel?.sink.close();
-    // 300мс задержка: даём onDone старого канала обработаться раньше нового
     Future.delayed(const Duration(milliseconds: 300), _attemptConnection);
   }
 
