@@ -60,6 +60,8 @@ class NotificationService {
   final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
 
   void Function(String fromUid)? _openChatCallback;
+  void Function(String token)?   _onTokenRefreshed;
+  void Function(Uri uri)?        _openChannelCallback;
   String? _pendingUid;
 
   // UID чата который сейчас открыт — не показываем пуш для него
@@ -73,6 +75,21 @@ class NotificationService {
   /// Регистрирует callback навигации. Вызывать в HomeScreen.initState().
   /// Если к моменту вызова уже есть отложенный uid (cold start / background),
   /// callback выполняется немедленно.
+  void setTokenRefreshCallback(void Function(String token) callback) {
+    _onTokenRefreshed = callback;
+  }
+
+  void setOpenChannelCallback(void Function(Uri uri) callback) {
+    _openChannelCallback = callback;
+  }
+
+  /// Обрабатывает deepdrift:// URI — вызывается из ChatScreen при тапе по ссылке.
+  void handleDeepLink(Uri uri) {
+    if (uri.host == 'channel' && _openChannelCallback != null) {
+      _openChannelCallback!(uri);
+    }
+  }
+
   void setOpenChatCallback(void Function(String fromUid) callback) {
     _openChatCallback = callback;
     // Если был накоплен pending — выполняем сразу
@@ -119,21 +136,27 @@ class NotificationService {
     await _createNotificationChannel();
 
     // ── Сценарий foreground: приложение активно ───────────────────────────
+    // При foreground Android НЕ показывает нативный баннер даже если есть notification-поле.
+    // Показываем его сами через FlutterLocalNotifications.
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       debugPrint('📲 FCM foreground: ${message.messageId}');
-      // Показываем локальное уведомление только для data-only push.
-      // Если пришёл notification-payload — Android покажет баннер сам,
-      // дублировать не нужно.
-      if (message.notification == null) {
-        final targetUid = (message.data['target_uid'] as String? ?? '').isNotEmpty
-            ? message.data['target_uid'] as String
-            : message.data['from_uid'] as String? ?? '';
+      final targetUid = (message.data['target_uid'] as String? ?? '').isNotEmpty
+          ? message.data['target_uid'] as String
+          : message.data['from_uid'] as String? ?? '';
+      if (targetUid.isNotEmpty) {
         showMessageNotification(
           fromUid:     targetUid,
           displayName: 'DDChat',
           messageText: 'Новое зашифрованное сообщение',
         );
       }
+    });
+
+    // ── Обновление FCM токена ─────────────────────────────────────────────
+    // Firebase иногда ротирует токен — нужно обновить его на сервере.
+    _fcm.onTokenRefresh.listen((newToken) {
+      debugPrint('🔄 FCM token refreshed');
+      _onTokenRefreshed?.call(newToken);
     });
 
     // ── Сценарий 2: background tap ────────────────────────────────────────
@@ -177,8 +200,8 @@ class NotificationService {
     // Не показываем пуш если этот чат сейчас открыт на экране
     if (activeChatUid == fromUid) return;
     final androidDetails = AndroidNotificationDetails(
-      'chat_messages',
-      'Chat Messages',
+      'high_importance_channel',
+      'DDChat Messages',
       channelDescription: 'Notifications for incoming chat messages',
       importance:       Importance.max,
       priority:         Priority.high,
@@ -245,8 +268,8 @@ class NotificationService {
 
     await androidPlugin.createNotificationChannel(
       const AndroidNotificationChannel(
-        'chat_messages',          // id — должен совпадать с id в show()
-        'Chat Messages',          // name — видно в настройках Android
+        'high_importance_channel',          // id — должен совпадать с id в show()
+        'DDChat Messages',          // name — видно в настройках Android
         description: 'Notifications for incoming DDChat messages',
         importance: Importance.max,
         playSound: true,
@@ -258,8 +281,8 @@ class NotificationService {
     // Отдельный канал для фоновых сообщений (из _firebaseMessagingBackgroundHandler)
     await androidPlugin.createNotificationChannel(
       const AndroidNotificationChannel(
-        'background_messages',
-        'Background Messages',
+        'high_importance_channel',
+        'DDChat Messages',
         description: 'Silent notifications received while app is killed',
         importance: Importance.max,
         playSound: true,
