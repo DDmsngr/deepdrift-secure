@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/chat_models.dart';
 import 'video_players.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 // ─── MessageBubble ─────────────────────────────────────────────────────────────
 //
@@ -22,6 +23,7 @@ class MessageBubble extends StatefulWidget {
   final void Function(String? filePath, String name) onOpenFile;
   final void Function(String msgId, String emoji)    onRemoveReaction;
   final void Function(Map<String, dynamic>)?         onReply;   // ← свайп-ответ
+  final void Function(String url)?                     onDeepLink; // deepdrift:// ссылки
   final String? senderName; // имя отправителя для групповых сообщений
 
   const MessageBubble({
@@ -37,6 +39,7 @@ class MessageBubble extends StatefulWidget {
     required this.onOpenFile,
     required this.onRemoveReaction,
     this.onReply,
+    this.onDeepLink,
     this.senderName,
   });
 
@@ -327,9 +330,78 @@ class _MessageBubbleState extends State<MessageBubble>
             ? VideoGalleryPlayer(filePath: widget.msg['filePath'] as String)
             : _retryButton(Icons.video_file_rounded, 'Видео из галереи');
       default:
-        return Text(widget.msg['text'] as String? ?? '',
-            style: const TextStyle(color: Colors.white, fontSize: 15));
+        return _buildTextWithLinks(widget.msg['text'] as String? ?? '');
     }
+  }
+
+  // ── Текст со ссылками ────────────────────────────────────────────────────
+
+  Widget _buildTextWithLinks(String text) {
+    // Ищем deepdrift:// и https?:// ссылки
+    final linkRegex = RegExp(r'(deepdrift://[\S]+|https?://[\S]+)', caseSensitive: false);
+    final matches = linkRegex.allMatches(text);
+
+    if (matches.isEmpty) {
+      return SelectableText(text,
+          style: const TextStyle(color: Colors.white, fontSize: 15));
+    }
+
+    final spans = <InlineSpan>[];
+    int lastEnd = 0;
+
+    for (final m in matches) {
+      // Текст до ссылки
+      if (m.start > lastEnd) {
+        spans.add(TextSpan(
+          text: text.substring(lastEnd, m.start),
+          style: const TextStyle(color: Colors.white, fontSize: 15),
+        ));
+      }
+
+      final url = m.group(0)!;
+      final isDeepLink = url.startsWith('deepdrift://');
+
+      spans.add(WidgetSpan(
+        alignment: PlaceholderAlignment.baseline,
+        baseline: TextBaseline.alphabetic,
+        child: GestureDetector(
+          onTap: () async {
+            final uri = Uri.tryParse(url);
+            if (uri == null) return;
+            if (isDeepLink) {
+              // Обрабатываем внутри приложения
+              if (uri.host == 'channel') {
+                final channelId = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
+                if (channelId != null) widget.onDeepLink?.call(url);
+              }
+            } else {
+              if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
+            }
+          },
+          child: Text(
+            isDeepLink ? '🔗 Открыть канал' : url,
+            style: TextStyle(
+              color: isDeepLink ? const Color(0xFF00D9FF) : Colors.lightBlueAccent,
+              fontSize: 15,
+              decoration: TextDecoration.underline,
+              decorationColor: isDeepLink ? const Color(0xFF00D9FF) : Colors.lightBlueAccent,
+            ),
+          ),
+        ),
+      ));
+
+      lastEnd = m.end;
+    }
+
+    // Остаток текста
+    if (lastEnd < text.length) {
+      spans.add(TextSpan(
+        text: text.substring(lastEnd),
+        style: const TextStyle(color: Colors.white, fontSize: 15),
+      ));
+    }
+
+    return Text.rich(TextSpan(children: spans));
   }
 
   // ── Изображение ───────────────────────────────────────────────────────────
