@@ -460,6 +460,8 @@ class _ChatScreenState extends State<ChatScreen> {
         case 'typing_indicator':    _handleTypingIndicator(data);  break;
         case 'public_key_response':  _handlePublicKeyResponse(data); break;
         case 'group_key_response':   _handleGroupKeyResponse(data);  break;
+        case 'group_key_not_found':  _handleGroupKeyNotFound(data);  break;
+        case 'group_member_added':   _handleGroupMemberAdded(data);  break;
         case 'message_read':        _handleMessageRead(data);      break;
         case 'read_receipt':        _handleReadReceipt(data);      break;
         case 'message_deleted':     _handleMessageDeleted(data);   break;
@@ -545,6 +547,49 @@ class _ChatScreenState extends State<ChatScreen> {
     _socket.requestGroupKey(groupId);
   }
 
+  void _handleGroupMemberAdded(Map<String, dynamic> data) {
+    final groupId  = data['group_id']  as String?;
+    final newUid   = data['new_uid']   as String?;
+    if (groupId != widget.targetUid || newUid == null) return;
+
+    // Обновляем список участников локально
+    final members = _storage.getGroupMembers(groupId);
+    if (!members.contains(newUid)) {
+      members.add(newUid);
+      final creator = _storage.getGroupCreator(groupId) ?? widget.myUid;
+      final name    = _storage.getGroupName(groupId);
+      _storage.saveGroup(
+        groupId:    groupId,
+        groupName:  name,
+        members:    members,
+        creatorUid: creator,
+      );
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// Групповой ключ не найден на сервере.
+  /// Запрашиваем у создателя группы напрямую через profile + повторный distribute.
+  Future<void> _handleGroupKeyNotFound(Map<String, dynamic> data) async {
+    final groupId = data['group_id'] as String?;
+    if (groupId == null || groupId != widget.targetUid) return;
+
+    debugPrint('⚠️ [GroupKey] Not found on server for $groupId — requesting creator to re-distribute');
+
+    // Получаем профиль группы чтобы узнать создателя (первый admin)
+    _socket.getProfile(groupId);
+
+    // Показываем пользователю понятное сообщение вместо вечного spinner
+    if (mounted) {
+      setState(() => _keysExchanged = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('🔑 Ключ группы не найден. Попроси создателя открыть чат.'),
+        duration: Duration(seconds: 5),
+        backgroundColor: Color(0xFF1A1F3C),
+      ));
+    }
+  }
+
   /// Обрабатывает ответ сервера с зашифрованным групповым ключом.
   Future<void> _handleGroupKeyResponse(Map<String, dynamic> data) async {
     final groupId    = data['group_id'] as String?;
@@ -562,6 +607,20 @@ class _ChatScreenState extends State<ChatScreen> {
           await Future.delayed(const Duration(milliseconds: 800));
         }
       }
+      // Если personal ключ с создателем всё ещё не загружен — пробуем ещё раз
+      if (!widget.cipher.hasSharedSecret(creatorUid)) {
+        // Ждём чуть дольше и повторяем запрос
+        _socket.requestPublicKey(creatorUid);
+        await Future.delayed(const Duration(seconds: 1));
+        await widget.cipher.tryLoadCachedKeys(creatorUid, _storage);
+      }
+
+      if (!widget.cipher.hasSharedSecret(creatorUid)) {
+        debugPrint('❌ [GroupKey] Still no shared secret with creator $creatorUid');
+        if (mounted) _showError('Нет ключа создателя группы. Попробуй позже.');
+        return;
+      }
+
       final keyBytes = await widget.cipher.decryptGroupKey(creatorUid, encKey);
       widget.cipher.setGroupKey(groupId, keyBytes);
 
@@ -723,7 +782,6 @@ class _ChatScreenState extends State<ChatScreen> {
         'fileName':        data['fileName'],
         'fileSize':        data['fileSize'],
         'mimeType':        data['mimeType'],
-        'duration':        data['duration'],
         'edited':          data['edited'] ?? false,
         'editedAt':        data['editedAt'],
         'forwardedFrom':   data['forwarded_from'],
@@ -918,7 +976,6 @@ class _ChatScreenState extends State<ChatScreen> {
     int?    fileSize,
     String? mimeType,
     String? forwardedFrom,
-    int?    duration,
   }) async {
     if (_editingMessageId != null) { await _saveEditedMessage(); return; }
 
@@ -933,7 +990,6 @@ class _ChatScreenState extends State<ChatScreen> {
         mediaData: mediaData, filePath: filePath,
         fileName: fileName, fileSize: fileSize, mimeType: mimeType,
         forwardedFrom: forwardedFrom,
-        duration: duration,
       );
       return;
     }
@@ -975,7 +1031,6 @@ class _ChatScreenState extends State<ChatScreen> {
         'fileName':        fileName,
         'fileSize':        fileSize,
         'mimeType':        mimeType,
-        'duration':        duration,
         'edited':          false,
         'forwardedFrom':   forwardedFrom,
         'signatureStatus': SignatureStatus.valid.index,
@@ -1006,7 +1061,6 @@ class _ChatScreenState extends State<ChatScreen> {
         fileSize:      fileSize,
         mimeType:      mimeType,
         forwardedFrom: forwardedFrom,
-        duration:      duration,
       );
 
       if (mounted) {
@@ -1037,7 +1091,6 @@ class _ChatScreenState extends State<ChatScreen> {
     int?    fileSize,
     String? mimeType,
     String? forwardedFrom,
-    int?    duration,
   }) async {
     final messageText = text ?? '';
     if (messageText.isEmpty && mediaData == null) return;
@@ -1300,7 +1353,6 @@ class _ChatScreenState extends State<ChatScreen> {
           text: '🎤 Voice message', messageType: 'voice',
           mediaData: 'FILE_ID:$fileId', filePath: localPath,
           fileName: fileName, fileSize: fileSize, mimeType: 'audio/m4a',
-          duration: _recordingDuration,
         );
         _cleanTempVoiceFile();
         if (mounted) setState(() => _isSendingFile = false);
@@ -1391,19 +1443,6 @@ class _ChatScreenState extends State<ChatScreen> {
       _showError('Ошибка воспроизведения: $e');
     }
   }
-
-  void _handleDeepLink(String url) {
-    final uri = Uri.tryParse(url);
-    if (uri == null) return;
-    if (uri.scheme == 'deepdrift' && uri.host == 'channel') {
-      // Закрываем чат и передаём ссылку обработчику HomeScreen
-      Navigator.of(context).pop();
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        NotificationService().handleDeepLink(uri);
-      });
-    }
-  }
-
 
   void _startEditingMessage(Map<String, dynamic> message) {
     setState(() {
@@ -1867,6 +1906,16 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
               ),
               const Divider(color: Colors.white12, height: 1),
+              ListTile(
+                leading: const Icon(Icons.person_add, color: Colors.green),
+                title: const Text('Добавить участника',
+                    style: TextStyle(color: Colors.green, fontSize: 14)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showAddMemberDialog();
+                },
+              ),
+              const Divider(color: Colors.white12, height: 1),
             ],
 
             Flexible(
@@ -1904,6 +1953,127 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ),
     );
+  }
+
+  void _showAddMemberDialog() {
+    final ctrl = TextEditingController();
+    String? error;
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1F3C),
+          title: Text('Добавить участника',
+              style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 13)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  labelText: 'ID участника (6 цифр)',
+                  labelStyle: const TextStyle(color: Colors.white54),
+                  filled: true,
+                  fillColor: const Color(0xFF0A0E27),
+                  errorText: error,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00D9FF),
+                foregroundColor: Colors.black,
+              ),
+              onPressed: () async {
+                final uid = ctrl.text.trim();
+                if (uid.length != 6 || int.tryParse(uid) == null) {
+                  setD(() => error = 'Введи 6 цифр');
+                  return;
+                }
+                final members = _storage.getGroupMembers(widget.targetUid);
+                if (members.contains(uid)) {
+                  setD(() => error = 'Уже участник');
+                  return;
+                }
+                Navigator.pop(ctx);
+                await _addMemberToGroup(uid);
+              },
+              child: const Text('ДОБАВИТЬ'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addMemberToGroup(String newUid) async {
+    final groupId = widget.targetUid;
+
+    // Убедимся что есть shared secret с новым участником
+    if (!widget.cipher.hasSharedSecret(newUid)) {
+      await widget.cipher.tryLoadCachedKeys(newUid, _storage);
+      if (!widget.cipher.hasSharedSecret(newUid)) {
+        _socket.requestPublicKey(newUid);
+        _showSuccess('🔑 Загружаем ключи $newUid...');
+        await Future.delayed(const Duration(milliseconds: 1500));
+        await widget.cipher.tryLoadCachedKeys(newUid, _storage);
+      }
+    }
+
+    if (!widget.cipher.hasSharedSecret(newUid)) {
+      _showError('Не удалось получить ключи пользователя $newUid. Попробуй ещё раз.');
+      return;
+    }
+
+    // Шифруем групповой ключ для нового участника
+    final groupKeyBytes = widget.cipher.getGroupKeyBytes(groupId);
+    if (groupKeyBytes == null) {
+      _showError('Нет ключа группы в памяти. Перезайди в чат.');
+      return;
+    }
+
+    try {
+      final encryptedKey = await widget.cipher.encryptGroupKeyFor(newUid, groupKeyBytes);
+
+      // Отправляем на сервер: добавить участника + передать ключ
+      _socket.send({
+        'type':          'add_member',
+        'group_id':      groupId,
+        'new_member_uid': newUid,
+        'encrypted_key': encryptedKey,
+      });
+
+      // Обновляем локальное хранилище
+      final members = _storage.getGroupMembers(groupId);
+      if (!members.contains(newUid)) {
+        members.add(newUid);
+        final creator = _storage.getGroupCreator(groupId) ?? widget.myUid;
+        final name    = _storage.getGroupName(groupId);
+        await _storage.saveGroup(
+          groupId:    groupId,
+          groupName:  name,
+          members:    members,
+          creatorUid: creator,
+        );
+      }
+
+      if (mounted) {
+        setState(() {});
+        _showSuccess('✅ $newUid добавлен в группу');
+      }
+    } catch (e) {
+      _showError('Ошибка добавления: $e');
+    }
   }
 
   void _showRenameGroupDialog() {
@@ -2320,7 +2490,6 @@ class _ChatScreenState extends State<ChatScreen> {
         onOpenImage:     _showFullImageFromFile,
         onOpenFile:      (path, name) => _openFile(path, name),
         onRemoveReaction: _removeReaction,
-        onDeepLink:      _handleDeepLink,
         senderName:      senderName,
       ),
     );
