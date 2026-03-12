@@ -394,6 +394,7 @@ class _HomeScreenState extends State<HomeScreen>
           }
         }
         if (type == 'message') _handleIncomingMessageQuietly(data);
+        if (type == 'redistribute_group_key') _handleRedistributeGroupKey(data);
         if (type == 'group_invited' || type == 'group_added' || type == 'group_created') _handleGroupAdded(data);
         if (type == 'message' || type == 'status_update' || type == 'message_deleted' || type == 'user_status') {
           setState(() => _chats = _storage.getContactsSortedByActivity());
@@ -1508,6 +1509,51 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       ),
     );
+  }
+
+  /// Сервер просит нас переслать групповой ключ конкретному участнику.
+  /// Вызывается когда участник запрашивает get_group_key но ключ не найден в Redis.
+  Future<void> _handleRedistributeGroupKey(Map<String, dynamic> data) async {
+    final groupId    = data['group_id']    as String?;
+    final requestUid = data['request_uid'] as String?;
+    if (groupId == null || requestUid == null || _myUid == null) return;
+
+    debugPrint('🔑 [GroupKey] Redistribution request: $groupId → $requestUid');
+
+    // Проверяем что у нас есть ключ группы
+    if (!_cipher.hasSharedSecret(groupId)) {
+      debugPrint('⚠️ [GroupKey] We don\'t have the group key ourselves');
+      return;
+    }
+
+    // Убедимся что есть shared secret с requestUid
+    if (!_cipher.hasSharedSecret(requestUid)) {
+      await _cipher.tryLoadCachedKeys(requestUid, _storage);
+      if (!_cipher.hasSharedSecret(requestUid)) {
+        _socket.requestPublicKey(requestUid);
+        await Future.delayed(const Duration(milliseconds: 1500));
+        await _cipher.tryLoadCachedKeys(requestUid, _storage);
+      }
+    }
+
+    if (!_cipher.hasSharedSecret(requestUid)) {
+      debugPrint('❌ [GroupKey] Cannot redistribute — no shared secret with $requestUid');
+      return;
+    }
+
+    try {
+      // Достаём байты группового ключа из памяти
+      final groupKeyBytes = _cipher.getGroupKeyBytes(groupId);
+      if (groupKeyBytes == null) {
+        debugPrint('❌ [GroupKey] Group key bytes not in memory for $groupId');
+        return;
+      }
+      final encryptedKey = await _cipher.encryptGroupKeyFor(requestUid, groupKeyBytes);
+      _socket.distributeGroupKeys(groupId, {requestUid: encryptedKey});
+      debugPrint('✅ [GroupKey] Re-distributed $groupId key to $requestUid');
+    } catch (e) {
+      debugPrint('❌ [GroupKey] Redistribution error: $e');
+    }
   }
 
   Future<void> _createGroup(String name, List<String> memberUids) async {
