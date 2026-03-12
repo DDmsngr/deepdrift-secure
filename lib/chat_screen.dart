@@ -550,14 +550,14 @@ class _ChatScreenState extends State<ChatScreen> {
   void _handleGroupMemberAdded(Map<String, dynamic> data) {
     final groupId  = data['group_id']  as String?;
     final newUid   = data['new_uid']   as String?;
-    if (groupId != widget.targetUid || newUid == null) return;
+    if (groupId == null || groupId != widget.targetUid || newUid == null) return;
 
     // Обновляем список участников локально
     final members = _storage.getGroupMembers(groupId);
     if (!members.contains(newUid)) {
       members.add(newUid);
       final creator = _storage.getGroupCreator(groupId) ?? widget.myUid;
-      final name    = _storage.getGroupName(groupId);
+      final name    = _storage.getGroupName(groupId) ?? groupId;
       _storage.saveGroup(
         groupId:    groupId,
         groupName:  name,
