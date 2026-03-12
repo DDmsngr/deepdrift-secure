@@ -71,6 +71,12 @@ dependencies:
   # Шэринг (сохранить файл / отправить на почту)
   share_plus: ^10.0.0
 
+  # Deep links (deepdrift://channel/ch_xxx)
+  app_links: ^6.3.3
+
+  # URL launcher для ссылок в сообщениях
+  url_launcher: ^6.3.0
+
   # Рендеринг Markdown (ToS / Privacy Policy)
   flutter_markdown: ^0.7.4
 
