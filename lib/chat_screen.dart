@@ -557,7 +557,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!members.contains(newUid)) {
       members.add(newUid);
       final creator = _storage.getGroupCreator(groupId) ?? widget.myUid;
-      final name    = _storage.getGroupName(groupId) ?? groupId;
+      final name    = _storage.getGroupName(groupId);
       _storage.saveGroup(
         groupId:    groupId,
         groupName:  name,
