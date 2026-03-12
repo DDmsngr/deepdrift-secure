@@ -59,6 +59,7 @@ class _HomeScreenState extends State<HomeScreen>
   bool         _isReady          = false;
   String       _connectionStatus = 'ОФФЛАЙН';
   StreamSubscription? _socketSub;
+  StreamSubscription<Uri>? _deepLinkSub;
 
   final _idService   = IdentityService();
   final _storage     = StorageService();
