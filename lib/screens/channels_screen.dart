@@ -58,7 +58,6 @@ class _ChannelsScreenState extends State<ChannelsScreen> {
     });
   }
 
-  @override
   void _openChannel(String channelId) {
     if (!mounted) return;
     Navigator.push(
