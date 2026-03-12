@@ -1392,6 +1392,19 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  void _handleDeepLink(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    if (uri.scheme == 'deepdrift' && uri.host == 'channel') {
+      // Закрываем чат и передаём ссылку обработчику HomeScreen
+      Navigator.of(context).pop();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        NotificationService().handleDeepLink(uri);
+      });
+    }
+  }
+
+
   void _startEditingMessage(Map<String, dynamic> message) {
     setState(() {
       _editingMessageId       = message['id']?.toString();
@@ -2307,6 +2320,7 @@ class _ChatScreenState extends State<ChatScreen> {
         onOpenImage:     _showFullImageFromFile,
         onOpenFile:      (path, name) => _openFile(path, name),
         onRemoveReaction: _removeReaction,
+        onDeepLink:      _handleDeepLink,
         senderName:      senderName,
       ),
     );
