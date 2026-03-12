@@ -20,6 +20,7 @@ import 'storage_service.dart';
 import 'socket_service.dart';
 import 'crypto_service.dart';
 import 'notification_service.dart';
+import 'package:app_links/app_links.dart';
 import 'settings_screen.dart';
 import 'providers/app_providers.dart';
 import 'dart:convert';
@@ -93,6 +94,9 @@ class _HomeScreenState extends State<HomeScreen>
     _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(() => setState(() {}));
     NotificationService().setOpenChatCallback(_openChatWithUid);
+    NotificationService().setTokenRefreshCallback((token) => _socket.registerFcmToken(token));
+    NotificationService().setOpenChannelCallback((uri) => _handleDeepLink(uri));
+    _initDeepLinks();
     _setup();
     _statusCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (!_isConnected) return;
@@ -109,6 +113,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     NotificationService().clearOpenChatCallback();
+    _deepLinkSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _socketSub?.cancel();
     _statusCheckTimer?.cancel();
@@ -181,6 +186,58 @@ class _HomeScreenState extends State<HomeScreen>
   // ─────────────────────────────────────────────────────────────────────────
   // Navigation
   // ─────────────────────────────────────────────────────────────────────────
+
+  // ── Deep Links ────────────────────────────────────────────────────────────
+
+  Future<void> _initDeepLinks() async {
+    final appLinks = AppLinks();
+
+    // Холодный старт — приложение открыто через ссылку
+    try {
+      final initialUri = await appLinks.getInitialLink();
+      if (initialUri != null) _handleDeepLink(initialUri);
+    } catch (_) {}
+
+    // Приложение уже запущено — ссылка пришла извне
+    _deepLinkSub = appLinks.uriLinkStream.listen(
+      _handleDeepLink,
+      onError: (_) {},
+    );
+  }
+
+  void _handleDeepLink(Uri uri) {
+    if (uri.scheme != 'deepdrift') return;
+    debugPrint('🔗 Deep link: $uri');
+
+    if (uri.host == 'channel') {
+      // deepdrift://channel/ch_fe2bec8c1d
+      final channelId = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
+      if (channelId == null || !channelId.startsWith('ch_')) return;
+
+      if (!_isReady || _myUid == null) {
+        // Ещё не готовы — ждём
+        WidgetsBinding.instance.addPostFrameCallback((_) => _handleDeepLink(uri));
+        return;
+      }
+
+      // Добавляем канал в список если его нет
+      if (!_storage.getContacts().contains(channelId)) {
+        _storage.addContact(channelId, displayName: channelId);
+        _socket.send({'type': 'join_channel', 'channel_id': channelId});
+        if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+      }
+
+      // Открываем экран каналов с автопереходом в нужный канал
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChannelsScreen(myUid: _myUid!, initialChannelId: channelId),
+        ),
+      ).then((_) {
+        if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
+      });
+    }
+  }
 
   void _openChatWithUid(String fromUid) {
     if (!mounted) return;
