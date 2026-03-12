@@ -28,6 +28,7 @@ class SecureCipher {
 
   // ── Кэши контактов ─────────────────────────────────────────────────────────
   final Map<String, SecretKey>      _sharedSecrets      = {};
+  final Map<String, List<int>>      _groupKeyBytes       = {};
   final Map<String, SimplePublicKey> _contactPublicKeys  = {};
   final Map<String, SimplePublicKey> _contactSignKeys    = {};
 
@@ -254,8 +255,12 @@ class SecureCipher {
   /// После вызова encryptText(groupId) / decryptText(groupId) работают штатно.
   void setGroupKey(String groupId, List<int> keyBytes) {
     _sharedSecrets[groupId] = SecretKey(keyBytes);
+    _groupKeyBytes[groupId] = List<int>.from(keyBytes);
     debugLog('🔑 [Crypto] Group key set for $groupId');
   }
+
+  /// Возвращает сырые байты группового ключа для повторного шифрования.
+  List<int>? getGroupKeyBytes(String groupId) => _groupKeyBytes[groupId];
 
   /// Шифрует групповой ключ для конкретного участника.
   /// Использует его personal shared secret — результат безопасен для передачи через сервер.
