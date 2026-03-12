@@ -519,122 +519,46 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _loadGroupKey() async {
     final groupId = widget.targetUid;
     if (widget.cipher.hasSharedSecret(groupId)) return;
-
-    // Пробуем из кэша Hive
+    // Пробуем кэш Hive (plain base64 ключ)
     final cached = _storage.getGroupKeyBlob(groupId);
     if (cached != null && cached['blob']!.isNotEmpty) {
-      final creatorUid = cached['creator']!;
       try {
-        // Убедимся что есть personal ключ с создателем
-        if (!widget.cipher.hasSharedSecret(creatorUid)) {
-          await widget.cipher.tryLoadCachedKeys(creatorUid, _storage);
-        }
-        if (widget.cipher.hasSharedSecret(creatorUid)) {
-          final keyBytes = await widget.cipher.decryptGroupKey(creatorUid, cached['blob']!);
-          widget.cipher.setGroupKey(groupId, keyBytes);
-          debugPrint('✅ [GroupKey] Loaded from Hive cache for $groupId');
-          if (mounted) setState(() => _keysExchanged = true);
-          _flushPendingMessages();
-          return;
-        }
+        final keyBytes = base64Decode(cached['blob']!);
+        widget.cipher.setGroupKey(groupId, keyBytes);
+        debugPrint('✅ [GroupKey] Loaded from Hive cache for $groupId');
+        if (mounted) setState(() => _keysExchanged = true);
+        _flushPendingMessages();
+        return;
       } catch (e) {
-        debugPrint('⚠️ [GroupKey] Cache decrypt failed: $e');
+        debugPrint('⚠️ [GroupKey] Cache load failed: $e');
       }
     }
-
-    // Запрашиваем с сервера
     debugPrint('🔑 [GroupKey] Requesting from server for $groupId');
     _socket.requestGroupKey(groupId);
   }
 
-  void _handleGroupMemberAdded(Map<String, dynamic> data) {
-    final groupId  = data['group_id']  as String?;
-    final newUid   = data['new_uid']   as String?;
-    if (groupId == null || groupId != widget.targetUid || newUid == null) return;
-
-    // Обновляем список участников локально
-    final members = _storage.getGroupMembers(groupId);
-    if (!members.contains(newUid)) {
-      members.add(newUid);
-      final creator = _storage.getGroupCreator(groupId) ?? widget.myUid;
-      final name    = _storage.getGroupName(groupId);
-      _storage.saveGroup(
-        groupId:    groupId,
-        groupName:  name,
-        members:    members,
-        creatorUid: creator,
-      );
-    }
-    if (mounted) setState(() {});
-  }
-
-  /// Групповой ключ не найден на сервере.
-  /// Запрашиваем у создателя группы напрямую через profile + повторный distribute.
-  Future<void> _handleGroupKeyNotFound(Map<String, dynamic> data) async {
-    final groupId = data['group_id'] as String?;
-    if (groupId == null || groupId != widget.targetUid) return;
-
-    debugPrint('⚠️ [GroupKey] Not found on server for $groupId — requesting creator to re-distribute');
-
-    // Получаем профиль группы чтобы узнать создателя (первый admin)
-    _socket.getProfile(groupId);
-
-    // Показываем пользователю понятное сообщение вместо вечного spinner
-    if (mounted) {
-      setState(() => _keysExchanged = false);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('🔑 Ключ группы не найден. Попроси создателя открыть чат.'),
-        duration: Duration(seconds: 5),
-        backgroundColor: Color(0xFF1A1F3C),
-      ));
-    }
-  }
-
-  /// Обрабатывает ответ сервера с зашифрованным групповым ключом.
+  /// Обрабатывает ответ сервера с групповым ключом (упрощённая схема).
+  /// Сервер возвращает plain base64 ключ — просто декодируем и ставим.
   Future<void> _handleGroupKeyResponse(Map<String, dynamic> data) async {
-    final groupId    = data['group_id'] as String?;
-    final encKey     = data['encrypted_key'] as String?;
-    final creatorUid = data['creator_uid'] as String?;
-    if (groupId == null || encKey == null || creatorUid == null) return;
-    if (groupId != widget.targetUid) return;
+    final groupId = data['group_id'] as String?;
+    final keyB64  = data['group_key'] as String?;   // новое поле (упрощённая схема)
+    if (groupId == null || groupId != widget.targetUid) return;
+    if (keyB64 == null || keyB64.isEmpty) return;
 
     try {
-      // Загружаем personal ключ с создателем если нет
-      if (!widget.cipher.hasSharedSecret(creatorUid)) {
-        await widget.cipher.tryLoadCachedKeys(creatorUid, _storage);
-        if (!widget.cipher.hasSharedSecret(creatorUid)) {
-          _socket.requestPublicKey(creatorUid);
-          await Future.delayed(const Duration(milliseconds: 800));
-        }
-      }
-      // Если personal ключ с создателем всё ещё не загружен — пробуем ещё раз
-      if (!widget.cipher.hasSharedSecret(creatorUid)) {
-        // Ждём чуть дольше и повторяем запрос
-        _socket.requestPublicKey(creatorUid);
-        await Future.delayed(const Duration(seconds: 1));
-        await widget.cipher.tryLoadCachedKeys(creatorUid, _storage);
-      }
-
-      if (!widget.cipher.hasSharedSecret(creatorUid)) {
-        debugPrint('❌ [GroupKey] Still no shared secret with creator $creatorUid');
-        if (mounted) _showError('Нет ключа создателя группы. Попробуй позже.');
-        return;
-      }
-
-      final keyBytes = await widget.cipher.decryptGroupKey(creatorUid, encKey);
+      final keyBytes = base64Decode(keyB64);
       widget.cipher.setGroupKey(groupId, keyBytes);
-
-      // Кэшируем в Hive
-      await _storage.saveGroupKeyBlob(groupId, encKey, creatorUid);
-
-      debugPrint('✅ [GroupKey] Received and set for $groupId');
+      // Кэшируем в Hive (blob = plain base64)
+      await _storage.saveGroupKeyBlob(groupId, keyB64, 'server');
+      debugPrint('✅ [GroupKey] Set for $groupId (${keyBytes.length} bytes)');
       if (mounted) setState(() => _keysExchanged = true);
       _flushPendingMessages();
     } catch (e) {
-      debugPrint('❌ [GroupKey] Failed to decrypt group key: $e');
+      debugPrint('❌ [GroupKey] Failed to set: $e');
       if (mounted) _showError('Не удалось загрузить ключ группы');
     }
   }
+
 
   /// Сбрасывает буфер: дешифрует все сообщения, накопленные до получения ключа.
   /// Также перешифровывает сообщения с status='pending_decrypt' из Hive —
@@ -2018,64 +1942,30 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _addMemberToGroup(String newUid) async {
     final groupId = widget.targetUid;
-
-    // Убедимся что есть shared secret с новым участником
-    if (!widget.cipher.hasSharedSecret(newUid)) {
-      await widget.cipher.tryLoadCachedKeys(newUid, _storage);
-      if (!widget.cipher.hasSharedSecret(newUid)) {
-        _socket.requestPublicKey(newUid);
-        _showSuccess('🔑 Загружаем ключи $newUid...');
-        await Future.delayed(const Duration(milliseconds: 1500));
-        await widget.cipher.tryLoadCachedKeys(newUid, _storage);
-      }
+    // Упрощённая схема: сервер сам знает групповой ключ, просто добавляем участника
+    _socket.send({
+      'type':           'add_member',
+      'group_id':       groupId,
+      'new_member_uid': newUid,
+    });
+    // Обновляем локальное хранилище
+    final members = _storage.getGroupMembers(groupId);
+    if (!members.contains(newUid)) {
+      members.add(newUid);
+      final creator = _storage.getGroupCreator(groupId) ?? widget.myUid;
+      final name    = _storage.getGroupName(groupId);
+      await _storage.saveGroup(
+        groupId:    groupId,
+        groupName:  name,
+        members:    members,
+        creatorUid: creator,
+      );
     }
-
-    if (!widget.cipher.hasSharedSecret(newUid)) {
-      _showError('Не удалось получить ключи пользователя $newUid. Попробуй ещё раз.');
-      return;
-    }
-
-    // Шифруем групповой ключ для нового участника
-    final groupKeyBytes = widget.cipher.getGroupKeyBytes(groupId);
-    if (groupKeyBytes == null) {
-      _showError('Нет ключа группы в памяти. Перезайди в чат.');
-      return;
-    }
-
-    try {
-      final encryptedKey = await widget.cipher.encryptGroupKeyFor(newUid, groupKeyBytes);
-
-      // Отправляем на сервер: добавить участника + передать ключ
-      _socket.send({
-        'type':          'add_member',
-        'group_id':      groupId,
-        'new_member_uid': newUid,
-        'encrypted_key': encryptedKey,
-      });
-
-      // Обновляем локальное хранилище
-      final members = _storage.getGroupMembers(groupId);
-      if (!members.contains(newUid)) {
-        members.add(newUid);
-        final creator = _storage.getGroupCreator(groupId) ?? widget.myUid;
-        final name    = _storage.getGroupName(groupId);
-        await _storage.saveGroup(
-          groupId:    groupId,
-          groupName:  name,
-          members:    members,
-          creatorUid: creator,
-        );
-      }
-
-      if (mounted) {
-        setState(() {});
-        _showSuccess('✅ $newUid добавлен в группу');
-      }
-    } catch (e) {
-      _showError('Ошибка добавления: $e');
+    if (mounted) {
+      setState(() {});
+      _showSuccess('✅ $newUid добавлен в группу');
     }
   }
-
   void _showRenameGroupDialog() {
     final ctrl = TextEditingController(
       text: _storage.getGroupName(widget.targetUid),
