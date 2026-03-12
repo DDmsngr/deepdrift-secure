@@ -537,6 +537,33 @@ class _ChatScreenState extends State<ChatScreen> {
     _socket.requestGroupKey(groupId);
   }
 
+  void _handleGroupKeyNotFound(Map<String, dynamic> data) {
+    // В упрощённой схеме сервер всегда генерирует ключ, это не должно случаться.
+    // Но на случай гонки — просто повторяем запрос через секунду.
+    debugPrint('⚠️ [GroupKey] Not found — retrying in 1s');
+    Future.delayed(const Duration(seconds: 1), () {
+      if (mounted) _socket.requestGroupKey(widget.targetUid);
+    });
+  }
+
+  void _handleGroupMemberAdded(Map<String, dynamic> data) {
+    final groupId = data['group_id'] as String?;
+    final newUid  = data['new_uid']  as String?;
+    if (groupId == null || groupId != widget.targetUid || newUid == null) return;
+    final members = _storage.getGroupMembers(groupId);
+    if (!members.contains(newUid)) {
+      members.add(newUid);
+      final creator = _storage.getGroupCreator(groupId) ?? widget.myUid;
+      _storage.saveGroup(
+        groupId:    groupId,
+        groupName:  _storage.getGroupName(groupId),
+        members:    members,
+        creatorUid: creator,
+      );
+    }
+    if (mounted) setState(() {});
+  }
+
   /// Обрабатывает ответ сервера с групповым ключом (упрощённая схема).
   /// Сервер возвращает plain base64 ключ — просто декодируем и ставим.
   Future<void> _handleGroupKeyResponse(Map<String, dynamic> data) async {
