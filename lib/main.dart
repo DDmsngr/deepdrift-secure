@@ -19,7 +19,11 @@ import 'splash_screen.dart';
 // ВАЖНО: должна быть top-level функцией (не методом класса)
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  // Push всегда data-only — показываем уведомление через FlutterLocalNotifications.
+  // Фоновый изолят — нужно инициализировать Firebase самостоятельно
+  await Firebase.initializeApp();
+
+  // Если есть notification-поле — Android уже показал его нативно, не дублируем
+  if (message.notification != null) return;
 
   // Инициализируем плагин локальных уведомлений в фоновом изоляте
   const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -31,9 +35,9 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final androidPlugin = localNotifications
       .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
   await androidPlugin?.createNotificationChannel(const AndroidNotificationChannel(
-    'background_messages',
-    'Background Messages',
-    description: 'Messages received while app is killed',
+    'high_importance_channel',
+    'DDChat Messages',
+    description: 'DDChat incoming messages',
     importance: Importance.max,
     playSound: true,
     enableVibration: true,
@@ -49,8 +53,8 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     'New encrypted message',
     NotificationDetails(
       android: AndroidNotificationDetails(
-        'background_messages',
-        'Background Messages',
+        'high_importance_channel',
+        'DDChat Messages',
         importance: Importance.max,
         priority: Priority.high,
         showWhen: true,
