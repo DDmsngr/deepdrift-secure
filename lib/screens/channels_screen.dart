@@ -13,8 +13,9 @@ import 'channel_chat_screen.dart';
 /// Показывает список подписанных каналов, позволяет искать и создавать новые.
 class ChannelsScreen extends StatefulWidget {
   final String myUid;
+  final String? initialChannelId;  // deep link — сразу открыть этот канал
 
-  const ChannelsScreen({super.key, required this.myUid});
+  const ChannelsScreen({super.key, required this.myUid, this.initialChannelId});
 
   @override
   State<ChannelsScreen> createState() => _ChannelsScreenState();
@@ -31,6 +32,10 @@ class _ChannelsScreenState extends State<ChannelsScreen> {
   @override
   void initState() {
     super.initState();
+    // Deep link — открыть канал после первого кадра
+    if (widget.initialChannelId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openChannel(widget.initialChannelId!));
+    }
     _sub = _socket.messages.listen((data) {
       if (!mounted) return;
       final type = data['type'];
@@ -54,6 +59,16 @@ class _ChannelsScreenState extends State<ChannelsScreen> {
   }
 
   @override
+  void _openChannel(String channelId) {
+    if (!mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChannelChatScreen(myUid: widget.myUid, channelId: channelId),
+      ),
+    );
+  }
+
   void dispose() {
     _sub?.cancel();
     _searchCtrl.dispose();
