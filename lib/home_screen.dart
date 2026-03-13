@@ -394,6 +394,7 @@ class _HomeScreenState extends State<HomeScreen>
           }
         }
         if (type == 'message') _handleIncomingMessageQuietly(data);
+        if (type == 'group_key_response') _handleGroupKeyResponseQuietly(data);
         if (type == 'group_invited' || type == 'group_added' || type == 'group_created') _handleGroupAdded(data);
         if (type == 'message' || type == 'status_update' || type == 'message_deleted' || type == 'user_status') {
           setState(() => _chats = _storage.getContactsSortedByActivity());
@@ -559,13 +560,38 @@ class _HomeScreenState extends State<HomeScreen>
     }
 
     try {
-      if (!_cipher.hasSharedSecret(senderUid)) await _cipher.tryLoadCachedKeys(senderUid, _storage);
+      // ── FIX: для групп дешифруем групповым ключом (groupId), не ключом отправителя ──
+      final isGroupMsg = groupId != null && groupId.isNotEmpty;
+      final decryptUid = isGroupMsg ? groupId : senderUid;
+
+      // Загружаем нужный ключ если его нет в памяти
+      if (isGroupMsg) {
+        // Групповой симметричный ключ — пробуем Hive-кэш
+        if (!_cipher.hasSharedSecret(groupId)) {
+          final cached = _storage.getGroupKeyBlob(groupId);
+          if (cached != null && cached['blob']!.isNotEmpty) {
+            try {
+              final keyBytes = base64Decode(cached['blob']!);
+              _cipher.setGroupKey(groupId, keyBytes);
+            } catch (_) {}
+          }
+          // Если и в кэше нет — запрашиваем с сервера
+          if (!_cipher.hasSharedSecret(groupId)) {
+            _socket.requestGroupKey(groupId);
+          }
+        }
+      } else {
+        // Личный чат — загружаем pairwise secret из кэша
+        if (!_cipher.hasSharedSecret(senderUid)) {
+          await _cipher.tryLoadCachedKeys(senderUid, _storage);
+        }
+      }
 
       final encryptedText = data['encrypted_text'] as String? ?? '';
       final String decrypted;
 
-      if (_cipher.hasSharedSecret(senderUid)) {
-        decrypted = await _cipher.decryptText(encryptedText, fromUid: senderUid);
+      if (_cipher.hasSharedSecret(decryptUid)) {
+        decrypted = await _cipher.decryptText(encryptedText, fromUid: decryptUid);
       } else {
         final pendingMsg = {
           'id': msgId, 'text': '', 'isMe': false,
@@ -610,6 +636,61 @@ class _HomeScreenState extends State<HomeScreen>
     } catch (e) {
       debugPrint('Quiet save error: $e');
     }
+  }
+
+  /// Обрабатывает group_key_response на уровне HomeScreen.
+  /// Когда чат с группой НЕ открыт, именно HomeScreen получает ключ
+  /// и расшифровывает накопленные pending_decrypt сообщения.
+  Future<void> _handleGroupKeyResponseQuietly(Map<String, dynamic> data) async {
+    final groupId = data['group_id'] as String?;
+    final keyB64  = data['group_key'] as String?;
+    if (groupId == null || keyB64 == null || keyB64.isEmpty) return;
+
+    try {
+      final keyBytes = base64Decode(keyB64);
+      _cipher.setGroupKey(groupId, keyBytes);
+      await _storage.saveGroupKeyBlob(groupId, keyB64, 'server');
+      debugPrint('✅ [HomeScreen] Group key set for $groupId');
+
+      // Расшифровываем все pending_decrypt сообщения этой группы
+      await _flushPendingGroupMessagesQuietly(groupId);
+    } catch (e) {
+      debugPrint('❌ [HomeScreen] Group key error: $e');
+    }
+  }
+
+  /// Перебирает сохранённые сообщения группы со status=pending_decrypt
+  /// и дешифрует их теперь-доступным групповым ключом.
+  Future<void> _flushPendingGroupMessagesQuietly(String groupId) async {
+    if (!_cipher.hasSharedSecret(groupId)) return;
+
+    final messages = _storage.getHistory(groupId);
+    final pending = messages
+        .where((m) => m['status'] == 'pending_decrypt' && m['encrypted_text'] != null)
+        .toList();
+
+    if (pending.isEmpty) return;
+    debugPrint('🔓 [HomeScreen] Re-decrypting ${pending.length} pending messages for $groupId');
+
+    for (final msg in pending) {
+      final encrypted = msg['encrypted_text'] as String?;
+      final msgId     = msg['id']?.toString();
+      if (encrypted == null || msgId == null) continue;
+
+      try {
+        final decrypted = await _cipher.decryptText(encrypted, fromUid: groupId);
+        if (decrypted.startsWith('[⚠️') || decrypted.startsWith('[❌')) continue;
+
+        final updated = Map<String, dynamic>.from(msg)
+          ..['text']   = decrypted
+          ..['status'] = 'delivered';
+        updated.remove('encrypted_text');
+        await _storage.saveMessage(groupId, updated);
+      } catch (e) {
+        debugPrint('⚠️ [HomeScreen] Failed to decrypt pending msg $msgId: $e');
+      }
+    }
+    if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity());
   }
 
   // ─────────────────────────────────────────────────────────────────────────
