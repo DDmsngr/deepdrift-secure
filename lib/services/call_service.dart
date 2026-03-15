@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../socket_service.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -13,9 +14,8 @@ import '../socket_service.dart';
 //   4. WebRTC устанавливает P2P соединение для медиа
 //
 // Жизненный цикл:
-//   startCall()     → создаёт offer, шлёт call_offer
-//   handleOffer()   → принимает offer, создаёт answer
-//   handleAnswer()  → принимает answer от callee
+//   startCall()     → запрашивает разрешения → создаёт offer, шлёт call_offer
+//   acceptCall()    → запрашивает разрешения → принимает offer, создаёт answer
 //   hangUp()        → завершает вызов, освобождает ресурсы
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -78,23 +78,85 @@ class CallService {
   void Function(MediaStream stream)?       onRemoteStream;
   void Function(MediaStream stream)?       onLocalStream;
   void Function(String callId, String fromUid, String callType)? onIncomingCall;
+  /// Вызывается когда пользователь отказал в разрешении — UI может показать snackbar.
+  void Function(String reason)? onPermissionDenied;
 
   // ── StreamSubscription на сообщения сокета ─────────────────────────────────
   StreamSubscription? _socketSub;
 
   // ── STUN/TURN серверы ─────────────────────────────────────────────────────
+  // Для продакшена: раскомментируй TURN-блок и подставь свои credentials.
+  // Без TURN звонки за симметричным NAT (корп. Wi-Fi, некоторые операторы) не пройдут.
+  //
+  // Рекомендуемые сервисы:
+  //   • Cloudflare TURN  — бесплатный тир
+  //   • Twilio TURN      — $0.0004/мин
+  //   • Свой coturn       — бесплатно, нужен VPS
   static const Map<String, dynamic> _iceConfig = {
     'iceServers': [
       {'urls': 'stun:stun.l.google.com:19302'},
       {'urls': 'stun:stun1.l.google.com:19302'},
-      // Для продакшена добавь TURN:
+      // ── TURN (раскомментируй для продакшена) ──────────────────────────
       // {
-      //   'urls': 'turn:your-turn-server.com:3478',
-      //   'username': 'user',
-      //   'credential': 'pass',
+      //   'urls': [
+      //     'turn:your-turn-server.com:3478?transport=udp',
+      //     'turn:your-turn-server.com:3478?transport=tcp',
+      //     'turns:your-turn-server.com:5349?transport=tcp',
+      //   ],
+      //   'username':   'your-username',
+      //   'credential': 'your-credential',
       // },
     ],
   };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Разрешения
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// Запрашивает разрешения на микрофон (+ камеру для видео) и bluetooth.
+  /// Возвращает true если все необходимые разрешения получены.
+  Future<bool> _requestPermissions({required bool needVideo}) async {
+    final permissions = <Permission>[
+      Permission.microphone,
+      if (needVideo) Permission.camera,
+      Permission.bluetoothConnect,
+    ];
+
+    final statuses = await permissions.request();
+
+    final micGranted = statuses[Permission.microphone]?.isGranted ?? false;
+    final camGranted = needVideo
+        ? (statuses[Permission.camera]?.isGranted ?? false)
+        : true;
+
+    if (!micGranted) {
+      debugPrint('❌ Microphone permission denied');
+      onPermissionDenied?.call(needVideo
+          ? 'Для звонка нужен доступ к микрофону и камере'
+          : 'Для звонка нужен доступ к микрофону');
+      return false;
+    }
+
+    if (!camGranted) {
+      debugPrint('❌ Camera permission denied');
+      onPermissionDenied?.call('Для видеозвонка нужен доступ к камере');
+      return false;
+    }
+
+    // Bluetooth — не критично, звонок работает и без него
+    if (statuses[Permission.bluetoothConnect]?.isDenied == true) {
+      debugPrint('⚠️ Bluetooth permission denied — headset switching unavailable');
+    }
+
+    return true;
+  }
+
+  /// Проверяет разрешения без запроса (для UI — показать кнопку или нет).
+  Future<bool> hasCallPermissions({bool video = false}) async {
+    final mic = await Permission.microphone.isGranted;
+    final cam = video ? await Permission.camera.isGranted : true;
+    return mic && cam;
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Публичный API
@@ -115,10 +177,18 @@ class CallService {
   }
 
   /// Начать исходящий вызов.
-  Future<void> startCall(String targetUid, {String callType = 'audio'}) async {
+  /// Возвращает false если разрешения не получены.
+  Future<bool> startCall(String targetUid, {String callType = 'audio'}) async {
     if (_state != CallState.idle) {
       debugPrint('📞 Cannot start call: already in state $_state');
-      return;
+      return false;
+    }
+
+    // ── Запрос разрешений ────────────────────────────────────────────────
+    final granted = await _requestPermissions(needVideo: callType == 'video');
+    if (!granted) {
+      debugPrint('📞 Call aborted: permissions not granted');
+      return false;
     }
 
     _callId    = DateTime.now().millisecondsSinceEpoch.toString();
@@ -126,50 +196,74 @@ class CallService {
     _callType  = callType;
     _setState(CallState.outgoing);
 
-    await _createPeerConnection();
-    await _getUserMedia();
+    try {
+      await _createPeerConnection();
+      await _getUserMedia();
 
-    final offer = await _peerConnection!.createOffer({
-      'offerToReceiveAudio': true,
-      'offerToReceiveVideo': callType == 'video',
-    });
-    await _peerConnection!.setLocalDescription(offer);
+      final offer = await _peerConnection!.createOffer({
+        'offerToReceiveAudio': true,
+        'offerToReceiveVideo': callType == 'video',
+      });
+      await _peerConnection!.setLocalDescription(offer);
 
-    _socket.send({
-      'type':      'call_offer',
-      'target_uid': targetUid,
-      'call_id':    _callId,
-      'call_type':  callType,
-      'sdp':        offer.toMap(),
-    });
+      _socket.send({
+        'type':       'call_offer',
+        'target_uid': targetUid,
+        'call_id':    _callId,
+        'call_type':  callType,
+        'sdp':        offer.toMap(),
+      });
 
-    debugPrint('📞 Call offer sent to $targetUid (type: $callType)');
+      debugPrint('📞 Call offer sent to $targetUid (type: $callType)');
+      return true;
+    } catch (e) {
+      debugPrint('❌ startCall error: $e');
+      _cleanup();
+      return false;
+    }
   }
 
   /// Принять входящий вызов.
-  Future<void> acceptCall() async {
-    if (_state != CallState.incoming || _peerConnection == null) return;
+  /// Возвращает false если разрешения не получены.
+  Future<bool> acceptCall() async {
+    if (_state != CallState.incoming || _peerConnection == null) return false;
+
+    // ── Запрос разрешений ────────────────────────────────────────────────
+    final granted = await _requestPermissions(needVideo: _callType == 'video');
+    if (!granted) {
+      debugPrint('📞 Accept aborted: permissions not granted');
+      rejectCall(); // не можем принять без микрофона — отклоняем
+      return false;
+    }
 
     _setState(CallState.connecting);
-    await _getUserMedia();
 
-    final answer = await _peerConnection!.createAnswer({
-      'offerToReceiveAudio': true,
-      'offerToReceiveVideo': _callType == 'video',
-    });
-    await _peerConnection!.setLocalDescription(answer);
+    try {
+      await _getUserMedia();
 
-    _socket.send({
-      'type':       'call_answer',
-      'target_uid': _remoteUid,
-      'call_id':    _callId,
-      'sdp':        answer.toMap(),
-    });
+      final answer = await _peerConnection!.createAnswer({
+        'offerToReceiveAudio': true,
+        'offerToReceiveVideo': _callType == 'video',
+      });
+      await _peerConnection!.setLocalDescription(answer);
 
-    // Flush буферизованные ICE-кандидаты
-    _flushPendingCandidates();
+      _socket.send({
+        'type':       'call_answer',
+        'target_uid': _remoteUid,
+        'call_id':    _callId,
+        'sdp':        answer.toMap(),
+      });
 
-    debugPrint('📞 Call accepted, answer sent');
+      // Flush буферизованные ICE-кандидаты
+      _flushPendingCandidates();
+
+      debugPrint('📞 Call accepted, answer sent');
+      return true;
+    } catch (e) {
+      debugPrint('❌ acceptCall error: $e');
+      _cleanup();
+      return false;
+    }
   }
 
   /// Отклонить входящий вызов.
@@ -216,10 +310,7 @@ class CallService {
 
   void toggleSpeaker() {
     _isSpeakerOn = !_isSpeakerOn;
-    _localStream?.getAudioTracks().forEach((track) {
-      // flutter_webrtc поддерживает переключение динамика через Helper
-      Helper.setSpeakerphoneOn(_isSpeakerOn);
-    });
+    Helper.setSpeakerphoneOn(_isSpeakerOn);
     _setState(_state);
   }
 
@@ -372,10 +463,8 @@ class CallService {
         _setState(CallState.active);
       } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed ||
                  state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
-        // Пробуем переподключиться; если не удаётся — завершаем
         Future.delayed(const Duration(seconds: 5), () {
           if (_state == CallState.active) {
-            // ICE reconnect может восстановить соединение
             debugPrint('📞 ICE disconnect, waiting for recovery...');
           }
         });
@@ -403,7 +492,11 @@ class CallService {
 
   Future<void> _getUserMedia() async {
     final constraints = <String, dynamic>{
-      'audio': true,
+      'audio': {
+        'echoCancellation': true,
+        'noiseSuppression': true,
+        'autoGainControl':  true,
+      },
       'video': _callType == 'video'
           ? {'facingMode': 'user', 'width': 640, 'height': 480}
           : false,
@@ -414,6 +507,12 @@ class CallService {
 
     for (final track in _localStream!.getTracks()) {
       await _peerConnection!.addTrack(track, _localStream!);
+    }
+
+    // При голосовом вызове — выключаем динамик по умолчанию (к уху)
+    if (_callType == 'audio') {
+      Helper.setSpeakerphoneOn(false);
+      _isSpeakerOn = false;
     }
   }
 
