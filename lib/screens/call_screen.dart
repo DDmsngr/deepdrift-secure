@@ -290,7 +290,7 @@ class _CallScreenState extends State<CallScreen> {
                 shape: BoxShape.circle,
                 border: isActive
                     ? null
-                    : Border.all(color: Colors.cyan.withOpacity(0.3), width: 2),
+                    : Border.all(color: Colors.cyan.withValues(alpha: 0.3), width: 2),
               ),
               child: CircleAvatar(
                 radius: 60,
