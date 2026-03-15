@@ -41,7 +41,6 @@ class CallService {
 
   String? _callId;
   String? _remoteUid;
-  String? _myUid;
   String  _callType = 'audio'; // 'audio' | 'video'
   bool get isVideo => _callType == 'video';
 
@@ -164,7 +163,6 @@ class CallService {
 
   /// Инициализация — вызвать один раз при старте (после подключения к сокету).
   void init(String myUid) {
-    _myUid = myUid;
     _socketSub?.cancel();
     _socketSub = _socket.messages.listen(_handleSocketMessage);
   }
