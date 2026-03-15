@@ -62,7 +62,10 @@ class NotificationService {
   void Function(String fromUid)? _openChatCallback;
   void Function(String token)?   _onTokenRefreshed;
   void Function(Uri uri)?        _openChannelCallback;
+  void Function(String fromUid, String callType)? _openCallCallback;
   String? _pendingUid;
+  // Pending incoming call data (cold start)
+  Map<String, String>? _pendingCall;
 
   // UID чата который сейчас открыт — не показываем пуш для него
   static String? activeChatUid;
@@ -81,6 +84,22 @@ class NotificationService {
 
   void setOpenChannelCallback(void Function(Uri uri) callback) {
     _openChannelCallback = callback;
+  }
+
+  /// Регистрирует callback для входящих звонков (из FCM push).
+  void setOpenCallCallback(void Function(String fromUid, String callType) callback) {
+    _openCallCallback = callback;
+    if (_pendingCall != null) {
+      final pc = _pendingCall!;
+      _pendingCall = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        callback(pc['from_uid']!, pc['call_type'] ?? 'audio');
+      });
+    }
+  }
+
+  void clearOpenCallCallback() {
+    _openCallCallback = null;
   }
 
   /// Обрабатывает deepdrift:// URI — вызывается из ChatScreen при тапе по ссылке.
@@ -123,10 +142,18 @@ class NotificationService {
       initSettings,
       // Сценарий 1: foreground tap ─────────────────────────────────────────
       onDidReceiveNotificationResponse: (NotificationResponse response) {
-        final fromUid = response.payload;
-        debugPrint('📲 Notification tapped (foreground): $fromUid');
-        if (fromUid != null && fromUid.isNotEmpty) {
-          _navigateToChat(fromUid);
+        final payload = response.payload;
+        debugPrint('📲 Notification tapped (foreground): $payload');
+        if (payload != null && payload.isNotEmpty) {
+          // Звонок: payload = "call:fromUid:callType"
+          if (payload.startsWith('call:')) {
+            final parts = payload.split(':');
+            if (parts.length >= 3 && _openCallCallback != null) {
+              _openCallCallback!(parts[1], parts[2]);
+            }
+            return;
+          }
+          _navigateToChat(payload);
         }
       },
     );
@@ -140,6 +167,23 @@ class NotificationService {
     // Показываем его сами через FlutterLocalNotifications.
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       debugPrint('📲 FCM foreground: ${message.messageId}');
+      final msgType = message.data['type'] as String? ?? '';
+
+      // ── Входящий звонок через push ──────────────────────────────────────
+      if (msgType == 'incoming_call') {
+        final fromUid  = message.data['from_uid'] as String? ?? '';
+        final callType = message.data['call_type'] as String? ?? 'audio';
+        final senderName = message.data['sender_name'] as String? ?? fromUid;
+        if (fromUid.isNotEmpty) {
+          _showCallNotification(fromUid: fromUid, senderName: senderName, callType: callType);
+          // Также вызываем callback для немедленного открытия CallScreen
+          if (_openCallCallback != null) {
+            _openCallCallback!(fromUid, callType);
+          }
+        }
+        return;
+      }
+
       final targetUid = (message.data['target_uid'] as String? ?? '').isNotEmpty
           ? message.data['target_uid'] as String
           : message.data['from_uid'] as String? ?? '';
@@ -161,6 +205,21 @@ class NotificationService {
 
     // ── Сценарий 2: background tap ────────────────────────────────────────
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      final msgType = message.data['type'] as String? ?? '';
+
+      if (msgType == 'incoming_call') {
+        final fromUid  = message.data['from_uid'] as String? ?? '';
+        final callType = message.data['call_type'] as String? ?? 'audio';
+        if (fromUid.isNotEmpty) {
+          if (_openCallCallback != null) {
+            _openCallCallback!(fromUid, callType);
+          } else {
+            _pendingCall = {'from_uid': fromUid, 'call_type': callType};
+          }
+        }
+        return;
+      }
+
       // target_uid = group_id для группы, from_uid для личного чата
       final targetUid = (message.data['target_uid'] as String? ?? '').isNotEmpty
           ? message.data['target_uid'] as String
@@ -177,13 +236,24 @@ class NotificationService {
     // callback в HomeScreen.
     final initialMessage = await _fcm.getInitialMessage();
     if (initialMessage != null) {
-      final targetUid = (initialMessage.data['target_uid'] as String? ?? '').isNotEmpty
-          ? initialMessage.data['target_uid'] as String
-          : initialMessage.data['from_uid'] as String? ?? '';
-      debugPrint('📲 App launched from killed state by notification: $targetUid');
-      if (targetUid.isNotEmpty) {
-        // Всегда кэшируем при cold start — Navigator точно не готов
-        _pendingUid = targetUid;
+      final msgType = initialMessage.data['type'] as String? ?? '';
+
+      if (msgType == 'incoming_call') {
+        final fromUid  = initialMessage.data['from_uid'] as String? ?? '';
+        final callType = initialMessage.data['call_type'] as String? ?? 'audio';
+        if (fromUid.isNotEmpty) {
+          _pendingCall = {'from_uid': fromUid, 'call_type': callType};
+          debugPrint('📲 Cold start from call push: $fromUid ($callType)');
+        }
+      } else {
+        final targetUid = (initialMessage.data['target_uid'] as String? ?? '').isNotEmpty
+            ? initialMessage.data['target_uid'] as String
+            : initialMessage.data['from_uid'] as String? ?? '';
+        debugPrint('📲 App launched from killed state by notification: $targetUid');
+        if (targetUid.isNotEmpty) {
+          // Всегда кэшируем при cold start — Navigator точно не готов
+          _pendingUid = targetUid;
+        }
       }
     }
   }
@@ -226,6 +296,50 @@ class NotificationService {
       NotificationDetails(android: androidDetails),
       payload: fromUid,
     );
+  }
+
+  /// Показывает уведомление о входящем звонке (высокий приоритет, отдельный канал).
+  Future<void> _showCallNotification({
+    required String fromUid,
+    required String senderName,
+    required String callType,
+  }) async {
+    final androidDetails = AndroidNotificationDetails(
+      'call_channel',
+      'DDChat Calls',
+      channelDescription: 'Notifications for incoming voice/video calls',
+      importance:      Importance.max,
+      priority:        Priority.max,
+      showWhen:        true,
+      color:           const Color(0xFF00D9FF),
+      enableVibration: true,
+      playSound:       true,
+      category:        AndroidNotificationCategory.call,
+      fullScreenIntent: true, // показывает на весь экран даже при заблокированном телефоне
+      ongoing:         true,  // нельзя смахнуть
+      autoCancel:      true,
+      timeoutAfter:    45000, // авто-убрать через 45 секунд
+      ticker:          'Входящий звонок',
+      styleInformation: BigTextStyleInformation(
+        callType == 'video' ? 'Видеозвонок от $senderName' : 'Звонок от $senderName',
+        contentTitle: senderName,
+        summaryText:  callType == 'video' ? 'Видеозвонок' : 'Голосовой вызов',
+      ),
+    );
+
+    await _localNotifications.show(
+      // Специальный ID для звонков — перезаписывается при новом звонке
+      'call_$fromUid'.hashCode,
+      callType == 'video' ? 'Видеозвонок' : 'Входящий звонок',
+      senderName,
+      NotificationDetails(android: androidDetails),
+      payload: 'call:$fromUid:$callType',
+    );
+  }
+
+  /// Убирает уведомление о звонке (вызывать при ответе / отклонении).
+  Future<void> cancelCallNotification(String fromUid) async {
+    await _localNotifications.cancel('call_$fromUid'.hashCode);
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -288,6 +402,19 @@ class NotificationService {
         playSound: true,
         enableVibration: true,
         showBadge: true,
+      ),
+    );
+
+    // Канал для входящих звонков (fullscreen intent, не смахивается)
+    await androidPlugin.createNotificationChannel(
+      const AndroidNotificationChannel(
+        'call_channel',
+        'DDChat Calls',
+        description: 'Notifications for incoming voice and video calls',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: true,
+        showBadge: false,
       ),
     );
   }
