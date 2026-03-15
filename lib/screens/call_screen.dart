@@ -56,13 +56,24 @@ class _CallScreenState extends State<CallScreen> {
       _statusText = 'Входящий звонок...';
     } else {
       _statusText = 'Вызов...';
-      _callService.startCall(widget.targetUid, callType: widget.callType);
+      _initiateCall();
     }
   }
 
   Future<void> _initRenderers() async {
     await _localRenderer.initialize();
     await _remoteRenderer.initialize();
+  }
+
+  /// Начинает исходящий вызов. Если разрешения не получены — закрывает экран.
+  Future<void> _initiateCall() async {
+    final success = await _callService.startCall(
+      widget.targetUid,
+      callType: widget.callType,
+    );
+    if (!success && mounted) {
+      Navigator.of(context).pop();
+    }
   }
 
   void _setupCallbacks() {
@@ -86,7 +97,6 @@ class _CallScreenState extends State<CallScreen> {
           case CallState.ended:
             _statusText = 'Вызов завершён';
             _durationTimer?.cancel();
-            // Закрываем экран через секунду
             Future.delayed(const Duration(seconds: 1), () {
               if (mounted) Navigator.of(context).pop();
             });
@@ -103,6 +113,17 @@ class _CallScreenState extends State<CallScreen> {
 
     _callService.onRemoteStream = (stream) {
       if (mounted) setState(() => _remoteRenderer.srcObject = stream);
+    };
+
+    _callService.onPermissionDenied = (reason) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(reason),
+          backgroundColor: Colors.red.shade800,
+          duration: const Duration(seconds: 3),
+        ),
+      );
     };
   }
 
@@ -128,16 +149,21 @@ class _CallScreenState extends State<CallScreen> {
   @override
   void dispose() {
     _durationTimer?.cancel();
-    _callService.onStateChanged  = null;
-    _callService.onLocalStream   = null;
-    _callService.onRemoteStream  = null;
+    _callService.onStateChanged    = null;
+    _callService.onLocalStream     = null;
+    _callService.onRemoteStream    = null;
+    _callService.onPermissionDenied = null;
     _localRenderer.dispose();
     _remoteRenderer.dispose();
     super.dispose();
   }
 
-  void _onAccept() {
-    _callService.acceptCall();
+  Future<void> _onAccept() async {
+    final success = await _callService.acceptCall();
+    if (!success && mounted) {
+      // Разрешения не получены — вызов автоматически отклонён
+      Navigator.of(context).pop();
+    }
   }
 
   void _onReject() {
@@ -242,7 +268,6 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Widget _buildAudioBackground(String displayName) {
-    final avatar = _storage.getContactAvatar(widget.targetUid);
     final isActive = _callService.state == CallState.active;
 
     return Container(
@@ -287,7 +312,6 @@ class _CallScreenState extends State<CallScreen> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
-        // Отклонить
         _buildCircleButton(
           icon: Icons.call_end,
           color: Colors.red,
@@ -295,7 +319,6 @@ class _CallScreenState extends State<CallScreen> {
           onTap: _onReject,
           label: 'Отклонить',
         ),
-        // Принять
         _buildCircleButton(
           icon: widget.callType == 'video' ? Icons.videocam : Icons.call,
           color: Colors.green,
