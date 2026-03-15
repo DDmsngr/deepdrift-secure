@@ -20,6 +20,8 @@ import 'storage_service.dart';
 import 'socket_service.dart';
 import 'crypto_service.dart';
 import 'notification_service.dart';
+import 'services/call_service.dart';
+import 'screens/call_screen.dart';
 import 'package:app_links/app_links.dart';
 import 'settings_screen.dart';
 import 'providers/app_providers.dart';
@@ -97,6 +99,7 @@ class _HomeScreenState extends State<HomeScreen>
     NotificationService().setOpenChatCallback(_openChatWithUid);
     NotificationService().setTokenRefreshCallback((token) => _socket.registerFcmToken(token));
     NotificationService().setOpenChannelCallback((uri) => _handleDeepLink(uri));
+    NotificationService().setOpenCallCallback(_handleIncomingCall);
     _initDeepLinks();
     _setup();
     _statusCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) {
@@ -114,6 +117,8 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     NotificationService().clearOpenChatCallback();
+    NotificationService().clearOpenCallCallback();
+    CallService().dispose();
     _deepLinkSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _socketSub?.cancel();
@@ -259,6 +264,24 @@ class _HomeScreenState extends State<HomeScreen>
     });
   }
 
+  /// Обработка входящего звонка — открывает CallScreen.
+  void _handleIncomingCall(String fromUid, String callType) {
+    if (!mounted || _myUid == null) return;
+    // Убираем уведомление о звонке
+    NotificationService().cancelCallNotification(fromUid);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CallScreen(
+          myUid:      _myUid!,
+          targetUid:  fromUid,
+          callType:   callType,
+          isIncoming: true,
+        ),
+      ),
+    );
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // Setup & Connection
   // ─────────────────────────────────────────────────────────────────────────
@@ -372,6 +395,12 @@ class _HomeScreenState extends State<HomeScreen>
           _registerPublicKeysOnServer();
           _socket.checkStatuses(_storage.getContacts());
           _registerAccountOnServer();
+
+          // ── Инициализация CallService ──────────────────────────────────
+          CallService().init(_myUid!);
+          CallService().onIncomingCall = (callId, fromUid, callType) {
+            _handleIncomingCall(fromUid, callType);
+          };
         }
         if (type == 'connection_status') {
           setState(() {
