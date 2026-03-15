@@ -21,6 +21,8 @@ import 'storage_service.dart';
 import 'notification_service.dart';
 import 'models/chat_models.dart';
 import 'widgets/message_bubble.dart';
+import 'services/call_service.dart';
+import 'screens/call_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 // Типы MsgType, SignatureStatus и утилиты (formatMessageTime и др.)
@@ -2515,6 +2517,21 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  // ── Вызов ─────────────────────────────────────────────────────────────────
+  void _startCall(String callType) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CallScreen(
+          myUid:     widget.myUid,
+          targetUid: widget.targetUid,
+          callType:  callType,
+          isIncoming: false,
+        ),
+      ),
+    );
+  }
+
   AppBar _buildAppBar(String displayName, {bool isGroup = false, List<String> groupMembers = const []}) {
     final isOnline = _storage.isContactOnline(widget.targetUid);
     final lastSeen = _storage.getContactLastSeen(widget.targetUid);
@@ -2594,6 +2611,19 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
       actions: [
+        // ── Кнопки вызова (только для личных чатов) ─────────────────────
+        if (!isGroup && !_isSearching) ...[
+          IconButton(
+            icon: const Icon(Icons.call, color: Colors.white70, size: 20),
+            tooltip: 'Голосовой вызов',
+            onPressed: () => _startCall('audio'),
+          ),
+          IconButton(
+            icon: const Icon(Icons.videocam, color: Colors.white70, size: 20),
+            tooltip: 'Видеозвонок',
+            onPressed: () => _startCall('video'),
+          ),
+        ],
         IconButton(
           icon: Icon(_isSearching ? Icons.close : Icons.search),
           onPressed: _toggleSearch,
