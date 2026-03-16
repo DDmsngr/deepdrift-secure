@@ -212,6 +212,19 @@ class StorageService {
     });
   }
 
+  /// Обновляет произвольное поле одного сообщения (например filePath после перезагрузки).
+  Future<void> updateMessageField(String chatWith, String messageId, String field, dynamic value) {
+    return _withLock(chatWith, () async {
+      final box     = Hive.box(_msgBox);
+      final history = _readHistory(box, chatWith);
+      final idx = history.indexWhere((m) => m['id']?.toString() == messageId);
+      if (idx != -1) {
+        history[idx][field] = value;
+        await box.put(chatWith, history);
+      }
+    });
+  }
+
   /// Удаляет всё содержимое чата включая метаданные и реакции.
   Future<void> deleteChat(String chatWith) async {
     await _withLock(chatWith, () async {
@@ -755,6 +768,9 @@ class StorageService {
 
   Future<void> resetUnreadCount(String chatWith) async =>
       Hive.box(_metadataBox).put('unread_$chatWith', 0);
+
+  int getUnreadCount(String chatWith) =>
+      Hive.box(_metadataBox).get('unread_$chatWith', defaultValue: 0) as int;
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Disappearing messages (TTL per chat)
