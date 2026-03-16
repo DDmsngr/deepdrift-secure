@@ -60,6 +60,11 @@ class _ChannelsScreenState extends State<ChannelsScreen> {
 
   void _openChannel(String channelId) {
     if (!mounted) return;
+    // Автоматически подписываемся при открытии (если ещё не подписаны)
+    if (!_storage.getContacts().contains(channelId)) {
+      _storage.addContact(channelId, displayName: channelId);
+      _socket.send({'type': 'join_channel', 'channel_id': channelId});
+    }
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -68,6 +73,7 @@ class _ChannelsScreenState extends State<ChannelsScreen> {
     );
   }
 
+  @override
   void dispose() {
     _sub?.cancel();
     _searchCtrl.dispose();
