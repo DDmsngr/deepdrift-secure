@@ -69,6 +69,9 @@ class CallService {
   final List<RTCIceCandidate> _pendingCandidates = [];
   bool _hasRemoteDescription = false;
 
+  // ── Таймер ICE-подключения ─────────────────────────────────────────────────
+  Timer? _iceTimer;
+
   // ── Таймер ─────────────────────────────────────────────────────────────────
   DateTime? _callStartTime;
   DateTime? get callStartTime => _callStartTime;
@@ -447,9 +450,13 @@ class CallService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   Future<void> _createPeerConnection() async {
-    _peerConnection = await createPeerConnection(_iceConfig);
+    final config = Map<String, dynamic>.from(_iceConfig);
+    config['sdpSemantics'] = 'unified-plan';
+
+    _peerConnection = await createPeerConnection(config);
 
     _peerConnection!.onIceCandidate = (candidate) {
+      debugPrint('📞 Local ICE candidate: ${candidate.candidate?.substring(0, 50)}...');
       _socket.send({
         'type':       'ice_candidate',
         'target_uid': _remoteUid,
@@ -458,22 +465,38 @@ class CallService {
       });
     };
 
+    _peerConnection!.onIceGatheringState = (state) {
+      debugPrint('📞 ICE gathering: $state');
+    };
+
     _peerConnection!.onIceConnectionState = (state) {
-      debugPrint('📞 ICE state: $state');
+      debugPrint('📞 ICE connection: $state');
       if (state == RTCIceConnectionState.RTCIceConnectionStateConnected ||
           state == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+        _iceTimer?.cancel();
         _callStartTime = DateTime.now();
         _setState(CallState.active);
-      } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed ||
-                 state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
-        Future.delayed(const Duration(seconds: 5), () {
+      } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+        debugPrint('📞 ICE FAILED — no route between peers (need TURN?)');
+        _iceTimer?.cancel();
+        hangUp();
+      } else if (state == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+        debugPrint('📞 ICE disconnected, waiting 10s for recovery...');
+        _iceTimer?.cancel();
+        _iceTimer = Timer(const Duration(seconds: 10), () {
           if (_state == CallState.active) {
-            debugPrint('📞 ICE disconnect, waiting for recovery...');
+            debugPrint('📞 ICE did not recover — ending call');
+            hangUp();
           }
         });
       } else if (state == RTCIceConnectionState.RTCIceConnectionStateClosed) {
+        _iceTimer?.cancel();
         _cleanup();
       }
+    };
+
+    _peerConnection!.onConnectionState = (state) {
+      debugPrint('📞 Peer connection state: $state');
     };
 
     _peerConnection!.onTrack = (event) {
@@ -481,6 +504,7 @@ class CallService {
         _remoteStream = event.streams[0];
         onRemoteStream?.call(_remoteStream!);
         _setState(_state);
+        debugPrint('📞 Remote track received: ${event.track.kind}');
       }
     };
 
@@ -491,6 +515,15 @@ class CallService {
       onRemoteStream?.call(stream);
       _setState(_state);
     };
+
+    // Таймаут: если через 30 секунд ICE не соединится — завершаем
+    _iceTimer?.cancel();
+    _iceTimer = Timer(const Duration(seconds: 30), () {
+      if (_state == CallState.connecting || _state == CallState.outgoing) {
+        debugPrint('📞 ICE timeout (30s) — hanging up');
+        hangUp();
+      }
+    });
   }
 
   Future<void> _getUserMedia() async {
@@ -535,6 +568,9 @@ class CallService {
   }
 
   void _cleanup() {
+    _iceTimer?.cancel();
+    _iceTimer = null;
+
     _localStream?.getTracks().forEach((track) => track.stop());
     _localStream?.dispose();
     _localStream = null;
