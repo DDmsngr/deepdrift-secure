@@ -212,7 +212,11 @@ class _ChatScreenState extends State<ChatScreen> {
       // Для групп: загружаем симметричный ключ группы
       if (_storage.isGroup(widget.targetUid)) {
         await _loadGroupKey();
-        return; // Группа не использует key exchange через WebSocket
+        // ── FIX: всегда проверяем и ставим флаг после загрузки ──────────
+        if (widget.cipher.hasSharedSecret(widget.targetUid)) {
+          if (mounted) setState(() => _keysExchanged = true);
+        }
+        return;
       }
 
       final loaded = await widget.cipher.tryLoadCachedKeys(widget.targetUid, _storage);
@@ -273,9 +277,41 @@ class _ChatScreenState extends State<ChatScreen> {
           _hasMoreMessages = history.length == MESSAGES_PER_PAGE;
         });
         WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom(animated: false));
+        // ── Auto-redownload: файлы с FILE_ID у которых нет локального пути ──
+        _autoRedownloadMissing();
       }
     } catch (e) {
       debugPrint('Load history error: $e');
+    }
+  }
+
+  /// Фоновая перезагрузка медиафайлов с сервера для сообщений у которых
+  /// filePath == null но mediaData содержит FILE_ID.
+  Future<void> _autoRedownloadMissing() async {
+    if (!_keysExchanged) return;
+    final toDownload = _messages.where((m) {
+      final type = m['type'] as String? ?? 'text';
+      if (type == 'text') return false;
+      if (m['filePath'] != null) return false;
+      final media = m['mediaData'] as String?;
+      return media != null && media.startsWith('FILE_ID:');
+    }).toList();
+
+    if (toDownload.isEmpty) return;
+    debugPrint('📥 Auto-redownload: ${toDownload.length} files');
+
+    for (final msg in toDownload) {
+      if (!mounted) return;
+      final fileId   = (msg['mediaData'] as String).substring(8);
+      final fileName = msg['fileName'] as String?;
+      final newPath  = await _downloadFileEncrypted(fileId, fileName);
+      if (newPath != null && mounted) {
+        setState(() {
+          final idx = _messages.indexWhere((m) => m['id'] == msg['id']);
+          if (idx != -1) _messages[idx]['filePath'] = newPath;
+        });
+        _storage.updateMessageField(widget.targetUid, msg['id'].toString(), 'filePath', newPath);
+      }
     }
   }
 
