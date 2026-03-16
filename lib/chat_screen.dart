@@ -2243,82 +2243,124 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _showMessageActions(Map<String, dynamic> message) {
     final isMe = message['from'] == widget.myUid;
+    final messageId = message['id'].toString();
+
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1F3C),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (context) => SafeArea(
+      builder: (ctx) => SafeArea(
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               // Drag-handle
               Container(
-                margin: const EdgeInsets.only(top: 10, bottom: 4),
+                margin: const EdgeInsets.only(top: 10, bottom: 8),
                 width: 36, height: 4,
                 decoration: BoxDecoration(
                   color: Colors.white24,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              // 🔑 Сброс ключей — помогает при "Authentication failed"
-              // без переустановки приложения. Выбрасывает shared secret и
-              // per-contact KDF-кэш, запрашивает новый публичный ключ.
-              _actionTile(Icons.refresh, 'Сбросить ключи (Fix)', () async {
-                Navigator.pop(context);
+
+              // ── Quick Reactions Bar (Telegram-стиль) ────────────────────────
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    ...['👍', '❤️', '🔥', '😂', '😮', '😢'].map((emoji) =>
+                      GestureDetector(
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          _addReaction(messageId, emoji);
+                        },
+                        child: Container(
+                          width: 42, height: 42,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Center(
+                            child: Text(emoji, style: const TextStyle(fontSize: 24)),
+                          ),
+                        ),
+                      ),
+                    ),
+                    // Кнопка «+» для полного пикера
+                    GestureDetector(
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _showFullEmojiPicker(messageId);
+                      },
+                      child: Container(
+                        width: 42, height: 42,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Center(
+                          child: Icon(Icons.add, color: Colors.white54, size: 22),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(color: Colors.white12, height: 16),
+
+              // ── Действия ────────────────────────────────────────────────────
+              if (message['type'] == 'text')
+                _actionTile(Icons.copy, 'Копировать', () {
+                  Navigator.pop(ctx);
+                  _copyMessageText(message['text'] as String? ?? '');
+                }),
+              if (message['type'] != 'text' && message['filePath'] != null)
+                _actionTile(Icons.save_alt, 'Сохранить в галерею', () async {
+                  Navigator.pop(ctx);
+                  await _saveToGallery(message);
+                }, color: Colors.greenAccent),
+              _actionTile(Icons.reply, 'Ответить', () {
+                Navigator.pop(ctx);
+                _setReplyTo(message);
+              }),
+              _actionTile(Icons.forward, 'Переслать', () {
+                Navigator.pop(ctx);
+                _forwardMessage(message);
+              }),
+              if (isMe && message['type'] == 'text')
+                _actionTile(Icons.edit, 'Редактировать', () {
+                  Navigator.pop(ctx);
+                  _startEditingMessage(message);
+                }),
+              if (isMe)
+                _actionTile(Icons.delete, 'Удалить для всех', () {
+                  Navigator.pop(ctx);
+                  _confirmDelete(messageId, deleteForEveryone: true);
+                }, color: Colors.red),
+              _actionTile(Icons.delete_outline, 'Удалить у себя', () {
+                Navigator.pop(ctx);
+                _confirmDelete(messageId, deleteForEveryone: false);
+              }, color: Colors.orange),
+              // Сброс ключей — для дебага / фикса
+              _actionTile(Icons.refresh, 'Сбросить ключи', () async {
+                Navigator.pop(ctx);
                 widget.cipher.clearSharedSecret(widget.targetUid);
                 await _storage.clearCachedKeys(widget.targetUid);
                 _socket.requestPublicKey(widget.targetUid);
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('🔑 Новые ключи запрошены — попросите переотправить'),
+                      content: Text('🔑 Новые ключи запрошены'),
                       backgroundColor: Color(0xFF1A4A2E),
-                      duration: Duration(seconds: 4),
+                      duration: Duration(seconds: 3),
                     ),
                   );
                 }
               }, color: Colors.greenAccent),
-              if (message['type'] == 'text')
-                _actionTile(Icons.copy, 'Копировать', () {
-                  Navigator.pop(context);
-                  _copyMessageText(message['text'] as String? ?? '');
-                }),
-              // Сохранить фото/видео в галерею (только для медиа-сообщений)
-              if (message['type'] != 'text' && message['filePath'] != null)
-                _actionTile(Icons.save_alt, 'Сохранить в галерею', () async {
-                  Navigator.pop(context);
-                  await _saveToGallery(message);
-                }, color: Colors.greenAccent),
-              _actionTile(Icons.reply, 'Ответить', () {
-                Navigator.pop(context);
-                _setReplyTo(message);
-              }),
-              // 🟡-1 FIX: Кнопка Forward добавлена в меню
-              _actionTile(Icons.forward, 'Переслать', () {
-                Navigator.pop(context);
-                _forwardMessage(message);
-              }),
-              _actionTile(Icons.emoji_emotions, 'Реакция', () {
-                Navigator.pop(context);
-                _showReactionPicker(message['id'].toString());
-              }),
-              if (isMe && message['type'] == 'text')
-                _actionTile(Icons.edit, 'Редактировать', () {
-                  Navigator.pop(context);
-                  _startEditingMessage(message);
-                }),
-              if (isMe)
-                _actionTile(Icons.delete, 'Удалить для всех', () {
-                  Navigator.pop(context);
-                  _confirmDelete(message['id'].toString(), deleteForEveryone: true);
-                }, color: Colors.red),
-              _actionTile(Icons.delete_outline, 'Удалить у себя', () {
-                Navigator.pop(context);
-                _confirmDelete(message['id'].toString(), deleteForEveryone: false);
-              }, color: Colors.orange),
             ],
           ),
         ),
@@ -2328,8 +2370,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   ListTile _actionTile(IconData icon, String label, VoidCallback onTap, {Color color = Colors.cyan}) =>
       ListTile(
-        leading: Icon(icon, color: color),
-        title: Text(label, style: TextStyle(color: color == Colors.cyan ? Colors.white : color)),
+        dense: true,
+        visualDensity: VisualDensity.compact,
+        leading: Icon(icon, color: color, size: 22),
+        title: Text(label, style: TextStyle(color: color == Colors.cyan ? Colors.white : color, fontSize: 14)),
         onTap: onTap,
       );
 
@@ -2362,21 +2406,125 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _showReactionPicker(String messageId) {
-    const reactions = ['❤️', '👍', '😂', '😮', '😢', '🙏', '🔥', '👎'];
-    showDialog(
+  // ── Полный emoji-пикер (Telegram-стиль с категориями) ─────────────────────
+  void _showFullEmojiPicker(String messageId) {
+    const categories = <String, List<String>>{
+      '😀': [
+        '😀', '😃', '😄', '😁', '😆', '🥹', '😅', '🤣', '😂', '🙂', '😉', '😊',
+        '😇', '🥰', '😍', '🤩', '😘', '😗', '😚', '😙', '🥲', '😋', '😛', '😜',
+        '🤪', '😝', '🤑', '🤗', '🤭', '🤫', '🤔', '🫡', '🤐', '🤨', '😐', '😑',
+        '😶', '🫥', '😏', '😒', '🙄', '😬', '😮‍💨', '🤥', '🫠', '😌', '😔', '😪',
+        '🤤', '😴', '😷', '🤒', '🤕', '🤢', '🤮', '🥴', '😵', '🤯', '🥱', '😎',
+      ],
+      '👋': [
+        '👍', '👎', '👊', '✊', '🤛', '🤜', '👏', '🙌', '🫶', '👐', '🤲', '🤝',
+        '🙏', '✌️', '🤞', '🫰', '🤟', '🤘', '🤙', '👈', '👉', '👆', '👇', '☝️',
+        '🫵', '👋', '🤚', '🖐️', '✋', '🖖', '👌', '🤌', '💪', '🦾', '🖕', '✍️',
+      ],
+      '❤️': [
+        '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '❤️‍🔥', '❤️‍🩹',
+        '💖', '💗', '💓', '💞', '💕', '💘', '💝', '💟', '♥️', '🫀', '💋', '💯',
+        '🔥', '✨', '⭐', '🌟', '💫', '🎉', '🎊', '🎁', '🏆', '🥇', '🏅', '🎯',
+      ],
+      '🐱': [
+        '🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼', '🐨', '🐯', '🦁', '🐮',
+        '🐷', '🐸', '🐵', '🐔', '🐧', '🐦', '🦅', '🦆', '🦉', '🦋', '🐛', '🐝',
+        '🐢', '🐍', '🦎', '🐙', '🦈', '🐬', '🐳', '🐠', '🦀', '🐚', '🌸', '🌺',
+      ],
+      '🍕': [
+        '🍎', '🍐', '🍊', '🍋', '🍌', '🍉', '🍇', '🍓', '🫐', '🍈', '🍒', '🍑',
+        '🥭', '🍍', '🥥', '🥝', '🍅', '🥑', '🍕', '🍔', '🌭', '🍟', '🍗', '🥩',
+        '🌮', '🌯', '🥗', '🍜', '🍣', '🍱', '🍩', '🍪', '🎂', '🍰', '🧁', '☕',
+        '🍺', '🍷', '🥂', '🍾', '🧃', '🥤', '🧋', '🍵',
+      ],
+      '⚽': [
+        '⚽', '🏀', '🏈', '⚾', '🎾', '🏐', '🏉', '🎱', '🏓', '🏸', '🥊', '🎮',
+        '🕹️', '🎲', '♟️', '🎯', '🎳', '🎪', '🎨', '🎬', '🎤', '🎧', '🎵', '🎶',
+        '🎹', '🎸', '🎻', '🥁', '🎷', '🎺', '📱', '💻', '🖥️', '🔒', '🔑', '💡',
+      ],
+    };
+
+    showModalBottomSheet(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1F3C),
-        title: const Text('Реакция', style: TextStyle(color: Colors.white)),
-        content: Wrap(
-          spacing: 10,
-          children: reactions.map((emoji) => GestureDetector(
-            onTap: () { Navigator.pop(context); _addReaction(messageId, emoji); },
-            child: Text(emoji, style: const TextStyle(fontSize: 32)),
-          )).toList(),
-        ),
+      backgroundColor: const Color(0xFF0A0E27),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
+      builder: (ctx) {
+        String activeCategory = categories.keys.first;
+        return StatefulBuilder(builder: (ctx, setSheetState) {
+          return SizedBox(
+            height: MediaQuery.of(ctx).size.height * 0.45,
+            child: Column(
+              children: [
+                // Handle
+                Container(
+                  margin: const EdgeInsets.only(top: 10, bottom: 8),
+                  width: 36, height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                // Tabs
+                SizedBox(
+                  height: 40,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: categories.keys.map((cat) {
+                      final isActive = cat == activeCategory;
+                      return GestureDetector(
+                        onTap: () => setSheetState(() => activeCategory = cat),
+                        child: Container(
+                          width: 40, height: 36,
+                          decoration: BoxDecoration(
+                            color: isActive
+                                ? const Color(0xFF00D9FF).withValues(alpha: 0.15)
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(10),
+                            border: isActive
+                                ? Border.all(color: const Color(0xFF00D9FF).withValues(alpha: 0.4))
+                                : null,
+                          ),
+                          child: Center(
+                            child: Text(cat, style: TextStyle(fontSize: isActive ? 22 : 18)),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                const Divider(color: Colors.white12, height: 1),
+                // Grid
+                Expanded(
+                  child: GridView.builder(
+                    padding: const EdgeInsets.all(12),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 8,
+                      mainAxisSpacing: 6,
+                      crossAxisSpacing: 6,
+                    ),
+                    itemCount: categories[activeCategory]!.length,
+                    itemBuilder: (_, i) {
+                      final emoji = categories[activeCategory]![i];
+                      return GestureDetector(
+                        onTap: () {
+                          Navigator.pop(ctx);
+                          _addReaction(messageId, emoji);
+                        },
+                        child: Center(
+                          child: Text(emoji, style: const TextStyle(fontSize: 26)),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+        });
+      },
     );
   }
 
