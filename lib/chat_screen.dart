@@ -22,6 +22,8 @@ import 'notification_service.dart';
 import 'models/chat_models.dart';
 import 'widgets/message_bubble.dart';
 import 'screens/call_screen.dart';
+import 'screens/media_gallery_screen.dart';
+import 'config/app_config.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 // Типы MsgType, SignatureStatus и утилиты (formatMessageTime и др.)
@@ -115,6 +117,9 @@ class _ChatScreenState extends State<ChatScreen> {
   bool   _isSendingFile  = false;
   double _uploadProgress = 0.0;
 
+  // ── Disappearing messages ─────────────────────────────────────────────────
+  Timer? _disappearTimer;
+
   static const int      MESSAGES_PER_PAGE    = 50;
   static const Duration KEY_EXCHANGE_TIMEOUT = Duration(seconds: 5);
 
@@ -134,6 +139,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // Регистрируем чат как активный — пуши для него подавляются
     NotificationService.setActiveChat(widget.targetUid);
+
+    // Сбрасываем счётчик непрочитанных при открытии чата
+    _storage.resetUnreadCount(widget.targetUid);
 
     _reactions = _storage.loadReactions(widget.targetUid);
 
@@ -156,6 +164,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _loadRecentHistory().then((_) {
         _markAllAsRead();
         _scrollToBottom(animated: false);
+        _startDisappearTimers();
       });
       // 4. Запросить офлайн-очередь только после того как ключ загружен из кэша
       //    (или запрос уже отправлен в _initializeSecureChat)
@@ -173,12 +182,12 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
-    // Снимаем активный чат — пуши снова разрешены
     NotificationService.setActiveChat(null);
     _socketSub?.cancel();
     _typingTimer?.cancel();
     _keyExchangeTimeout?.cancel();
     _recordingTimer?.cancel();
+    _disappearTimer?.cancel();
     _messageController.removeListener(_onTextChanged);
     _scrollController.removeListener(_onScroll);
     _messageController.dispose();
@@ -749,6 +758,8 @@ class _ChatScreenState extends State<ChatScreen> {
         'editedAt':        data['editedAt'],
         'forwardedFrom':   data['forwarded_from'],
         'signatureStatus': sigStatus.index,
+        'message_ttl':     data['message_ttl'] as int?,
+        'expire_at':       _calcExpireAt(data['message_ttl'] as int?),
       };
 
       if (mounted) {
@@ -757,10 +768,10 @@ class _ChatScreenState extends State<ChatScreen> {
           _messageIds.add(msgId);
         });
         _scrollToBottom();
-        // Звук входящего сообщения
         SystemSound.play(SystemSoundType.alert);
         _storage.saveMessage(widget.targetUid, msg);
         _sendReadReceipt(msgId);
+        _scheduleDisappear(msg);
       }
     }).catchError((Object e) {
       debugPrint('Decrypt error: $e');
@@ -979,6 +990,8 @@ class _ChatScreenState extends State<ChatScreen> {
       final encrypted = await widget.cipher.encryptText(messageText, targetUid: widget.targetUid);
       final signature = await widget.cipher.signMessage(messageText);
 
+      final ttl = _storage.getMessageTtl(widget.targetUid);
+
       final myMsg = {
         'id':              msgId,
         'text':            messageText,
@@ -997,6 +1010,8 @@ class _ChatScreenState extends State<ChatScreen> {
         'edited':          false,
         'forwardedFrom':   forwardedFrom,
         'signatureStatus': SignatureStatus.valid.index,
+        'message_ttl':     ttl > 0 ? ttl : null,
+        'expire_at':       ttl > 0 ? _calcExpireAt(ttl) : null,
       };
 
       if (mounted) {
@@ -1008,11 +1023,10 @@ class _ChatScreenState extends State<ChatScreen> {
           _replyToId   = null;
         });
         _scrollToBottom();
-        // Звук отправленного сообщения
         SystemSound.play(SystemSoundType.click);
+        if (ttl > 0) _scheduleDisappear(myMsg);
       }
 
-      // Сохраняем ПЕРЕД отправкой — если приложение свернут/убит не потеряем
       await _storage.saveMessage(widget.targetUid, myMsg);
 
       _socket.sendMessage(
@@ -1024,6 +1038,7 @@ class _ChatScreenState extends State<ChatScreen> {
         fileSize:      fileSize,
         mimeType:      mimeType,
         forwardedFrom: forwardedFrom,
+        messageTtl:    ttl > 0 ? ttl : null,
       );
 
       if (mounted) {
@@ -2675,6 +2690,156 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  // ── Disappearing messages ─────────────────────────────────────────────────
+
+  int? _calcExpireAt(int? ttlSeconds) {
+    if (ttlSeconds == null || ttlSeconds <= 0) return null;
+    return DateTime.now().millisecondsSinceEpoch + ttlSeconds * 1000;
+  }
+
+  void _scheduleDisappear(Map<String, dynamic> msg) {
+    final expireAt = msg['expire_at'] as int?;
+    if (expireAt == null) return;
+    final remaining = expireAt - DateTime.now().millisecondsSinceEpoch;
+    if (remaining <= 0) {
+      _removeMessage(msg['id']?.toString());
+      return;
+    }
+    Future.delayed(Duration(milliseconds: remaining), () {
+      if (mounted) _removeMessage(msg['id']?.toString());
+    });
+  }
+
+  void _removeMessage(String? msgId) {
+    if (msgId == null) return;
+    setState(() {
+      _messages.removeWhere((m) => m['id']?.toString() == msgId);
+      _messageIds.remove(msgId);
+    });
+    _storage.deleteMessage(widget.targetUid, msgId);
+  }
+
+  void _startDisappearTimers() {
+    for (final msg in List.of(_messages)) {
+      _scheduleDisappear(msg);
+    }
+  }
+
+  void _showTtlPicker() {
+    final currentTtl = _storage.getMessageTtl(widget.targetUid);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1F3C),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 10, bottom: 8),
+              width: 36, height: 4,
+              decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
+            ),
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text('Исчезающие сообщения', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+            ),
+            ...AppConfig.disappearingMessageOptions.map((seconds) {
+              final label = AppConfig.formatTtl(seconds);
+              final isSelected = currentTtl == seconds;
+              return ListTile(
+                leading: Icon(
+                  seconds == 0 ? Icons.timer_off : Icons.timer,
+                  color: isSelected ? Colors.cyan : Colors.white54,
+                ),
+                title: Text(label, style: TextStyle(color: isSelected ? Colors.cyan : Colors.white)),
+                trailing: isSelected ? const Icon(Icons.check, color: Colors.cyan) : null,
+                onTap: () {
+                  _storage.setMessageTtl(widget.targetUid, seconds);
+                  Navigator.pop(ctx);
+                  setState(() {});
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text(seconds == 0
+                          ? 'Исчезающие сообщения выключены'
+                          : 'Сообщения будут исчезать через $label'),
+                      backgroundColor: const Color(0xFF1A4A2E),
+                    ));
+                  }
+                },
+              );
+            }),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Медиагалерея ──────────────────────────────────────────────────────────
+
+  void _openMediaGallery() {
+    final displayName = _storage.isGroup(widget.targetUid)
+        ? _storage.getGroupName(widget.targetUid)
+        : _storage.getContactDisplayName(widget.targetUid);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MediaGalleryScreen(
+          chatWith: widget.targetUid,
+          chatName: displayName,
+          onOpenImage: _showFullImageFromFile,
+        ),
+      ),
+    );
+  }
+
+  // ── Блокировка ────────────────────────────────────────────────────────────
+
+  void _toggleBlockUser() {
+    final isBlocked = _storage.isBlocked(widget.targetUid);
+    final name = _storage.getContactDisplayName(widget.targetUid);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1F3C),
+        title: Text(isBlocked ? 'Разблокировать?' : 'Заблокировать?',
+            style: const TextStyle(color: Colors.white)),
+        content: Text(
+          isBlocked
+              ? '$name сможет снова отправлять вам сообщения и звонить.'
+              : '$name не сможет отправлять вам сообщения и звонить.',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('ОТМЕНА')),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              if (isBlocked) {
+                await _storage.unblockUser(widget.targetUid);
+                _socket.unblockUser(widget.targetUid);
+              } else {
+                await _storage.blockUser(widget.targetUid);
+                _socket.blockUser(widget.targetUid);
+              }
+              if (mounted) {
+                setState(() {});
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(isBlocked ? '$name разблокирован' : '$name заблокирован'),
+                ));
+              }
+            },
+            child: Text(isBlocked ? 'РАЗБЛОКИРОВАТЬ' : 'ЗАБЛОКИРОВАТЬ',
+                style: TextStyle(color: isBlocked ? Colors.green : Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ── Вызов ─────────────────────────────────────────────────────────────────
   void _startCall(String callType) {
     Navigator.push(
@@ -2786,37 +2951,58 @@ class _ChatScreenState extends State<ChatScreen> {
           icon: Icon(_isSearching ? Icons.close : Icons.search),
           onPressed: _toggleSearch,
         ),
-        if (isGroup && !_isSearching)
+        if (!_isSearching)
           PopupMenuButton<String>(
             color: const Color(0xFF1A1F3C),
             icon: const Icon(Icons.more_vert, color: Colors.white70),
             onSelected: (value) async {
               switch (value) {
-                case 'members':
-                  _showGroupMembersDialog(displayName, groupMembers);
-                  break;
-                case 'rename':
-                  _showRenameGroupDialog();
-                  break;
-                case 'leave':
-                  _showLeaveGroupDialog();
-                  break;
+                case 'gallery':   _openMediaGallery(); break;
+                case 'timer':     _showTtlPicker(); break;
+                case 'block':     _toggleBlockUser(); break;
+                case 'members':   _showGroupMembersDialog(displayName, groupMembers); break;
+                case 'rename':    _showRenameGroupDialog(); break;
+                case 'leave':     _showLeaveGroupDialog(); break;
               }
             },
-            itemBuilder: (_) => [
-              _popupItem('members', Icons.group,        'Участники группы'),
-              _popupItem('rename',  Icons.edit,         'Переименовать'),
-              const PopupMenuDivider(),
-              PopupMenuItem(
-                value: 'leave',
-                child: Row(children: [
-                  const Icon(Icons.exit_to_app, color: Colors.red, size: 20),
-                  const SizedBox(width: 12),
-                  Text('Покинуть группу',
-                      style: const TextStyle(color: Colors.red)),
-                ]),
-              ),
-            ],
+            itemBuilder: (_) {
+              final ttl = _storage.getMessageTtl(widget.targetUid);
+              final blocked = !isGroup && _storage.isBlocked(widget.targetUid);
+              return [
+                _popupItem('gallery', Icons.photo_library_outlined, 'Медиагалерея'),
+                PopupMenuItem(
+                  value: 'timer',
+                  child: Row(children: [
+                    Icon(ttl > 0 ? Icons.timer : Icons.timer_off_outlined,
+                        color: ttl > 0 ? Colors.cyan : Colors.white70, size: 20),
+                    const SizedBox(width: 12),
+                    Text(ttl > 0 ? 'Таймер: ${AppConfig.formatTtl(ttl)}' : 'Исчезающие сообщения',
+                        style: TextStyle(color: ttl > 0 ? Colors.cyan : Colors.white)),
+                  ]),
+                ),
+                if (isGroup) ...[
+                  const PopupMenuDivider(),
+                  _popupItem('members', Icons.group, 'Участники группы'),
+                  _popupItem('rename', Icons.edit, 'Переименовать'),
+                  const PopupMenuDivider(),
+                  PopupMenuItem(value: 'leave', child: Row(children: [
+                    const Icon(Icons.exit_to_app, color: Colors.red, size: 20),
+                    const SizedBox(width: 12),
+                    const Text('Покинуть группу', style: TextStyle(color: Colors.red)),
+                  ])),
+                ],
+                if (!isGroup) ...[
+                  const PopupMenuDivider(),
+                  PopupMenuItem(value: 'block', child: Row(children: [
+                    Icon(blocked ? Icons.lock_open : Icons.block,
+                        color: blocked ? Colors.green : Colors.red, size: 20),
+                    const SizedBox(width: 12),
+                    Text(blocked ? 'Разблокировать' : 'Заблокировать',
+                        style: TextStyle(color: blocked ? Colors.green : Colors.red)),
+                  ])),
+                ],
+              ];
+            },
           ),
       ],
     );
