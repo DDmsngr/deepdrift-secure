@@ -67,6 +67,7 @@ class CallService {
 
   // ── Буфер ICE-кандидатов (до установления remote description) ──────────────
   final List<RTCIceCandidate> _pendingCandidates = [];
+  bool _hasRemoteDescription = false;
 
   // ── Таймер ─────────────────────────────────────────────────────────────────
   DateTime? _callStartTime;
@@ -385,6 +386,8 @@ class CallService {
 
     final description = RTCSessionDescription(sdp['sdp'], sdp['type']);
     await _peerConnection!.setRemoteDescription(description);
+    _hasRemoteDescription = true;
+    _flushPendingCandidates();
 
     _setState(CallState.incoming);
     onIncomingCall?.call(callId, fromUid, callType);
@@ -398,7 +401,7 @@ class CallService {
 
     final description = RTCSessionDescription(sdp['sdp'], sdp['type']);
     await _peerConnection!.setRemoteDescription(description);
-
+    _hasRemoteDescription = true;
     _flushPendingCandidates();
 
     _setState(CallState.connecting);
@@ -430,10 +433,12 @@ class CallService {
       candidateMap['sdpMLineIndex'],
     );
 
-    if (_peerConnection?.getRemoteDescription() != null) {
+    if (_hasRemoteDescription && _peerConnection != null) {
       await _peerConnection!.addCandidate(candidate);
+      debugPrint('📞 ICE candidate added directly');
     } else {
       _pendingCandidates.add(candidate);
+      debugPrint('📞 ICE candidate buffered (${_pendingCandidates.length} pending)');
     }
   }
 
@@ -515,6 +520,9 @@ class CallService {
   }
 
   void _flushPendingCandidates() {
+    if (_pendingCandidates.isNotEmpty) {
+      debugPrint('📞 Flushing ${_pendingCandidates.length} buffered ICE candidates');
+    }
     for (final c in _pendingCandidates) {
       _peerConnection?.addCandidate(c);
     }
@@ -539,6 +547,7 @@ class CallService {
     _peerConnection = null;
 
     _pendingCandidates.clear();
+    _hasRemoteDescription = false;
     _callStartTime = null;
     _isMuted       = false;
     _isSpeakerOn   = false;
