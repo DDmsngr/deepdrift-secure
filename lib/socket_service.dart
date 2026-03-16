@@ -268,15 +268,25 @@ class SocketService {
 
       // ── profile_response: кэшируем профиль контакта ──────────────────────
       if (msgType == 'profile_response') {
-        await _storage.setContactDisplayName(
-          data['uid'] as String,
-          data['nickname'] as String? ?? '',
-        );
+        final uid      = data['uid'] as String;
+        final nickname = data['nickname'] as String? ?? '';
+
+        // Не перезаписываем имя, если пользователь переименовал контакт вручную.
+        // Условие: обновляем только если текущее имя == UID (не переименовывали)
+        // или если с сервера пришло непустое имя, отличное от UID.
+        final currentName = _storage.getContactDisplayName(uid);
+        if (currentName == uid && nickname.isNotEmpty) {
+          await _storage.setContactDisplayName(uid, nickname);
+        } else if (currentName == uid && nickname.isEmpty) {
+          // Оставляем UID как имя — не трогаем
+        }
+        // Если currentName != uid — пользователь переименовал, не трогаем
+
         if (data['avatar_id'] != null) {
-          await _storage.setContactAvatar(data['uid'] as String, data['avatar_id'] as String);
+          await _storage.setContactAvatar(uid, data['avatar_id'] as String);
         }
         await _storage.setContactStatus(
-          data['uid'] as String,
+          uid,
           data['status'] == 'online',
           data['last_seen'] as int?,
         );
