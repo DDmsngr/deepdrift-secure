@@ -583,10 +583,10 @@ class SocketService {
     String? fileName,
     int?    fileSize,
     String? mimeType,
-    String? forwardedFrom, // 🟡-1 FIX
+    String? forwardedFrom,
     int?    duration,
+    int?    messageTtl,
   }) {
-    // 🟡-6 FIX: создаём Completer + таймаут в 30 секунд
     final completer = Completer<bool>();
     final timeoutTimer = Timer(PENDING_MSG_TIMEOUT, () {
       if (_pendingMessages.containsKey(msgId)) {
@@ -609,8 +609,9 @@ class SocketService {
       'fileName':       fileName,
       'fileSize':       fileSize,
       'mimeType':       mimeType,
-      if (forwardedFrom != null) 'forwarded_from': forwardedFrom, // 🟡-1 FIX
+      if (forwardedFrom != null) 'forwarded_from': forwardedFrom,
       if (duration != null) 'duration': duration,
+      if (messageTtl != null && messageTtl > 0) 'message_ttl': messageTtl,
     });
 
     return completer.future;
@@ -723,6 +724,14 @@ class SocketService {
     _channel?.sink.close();
     Future.delayed(const Duration(milliseconds: 300), _attemptConnection);
   }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Блокировка
+  // ──────────────────────────────────────────────────────────────────────────
+
+  void blockUser(String targetUid)   => send({'type': 'block_user',   'target_uid': targetUid});
+  void unblockUser(String targetUid) => send({'type': 'unblock_user', 'target_uid': targetUid});
+  void getBlockedList()              => send({'type': 'get_blocked_list'});
 
   // ──────────────────────────────────────────────────────────────────────────
   // Dispose (вызывать при завершении работы приложения)
