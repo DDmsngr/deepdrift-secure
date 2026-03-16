@@ -1,16 +1,16 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import '../models/chat_models.dart';
 import 'video_players.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 // ─── MessageBubble ─────────────────────────────────────────────────────────────
 //
-// StatefulWidget с поддержкой свайпа справа налево → ответить.
-// Остальная логика делегируется в ChatScreen через колбэки.
+// StatelessWidget: отрисовка одного сообщения.
+// Свайп-to-reply реализован внешней _SwipeToReply-обёрткой в ChatScreen.
+// Долгое нажатие → onLongPress (контекстное меню с реакциями).
 //
-class MessageBubble extends StatefulWidget {
+class MessageBubble extends StatelessWidget {
   final Map<String, dynamic>         msg;
   final String                       myUid;
   final String?                      playingMessageId;
@@ -22,9 +22,8 @@ class MessageBubble extends StatefulWidget {
   final void Function(String filePath)               onOpenImage;
   final void Function(String? filePath, String name) onOpenFile;
   final void Function(String msgId, String emoji)    onRemoveReaction;
-  final void Function(Map<String, dynamic>)?         onReply;   // ← свайп-ответ
-  final void Function(String url)?                     onDeepLink; // deepdrift:// ссылки
-  final String? senderName; // имя отправителя для групповых сообщений
+  final void Function(String url)?                   onDeepLink;
+  final String? senderName;
 
   const MessageBubble({
     super.key,
@@ -38,282 +37,175 @@ class MessageBubble extends StatefulWidget {
     required this.onOpenImage,
     required this.onOpenFile,
     required this.onRemoveReaction,
-    this.onReply,
     this.onDeepLink,
     this.senderName,
   });
 
   @override
-  State<MessageBubble> createState() => _MessageBubbleState();
-}
-
-class _MessageBubbleState extends State<MessageBubble>
-    with SingleTickerProviderStateMixin {
-
-  // ── Свайп-to-reply (справа налево) ────────────────────────────────────────
-  double _dragOffset    = 0.0;
-  bool   _replyFired    = false;
-
-  static const double _triggerAt   = 64.0;   // порог активации
-  static const double _maxDrag     = 80.0;   // максимальный сдвиг
-  static const double _iconShowAt  = 16.0;   // с какого смещения видна иконка
-
-  late AnimationController _snapCtrl;
-  late Animation<double>   _snapAnim;
-
-  @override
-  void initState() {
-    super.initState();
-    _snapCtrl = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 250));
-    _snapAnim = const AlwaysStoppedAnimation(0);
-    _snapCtrl.addListener(() {
-      if (mounted) setState(() => _dragOffset = _snapAnim.value);
-    });
-  }
-
-  @override
-  void dispose() {
-    _snapCtrl.dispose();
-    super.dispose();
-  }
-
-  void _onDragUpdate(DragUpdateDetails d) {
-    if (d.primaryDelta == null || d.primaryDelta! > 0) return; // только ←
-    final next = (_dragOffset + d.primaryDelta!).clamp(-_maxDrag, 0.0);
-    setState(() => _dragOffset = next);
-
-    if (!_replyFired && next <= -_triggerAt) {
-      _replyFired = true;
-      HapticFeedback.mediumImpact();
-    }
-  }
-
-  void _onDragEnd(DragEndDetails _) {
-    if (_replyFired) widget.onReply?.call(widget.msg);
-    _replyFired = false;
-
-    _snapAnim = Tween<double>(begin: _dragOffset, end: 0).animate(
-      CurvedAnimation(parent: _snapCtrl, curve: Curves.easeOutCubic));
-    _snapCtrl.forward(from: 0);
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final isMe         = widget.msg['from'] == widget.myUid;
-    final msgType      = (widget.msg['type'] as String? ?? 'text').toMsgType();
-    final msgId        = widget.msg['id']?.toString() ?? '';
-    final msgReactions = widget.reactions[msgId] ?? {};
-
-    // Прогресс свайпа 0→1 (для анимации иконки)
-    final swipePct = ((-_dragOffset - _iconShowAt) / (_triggerAt - _iconShowAt))
-        .clamp(0.0, 1.0);
+    final isMe         = msg['from'] == myUid;
+    final msgType      = (msg['type'] as String? ?? 'text').toMsgType();
+    final msgId        = msg['id']?.toString() ?? '';
+    final msgReactions = reactions[msgId] ?? {};
 
     return GestureDetector(
-      onLongPress: () => widget.onLongPress(widget.msg),
-      onHorizontalDragUpdate: _onDragUpdate,
-      onHorizontalDragEnd:    _onDragEnd,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          // ── Иконка ответа (справа, появляется при свайпе) ────────────────
-          if (_dragOffset < -_iconShowAt)
-            Positioned(
-              right: 10,
-              top: 0, bottom: 0,
-              child: Center(
-                child: Opacity(
-                  opacity: swipePct,
-                  child: Transform.scale(
-                    scale: 0.5 + 0.5 * swipePct,
-                    child: Container(
-                      width: 36, height: 36,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF00D9FF)
-                            .withValues(alpha: 0.15 + 0.2 * swipePct),
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: const Color(0xFF00D9FF)
-                              .withValues(alpha: 0.4 + 0.6 * swipePct),
-                          width: 1.5,
-                        ),
-                      ),
-                      child: Icon(Icons.reply_rounded,
-                          color: Color.lerp(
-                              const Color(0xFF00D9FF).withValues(alpha: 0.5),
-                              const Color(0xFF00D9FF),
-                              swipePct),
-                          size: 18),
-                    ),
+      onLongPress: () => onLongPress(msg),
+      behavior: HitTestBehavior.opaque,
+      child: Align(
+        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+        child: Container(
+          margin: const EdgeInsets.symmetric(vertical: 3, horizontal: 12),
+          child: Column(
+            crossAxisAlignment:
+                isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            children: [
+              // ── Пузырь ─────────────────────────────────────────────
+              Container(
+                constraints: BoxConstraints(
+                  maxWidth: MediaQuery.of(context).size.width * 0.75),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  gradient: isMe
+                      ? const LinearGradient(
+                          colors: [Color(0xFF00D4FF), Color(0xFF0099CC)])
+                      : null,
+                  color: isMe ? null : const Color(0xFF1A1F3C),
+                  borderRadius: BorderRadius.only(
+                    topLeft:     const Radius.circular(12),
+                    topRight:    const Radius.circular(12),
+                    bottomLeft:  Radius.circular(isMe ? 12 : 2),
+                    bottomRight: Radius.circular(isMe ? 2 : 12),
                   ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.2),
+                      blurRadius: 4, offset: const Offset(0, 2)),
+                  ],
                 ),
-              ),
-            ),
-
-          // ── Bubble со смещением ────────────────────────────────────────────
-          Transform.translate(
-            offset: Offset(_dragOffset, 0),
-            child: Align(
-              alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-              child: Container(
-                margin: const EdgeInsets.symmetric(vertical: 3, horizontal: 12),
                 child: Column(
-                  crossAxisAlignment:
-                      isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // ── Пузырь ─────────────────────────────────────────────
-                    Container(
-                      constraints: BoxConstraints(
-                        maxWidth: MediaQuery.of(context).size.width * 0.75),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        gradient: isMe
-                            ? const LinearGradient(
-                                colors: [Color(0xFF00D4FF), Color(0xFF0099CC)])
-                            : null,
-                        color: isMe ? null : const Color(0xFF1A1F3C),
-                        borderRadius: BorderRadius.only(
-                          topLeft:     const Radius.circular(12),
-                          topRight:    const Radius.circular(12),
-                          bottomLeft:  Radius.circular(isMe ? 12 : 2),
-                          bottomRight: Radius.circular(isMe ? 2 : 12),
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.2),
-                            blurRadius: 4, offset: const Offset(0, 2)),
-                        ],
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // Имя отправителя в групповых сообщениях
-                          if (!isMe && widget.senderName != null) ...[
-                            Text(
-                              widget.senderName!,
-                              style: const TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF00D9FF),
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                          ],
-                          // Forwarded label
-                          if (widget.msg['forwardedFrom'] != null) ...[
-                            Row(mainAxisSize: MainAxisSize.min, children: [
-                              Icon(Icons.forward, size: 13,
-                                  color: isMe ? Colors.white70
-                                      : Colors.cyanAccent.withValues(alpha: 0.8)),
-                              const SizedBox(width: 4),
-                              Flexible(child: Text(
-                                'Переслано от ${widget.msg['forwardedFrom']}',
-                                style: TextStyle(fontSize: 11,
-                                    fontStyle: FontStyle.italic,
-                                    color: isMe ? Colors.white70
-                                        : Colors.cyanAccent.withValues(alpha: 0.8)),
-                                maxLines: 1, overflow: TextOverflow.ellipsis,
-                              )),
-                            ]),
-                            const SizedBox(height: 4),
-                          ],
-
-                          // Reply preview
-                          if (widget.msg['replyTo'] != null) ...[
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              margin:  const EdgeInsets.only(bottom: 6),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.25),
-                                borderRadius: BorderRadius.circular(8),
-                                border: const Border(
-                                    left: BorderSide(
-                                        color: Colors.cyanAccent, width: 3)),
-                              ),
-                              child: Text(
-                                widget.msg['replyTo'] as String,
-                                style: TextStyle(
-                                    color: Colors.white.withValues(alpha: 0.65),
-                                    fontSize: 12,
-                                    fontStyle: FontStyle.italic),
-                                maxLines: 2, overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-
-                          // Содержимое
-                          _buildContent(msgType, isMe),
-                          const SizedBox(height: 4),
-
-                          // Нижняя строка: edited + время + статус + подпись
-                          Row(mainAxisSize: MainAxisSize.min, children: [
-                            if (widget.msg['edited'] == true)
-                              const Padding(
-                                padding: EdgeInsets.only(right: 4),
-                                child: Text('изм.',
-                                    style: TextStyle(color: Colors.white54,
-                                        fontSize: 10,
-                                        fontStyle: FontStyle.italic)),
-                              ),
-                            Text(formatMessageTime(widget.msg['time']),
-                                style: TextStyle(
-                                    color: Colors.white.withValues(alpha: 0.5),
-                                    fontSize: 11)),
-                            if (isMe) ...[
-                              const SizedBox(width: 4),
-                              _buildStatusIcon(
-                                  widget.msg['status'] as String?),
-                            ],
-                            if (!isMe) ...[
-                              const SizedBox(width: 4),
-                              _buildSignatureIcon(context),
-                            ],
-                          ]),
-                        ],
-                      ),
-                    ),
-
-                    // Реакции
-                    if (msgReactions.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Wrap(
-                          spacing: 4,
-                          children: msgReactions.map((emoji) =>
-                            GestureDetector(
-                              onTap: () =>
-                                  widget.onRemoveReaction(msgId, emoji),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF1A1F3C),
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                      color: Colors.cyan
-                                          .withValues(alpha: 0.4)),
-                                ),
-                                child: Text(emoji,
-                                    style:
-                                        const TextStyle(fontSize: 14)),
-                              ),
-                            )).toList(),
+                    // Имя отправителя в групповых сообщениях
+                    if (!isMe && senderName != null) ...[
+                      Text(
+                        senderName!,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF00D9FF),
                         ),
                       ),
+                      const SizedBox(height: 2),
+                    ],
+                    // Forwarded label
+                    if (msg['forwardedFrom'] != null) ...[
+                      Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.forward, size: 13,
+                            color: isMe ? Colors.white70
+                                : Colors.cyanAccent.withValues(alpha: 0.8)),
+                        const SizedBox(width: 4),
+                        Flexible(child: Text(
+                          'Переслано от ${msg['forwardedFrom']}',
+                          style: TextStyle(fontSize: 11,
+                              fontStyle: FontStyle.italic,
+                              color: isMe ? Colors.white70
+                                  : Colors.cyanAccent.withValues(alpha: 0.8)),
+                          maxLines: 1, overflow: TextOverflow.ellipsis,
+                        )),
+                      ]),
+                      const SizedBox(height: 4),
+                    ],
+
+                    // Reply preview
+                    if (msg['replyTo'] != null) ...[
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        margin:  const EdgeInsets.only(bottom: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.25),
+                          borderRadius: BorderRadius.circular(8),
+                          border: const Border(
+                              left: BorderSide(
+                                  color: Colors.cyanAccent, width: 3)),
+                        ),
+                        child: Text(
+                          msg['replyTo'] as String,
+                          style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.65),
+                              fontSize: 12,
+                              fontStyle: FontStyle.italic),
+                          maxLines: 2, overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+
+                    // Содержимое
+                    _buildContent(context, msgType, isMe),
+                    const SizedBox(height: 4),
+
+                    // Нижняя строка: edited + время + статус + подпись
+                    Row(mainAxisSize: MainAxisSize.min, children: [
+                      if (msg['edited'] == true)
+                        const Padding(
+                          padding: EdgeInsets.only(right: 4),
+                          child: Text('изм.',
+                              style: TextStyle(color: Colors.white54,
+                                  fontSize: 10,
+                                  fontStyle: FontStyle.italic)),
+                        ),
+                      Text(formatMessageTime(msg['time']),
+                          style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.5),
+                              fontSize: 11)),
+                      if (isMe) ...[
+                        const SizedBox(width: 4),
+                        _buildStatusIcon(msg['status'] as String?),
+                      ],
+                      if (!isMe) ...[
+                        const SizedBox(width: 4),
+                        _buildSignatureIcon(context),
+                      ],
+                    ]),
                   ],
                 ),
               ),
-            ),
+
+              // Реакции
+              if (msgReactions.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Wrap(
+                    spacing: 4,
+                    children: msgReactions.map((emoji) =>
+                      GestureDetector(
+                        onTap: () => onRemoveReaction(msgId, emoji),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1A1F3C),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                                color: Colors.cyan.withValues(alpha: 0.4)),
+                          ),
+                          child: Text(emoji,
+                              style: const TextStyle(fontSize: 14)),
+                        ),
+                      ),
+                    ).toList(),
+                  ),
+                ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 
   // ── Контент ───────────────────────────────────────────────────────────────
 
-  Widget _buildContent(MsgType msgType, bool isMe) {
+  Widget _buildContent(BuildContext context, MsgType msgType, bool isMe) {
     switch (msgType) {
       case MsgType.image:
         return _buildImage();
@@ -322,27 +214,28 @@ class _MessageBubbleState extends State<MessageBubble>
       case MsgType.file:
         return _buildFile(isMe);
       case MsgType.video_note:
-        return widget.msg['filePath'] != null
-            ? VideoNotePlayer(filePath: widget.msg['filePath'] as String)
+        return msg['filePath'] != null
+            ? VideoNotePlayer(filePath: msg['filePath'] as String)
             : _retryButton(Icons.videocam_rounded, 'Видеокружок');
       case MsgType.video_gallery:
-        return widget.msg['filePath'] != null
-            ? VideoGalleryPlayer(filePath: widget.msg['filePath'] as String)
+        return msg['filePath'] != null
+            ? VideoGalleryPlayer(filePath: msg['filePath'] as String)
             : _retryButton(Icons.video_file_rounded, 'Видео из галереи');
       default:
-        return _buildTextWithLinks(widget.msg['text'] as String? ?? '');
+        return _buildTextWithLinks(msg['text'] as String? ?? '');
     }
   }
 
   // ── Текст со ссылками ────────────────────────────────────────────────────
+  // Обычный Text вместо SelectableText — долгое нажатие не конфликтует
+  // с контекстным меню. Копирование — через меню действий.
 
   Widget _buildTextWithLinks(String text) {
-    // Ищем deepdrift:// и https?:// ссылки
     final linkRegex = RegExp(r'(deepdrift://[\S]+|https?://[\S]+)', caseSensitive: false);
     final matches = linkRegex.allMatches(text);
 
     if (matches.isEmpty) {
-      return SelectableText(text,
+      return Text(text,
           style: const TextStyle(color: Colors.white, fontSize: 15));
     }
 
@@ -350,7 +243,6 @@ class _MessageBubbleState extends State<MessageBubble>
     int lastEnd = 0;
 
     for (final m in matches) {
-      // Текст до ссылки
       if (m.start > lastEnd) {
         spans.add(TextSpan(
           text: text.substring(lastEnd, m.start),
@@ -369,10 +261,9 @@ class _MessageBubbleState extends State<MessageBubble>
             final uri = Uri.tryParse(url);
             if (uri == null) return;
             if (isDeepLink) {
-              // Обрабатываем внутри приложения
               if (uri.host == 'channel') {
                 final channelId = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
-                if (channelId != null) widget.onDeepLink?.call(url);
+                if (channelId != null) onDeepLink?.call(url);
               }
             } else {
               if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -393,7 +284,6 @@ class _MessageBubbleState extends State<MessageBubble>
       lastEnd = m.end;
     }
 
-    // Остаток текста
     if (lastEnd < text.length) {
       spans.add(TextSpan(
         text: text.substring(lastEnd),
@@ -407,10 +297,10 @@ class _MessageBubbleState extends State<MessageBubble>
   // ── Изображение ───────────────────────────────────────────────────────────
 
   Widget _buildImage() {
-    final localPath = widget.msg['filePath'] as String?;
+    final localPath = msg['filePath'] as String?;
     if (localPath != null && File(localPath).existsSync()) {
       return GestureDetector(
-        onTap: () => widget.onOpenImage(localPath),
+        onTap: () => onOpenImage(localPath),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: Image.file(File(localPath), width: 200, fit: BoxFit.cover,
@@ -418,10 +308,10 @@ class _MessageBubbleState extends State<MessageBubble>
         ),
       );
     }
-    if (widget.msg['mediaData'] != null) {
-      final mediaStr = widget.msg['mediaData'] as String;
+    if (msg['mediaData'] != null) {
+      final mediaStr = msg['mediaData'] as String;
       if (mediaStr.startsWith('FILE_ID:') &&
-          widget.msg['fileExpired'] == true) {
+          msg['fileExpired'] == true) {
         return _expiredPlaceholder();
       }
       return _retryButton(Icons.image_rounded, 'Изображение');
@@ -435,8 +325,8 @@ class _MessageBubbleState extends State<MessageBubble>
         borderRadius: BorderRadius.circular(8)),
     child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
       const Icon(Icons.broken_image, color: Colors.white38, size: 40),
-      if (widget.msg['fileName'] != null)
-        Text(widget.msg['fileName'] as String,
+      if (msg['fileName'] != null)
+        Text(msg['fileName'] as String,
             style: const TextStyle(color: Colors.white38, fontSize: 11)),
     ]),
   );
@@ -457,31 +347,29 @@ class _MessageBubbleState extends State<MessageBubble>
   // ── Голосовое ─────────────────────────────────────────────────────────────
 
   Widget _buildVoice(bool isMe) {
-    final localPath = widget.msg['filePath'] as String?;
+    final localPath = msg['filePath'] as String?;
     if ((localPath == null || !File(localPath).existsSync()) &&
-        widget.msg['mediaData'] != null) {
+        msg['mediaData'] != null) {
       return _retryButton(Icons.mic_rounded, 'Голосовое сообщение');
     }
-    final isPlaying   = widget.playingMessageId == widget.msg['id']?.toString();
+    final isPlaying   = playingMessageId == msg['id']?.toString();
     final accentColor = isMe ? Colors.white : const Color(0xFF00D9FF);
-    final durationSec = widget.msg['duration'] as int?;
+    final durationSec = msg['duration'] as int?;
     final durationStr = durationSec != null
         ? '${(durationSec ~/ 60).toString().padLeft(1, '0')}:${(durationSec % 60).toString().padLeft(2, '0')}'
         : null;
 
-    // Генерируем псевдо-волну из id сообщения (детерминировано, выглядит живо)
-    final seed = (widget.msg['id']?.toString() ?? '0').hashCode;
+    final seed = (msg['id']?.toString() ?? '0').hashCode;
     final bars = List.generate(28, (i) {
       final h = 0.25 + 0.75 * ((seed * (i + 1) * 2654435761) & 0xFF) / 255.0;
       return h;
     });
 
     return GestureDetector(
-      onTap: () => widget.onPlayVoice(widget.msg),
+      onTap: () => onPlayVoice(msg),
       child: SizedBox(
         width: 220,
         child: Row(children: [
-          // Кнопка play/pause
           Container(
             width: 40, height: 40,
             decoration: BoxDecoration(
@@ -495,12 +383,10 @@ class _MessageBubbleState extends State<MessageBubble>
             ),
           ),
           const SizedBox(width: 8),
-          // Волна + время
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Псевдо-волна
                 SizedBox(
                   height: 28,
                   child: Row(
@@ -537,9 +423,9 @@ class _MessageBubbleState extends State<MessageBubble>
                         durationStr,
                         style: const TextStyle(color: Colors.white54, fontSize: 10),
                       )
-                    else if (widget.msg['fileSize'] != null)
+                    else if (msg['fileSize'] != null)
                       Text(
-                        formatFileSize(widget.msg['fileSize']),
+                        formatFileSize(msg['fileSize']),
                         style: const TextStyle(color: Colors.white54, fontSize: 10),
                       ),
                   ],
@@ -555,14 +441,14 @@ class _MessageBubbleState extends State<MessageBubble>
   // ── Файл ──────────────────────────────────────────────────────────────────
 
   Widget _buildFile(bool isMe) {
-    final fileName      = widget.msg['fileName'] as String? ?? 'file';
-    final mimeType      = widget.msg['mimeType'] as String?;
-    final fileSize      = widget.msg['fileSize'];
-    final filePath      = widget.msg['filePath'] as String?;
+    final fileName      = msg['fileName'] as String? ?? 'file';
+    final mimeType      = msg['mimeType'] as String?;
+    final fileSize      = msg['fileSize'];
+    final filePath      = msg['filePath'] as String?;
     final fileAvailable = filePath != null && File(filePath).existsSync();
 
     return GestureDetector(
-      onTap: () => widget.onOpenFile(filePath, fileName),
+      onTap: () => onOpenFile(filePath, fileName),
       child: Container(
         constraints: const BoxConstraints(minWidth: 180),
         padding: const EdgeInsets.all(10),
@@ -614,7 +500,7 @@ class _MessageBubbleState extends State<MessageBubble>
 
   Widget _retryButton(IconData icon, String label) {
     return GestureDetector(
-      onTap: () => widget.onRetryDownload(widget.msg),
+      onTap: () => onRetryDownload(msg),
       child: Container(
         width: 180,
         padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
@@ -657,7 +543,7 @@ class _MessageBubbleState extends State<MessageBubble>
   // ── Ed25519 иконка верификации ────────────────────────────────────────────
 
   Widget _buildSignatureIcon(BuildContext context) {
-    final statusIndex = widget.msg['signatureStatus'] as int?;
+    final statusIndex = msg['signatureStatus'] as int?;
     final status = statusIndex != null
         ? SignatureStatus.values[statusIndex]
         : SignatureStatus.unknown;
