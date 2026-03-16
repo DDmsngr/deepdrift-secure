@@ -1753,6 +1753,29 @@ class _HomeScreenState extends State<HomeScreen>
           ListTile(leading: const Icon(Icons.person_remove_outlined, color: Colors.red),
               title: Text('Удалить "$name"', style: const TextStyle(color: Colors.red)),
               onTap: () { Navigator.pop(context); _confirmDeleteContact(uid, name); }),
+          // ── Блокировка ──────────────────────────────────────────────────
+          if (!_storage.isGroup(uid) && !_storage.isChannel(uid))
+            Builder(builder: (_) {
+              final blocked = _storage.isBlocked(uid);
+              return ListTile(
+                leading: Icon(blocked ? Icons.lock_open : Icons.block, color: blocked ? Colors.green : Colors.red),
+                title: Text(blocked ? 'Разблокировать' : 'Заблокировать',
+                    style: TextStyle(color: blocked ? Colors.green : Colors.red)),
+                onTap: () async {
+                  Navigator.pop(context);
+                  if (blocked) {
+                    await _storage.unblockUser(uid);
+                    _socket.unblockUser(uid);
+                    _showSuccess('$name разблокирован');
+                  } else {
+                    await _storage.blockUser(uid);
+                    _socket.blockUser(uid);
+                    _showSuccess('$name заблокирован');
+                  }
+                  setState(() {});
+                },
+              );
+            }),
           const SizedBox(height: 8),
         ]),
       ),
