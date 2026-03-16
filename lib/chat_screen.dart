@@ -718,6 +718,17 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       }
 
+      // Резолвим replyToId в текст ответа из локальных сообщений
+      String? replyText = data['replyTo'] as String?;
+      final replyId = data['replyToId'] as String?;
+      if (replyText == null && replyId != null) {
+        final original = _messages.cast<Map<String, dynamic>?>().firstWhere(
+          (m) => m?['id']?.toString() == replyId,
+          orElse: () => null,
+        );
+        replyText = original?['text'] as String? ?? '[сообщение]';
+      }
+
       final msg = {
         'id':              msgId,
         'text':            decrypted,
@@ -726,8 +737,8 @@ class _ChatScreenState extends State<ChatScreen> {
         'from':            senderUid,
         'to':              widget.myUid,
         'status':          'delivered',
-        'replyTo':         data['replyTo'],
-        'replyToId':       data['replyToId'],
+        'replyTo':         replyText,
+        'replyToId':       replyId,
         'type':            data['messageType'] ?? 'text',
         'filePath':        localPath,
         'mediaData':       data['mediaData'],
