@@ -46,7 +46,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _autoSavePhotos     = widget.storage.getSetting('auto_save_photos',    defaultValue: false);
+    _autoSavePhotos     = widget.storage.getSetting('auto_save_photos',    defaultValue: true);
     _notificationsSound = widget.storage.getSetting('notifications_sound', defaultValue: true);
     _appLockEnabled     = widget.storage.getSetting('app_lock_enabled',    defaultValue: false);
     _isDarkMode         = (widget.storage.getSetting('app_theme_mode') as String? ?? 'dark') != 'light';
