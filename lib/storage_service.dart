@@ -714,4 +714,71 @@ class StorageService {
     if (raw is int)  return DateTime.fromMillisecondsSinceEpoch(raw);
     return DateTime.tryParse(raw.toString()) ?? DateTime(2000);
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Блокировка пользователей
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  Future<void> blockUser(String uid) async {
+    final box = Hive.box(_metadataBox);
+    final blocked = _getBlockedSet(box);
+    blocked.add(uid);
+    await box.put('blocked_users', blocked.toList());
+  }
+
+  Future<void> unblockUser(String uid) async {
+    final box = Hive.box(_metadataBox);
+    final blocked = _getBlockedSet(box);
+    blocked.remove(uid);
+    await box.put('blocked_users', blocked.toList());
+  }
+
+  bool isBlocked(String uid) => _getBlockedSet(Hive.box(_metadataBox)).contains(uid);
+
+  List<String> getBlockedUsers() => _getBlockedSet(Hive.box(_metadataBox)).toList();
+
+  Set<String> _getBlockedSet(Box box) {
+    final raw = box.get('blocked_users');
+    if (raw == null || raw is! List) return {};
+    return raw.map((e) => e.toString()).toSet();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Непрочитанные сообщения
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  Future<void> incrementUnreadCount(String chatWith) async {
+    final box = Hive.box(_metadataBox);
+    final current = box.get('unread_$chatWith', defaultValue: 0) as int;
+    await box.put('unread_$chatWith', current + 1);
+  }
+
+  Future<void> resetUnreadCount(String chatWith) async =>
+      Hive.box(_metadataBox).put('unread_$chatWith', 0);
+
+  int getUnreadCount(String chatWith) =>
+      Hive.box(_metadataBox).get('unread_$chatWith', defaultValue: 0) as int;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Disappearing messages (TTL per chat)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  Future<void> setMessageTtl(String chatWith, int seconds) async =>
+      Hive.box(_metadataBox).put('msg_ttl_$chatWith', seconds);
+
+  int getMessageTtl(String chatWith) =>
+      Hive.box(_metadataBox).get('msg_ttl_$chatWith', defaultValue: 0) as int;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Медиагалерея — все медиафайлы из истории чата
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  List<Map<String, dynamic>> getMediaMessages(String chatWith) {
+    final box = Hive.box(_msgBox);
+    final history = _readHistory(box, chatWith);
+    return history.where((m) {
+      final type = m['type'] as String? ?? 'text';
+      return type == 'image' || type == 'video_gallery' || type == 'video_note';
+    }).toList();
+  }
 }
