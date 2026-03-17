@@ -765,6 +765,12 @@ class SocketService {
     'story_id': storyId,
   });
 
+  void reactStory(String storyId, String emoji) => send({
+    'type':     'react_story',
+    'story_id': storyId,
+    'emoji':    emoji,
+  });
+
   // ──────────────────────────────────────────────────────────────────────────
   // Dispose (вызывать при завершении работы приложения)
   // ──────────────────────────────────────────────────────────────────────────
