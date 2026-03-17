@@ -14,11 +14,14 @@ class MessageBubble extends StatelessWidget {
   final Map<String, dynamic>         msg;
   final String                       myUid;
   final String?                      playingMessageId;
+  final Duration                     voicePosition;
+  final Duration                     voiceDuration;
   final Map<String, Set<String>>     reactions;
 
   final void Function(Map<String, dynamic>)          onLongPress;
   final void Function(Map<String, dynamic>)          onRetryDownload;
   final void Function(Map<String, dynamic>)          onPlayVoice;
+  final void Function(Duration position)?            onSeekVoice;
   final void Function(String filePath)               onOpenImage;
   final void Function(String? filePath, String name) onOpenFile;
   final void Function(String msgId, String emoji)    onRemoveReaction;
@@ -30,10 +33,13 @@ class MessageBubble extends StatelessWidget {
     required this.msg,
     required this.myUid,
     required this.playingMessageId,
+    this.voicePosition = Duration.zero,
+    this.voiceDuration = Duration.zero,
     required this.reactions,
     required this.onLongPress,
     required this.onRetryDownload,
     required this.onPlayVoice,
+    this.onSeekVoice,
     required this.onOpenImage,
     required this.onOpenFile,
     required this.onRemoveReaction,
@@ -451,11 +457,23 @@ class MessageBubble extends StatelessWidget {
     final isPlaying   = playingMessageId == msg['id']?.toString();
     final accentColor = isMe ? Colors.white : const Color(0xFF00D9FF);
     final durationSec = msg['duration'] as int?;
-    final durationStr = durationSec != null
-        ? '${(durationSec ~/ 60).toString().padLeft(1, '0')}:${(durationSec % 60).toString().padLeft(2, '0')}'
-        : null;
 
-    // Реальная волна из записи, или псевдорандом для старых сообщений
+    // Прогресс воспроизведения (0..1)
+    final progress = isPlaying && voiceDuration.inMilliseconds > 0
+        ? (voicePosition.inMilliseconds / voiceDuration.inMilliseconds).clamp(0.0, 1.0)
+        : 0.0;
+
+    // Время: текущая позиция / общая длительность
+    String timeStr;
+    if (isPlaying && voiceDuration.inMilliseconds > 0) {
+      timeStr = '${_fmtDur(voicePosition)} / ${_fmtDur(voiceDuration)}';
+    } else if (durationSec != null) {
+      timeStr = '${(durationSec ~/ 60).toString().padLeft(1, '0')}:${(durationSec % 60).toString().padLeft(2, '0')}';
+    } else {
+      timeStr = msg['fileSize'] != null ? formatFileSize(msg['fileSize']) : '';
+    }
+
+    // Волна
     final waveformStr = msg['waveform'] as String?;
     List<double> bars;
     if (waveformStr != null && waveformStr.isNotEmpty) {
@@ -464,17 +482,15 @@ class MessageBubble extends StatelessWidget {
       if (bars.length > 28) bars = bars.sublist(0, 28);
     } else {
       final seed = (msg['id']?.toString() ?? '0').hashCode;
-      bars = List.generate(28, (i) {
-        final h = 0.25 + 0.75 * ((seed * (i + 1) * 2654435761) & 0xFF) / 255.0;
-        return h;
-      });
+      bars = List.generate(28, (i) => 0.25 + 0.75 * ((seed * (i + 1) * 2654435761) & 0xFF) / 255.0);
     }
 
     return GestureDetector(
       onTap: () => onPlayVoice(msg),
       child: SizedBox(
-        width: 220,
+        width: 230,
         child: Row(children: [
+          // Кнопка play/pause
           Container(
             width: 40, height: 40,
             decoration: BoxDecoration(
@@ -492,47 +508,63 @@ class MessageBubble extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Волна с прогрессом (закрашенные столбики до позиции)
                 SizedBox(
                   height: 28,
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
-                    children: bars.map((h) {
+                    children: List.generate(bars.length, (i) {
+                      final barProgress = i / bars.length;
+                      final isPast = isPlaying && barProgress <= progress;
                       return Expanded(
                         child: Container(
                           margin: const EdgeInsets.symmetric(horizontal: 0.8),
-                          height: 28 * h,
+                          height: 28 * bars[i],
                           decoration: BoxDecoration(
-                            color: isPlaying
+                            color: isPast
                                 ? accentColor
-                                : accentColor.withValues(alpha: 0.55),
+                                : accentColor.withValues(alpha: 0.3),
                             borderRadius: BorderRadius.circular(2),
                           ),
                         ),
                       );
-                    }).toList(),
+                    }),
                   ),
                 ),
-                const SizedBox(height: 3),
+                // Ползунок (только при воспроизведении)
+                if (isPlaying && voiceDuration.inMilliseconds > 0)
+                  SizedBox(
+                    height: 18,
+                    child: SliderTheme(
+                      data: SliderThemeData(
+                        trackHeight: 2,
+                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
+                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
+                        activeTrackColor: accentColor,
+                        inactiveTrackColor: accentColor.withValues(alpha: 0.2),
+                        thumbColor: accentColor,
+                      ),
+                      child: Slider(
+                        value: progress,
+                        onChanged: (v) {
+                          final pos = Duration(milliseconds: (v * voiceDuration.inMilliseconds).round());
+                          onSeekVoice?.call(pos);
+                        },
+                      ),
+                    ),
+                  )
+                else
+                  const SizedBox(height: 4),
+                // Время
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      isPlaying ? 'Воспроизведение...' : 'Голосовое',
-                      style: TextStyle(
-                        color: accentColor.withValues(alpha: 0.8),
-                        fontSize: 10,
-                      ),
+                      isPlaying ? 'Воспроизведение' : 'Голосовое',
+                      style: TextStyle(color: accentColor.withValues(alpha: 0.8), fontSize: 10),
                     ),
-                    if (durationStr != null)
-                      Text(
-                        durationStr,
-                        style: const TextStyle(color: Colors.white54, fontSize: 10),
-                      )
-                    else if (msg['fileSize'] != null)
-                      Text(
-                        formatFileSize(msg['fileSize']),
-                        style: const TextStyle(color: Colors.white54, fontSize: 10),
-                      ),
+                    if (timeStr.isNotEmpty)
+                      Text(timeStr, style: const TextStyle(color: Colors.white54, fontSize: 10)),
                   ],
                 ),
               ],
@@ -541,6 +573,12 @@ class MessageBubble extends StatelessWidget {
         ]),
       ),
     );
+  }
+
+  String _fmtDur(Duration d) {
+    final m = d.inMinutes.toString().padLeft(1, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$m:$s';
   }
 
   // ── Файл ──────────────────────────────────────────────────────────────────
