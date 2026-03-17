@@ -769,9 +769,6 @@ class StorageService {
   Future<void> resetUnreadCount(String chatWith) async =>
       Hive.box(_metadataBox).put('unread_$chatWith', 0);
 
-  int getUnreadCount(String chatWith) =>
-      Hive.box(_metadataBox).get('unread_$chatWith', defaultValue: 0) as int;
-
   // ═══════════════════════════════════════════════════════════════════════════
   // Disappearing messages (TTL per chat)
   // ═══════════════════════════════════════════════════════════════════════════
