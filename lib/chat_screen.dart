@@ -10,7 +10,6 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
-import 'package:http/http.dart' as http;
 import 'package:dio/dio.dart';
 import 'package:gal/gal.dart';
 import 'package:camera/camera.dart';
@@ -117,6 +116,17 @@ class _ChatScreenState extends State<ChatScreen> {
   bool   _isSendingFile  = false;
   double _uploadProgress = 0.0;
 
+  // ── Download progress ─────────────────────────────────────────────────────
+  double _downloadProgress = 0.0;
+  String? _downloadingMsgId;
+
+  // ── Voice amplitude recording ─────────────────────────────────────────────
+  final List<double> _amplitudes = [];
+  Timer? _amplitudeTimer;
+
+  // ── Scheduled messages ────────────────────────────────────────────────────
+  final List<Timer> _scheduledTimers = [];
+
   // ── Disappearing messages ─────────────────────────────────────────────────
   Timer? _disappearTimer;
 
@@ -188,6 +198,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _keyExchangeTimeout?.cancel();
     _recordingTimer?.cancel();
     _disappearTimer?.cancel();
+    _amplitudeTimer?.cancel();
+    for (final t in _scheduledTimers) { t.cancel(); }
+    _scheduledTimers.clear();
     _messageController.removeListener(_onTextChanged);
     _scrollController.removeListener(_onScroll);
     _messageController.dispose();
@@ -386,49 +399,42 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
-  Future<String?> _downloadFileEncrypted(String fileId, String? fileName) async {
+  Future<String?> _downloadFileEncrypted(String fileId, String? fileName, {String? msgId}) async {
     if (_failedDownloads.contains(fileId)) return null;
-    
-    // Хелпер для одной попытки скачивания
-    Future<http.Response> _doGet() async {
-      // Всегда берём самый свежий токен из синглтона
-      final token = StorageService.uploadToken ?? _uploadToken;
-      return http.get(
-        Uri.parse('$SERVER_HTTP_URL/download/$fileId'),
-        headers: {if (token != null) 'X-Upload-Token': token},
-      );
-    }
 
     try {
-      final appDir  = await getApplicationDocumentsDirectory();
-      var response = await _doGet();
+      final appDir = await getApplicationDocumentsDirectory();
+      final token  = StorageService.uploadToken ?? _uploadToken;
 
-      // При 401 — ждём до 3 секунд пока сокет переподключится и выдаст новый токен
-      if (response.statusCode == 401) {
-        for (int i = 0; i < 3; i++) {
-          await Future.delayed(const Duration(seconds: 1));
-          final newToken = StorageService.uploadToken;
-          if (newToken != null && newToken != _uploadToken) {
-            _uploadToken = newToken;
-          }
-          response = await _doGet();
-          if (response.statusCode != 401) break;
-        }
+      if (msgId != null && mounted) {
+        setState(() { _downloadingMsgId = msgId; _downloadProgress = 0.0; });
       }
 
+      final response = await _dio.get<List<int>>(
+        '$SERVER_HTTP_URL/download/$fileId',
+        options: Options(
+          responseType: ResponseType.bytes,
+          headers: {if (token != null) 'X-Upload-Token': token},
+        ),
+        onReceiveProgress: (received, total) {
+          if (total > 0 && mounted) {
+            setState(() => _downloadProgress = received / total);
+          }
+        },
+      );
+
+      if (mounted) setState(() { _downloadingMsgId = null; _downloadProgress = 0.0; });
+
       if (response.statusCode == 404) {
-        // Файл удалён с сервера (истёк срок, или был на ephemeral диске).
-        // Помечаем как недоступный в памяти И в Hive — больше не ретраим
-        // даже после перезапуска приложения.
         _failedDownloads.add(fileId);
         final key = 'failed_downloads_${widget.targetUid}';
         await _storage.saveSetting(key, _failedDownloads.toList());
-        debugPrint('📭 File permanently unavailable (saved to Hive): $fileId');
         return null;
       }
-      if (response.statusCode != 200) return null;
+      if (response.statusCode != 200 || response.data == null) return null;
+
       final decryptedBytes = await widget.cipher.decryptFileBytes(
-        response.bodyBytes,
+        response.data!,
         fromUid: widget.targetUid,
       );
       final name = fileName ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
@@ -438,6 +444,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return file.path;
     } catch (e) {
       debugPrint('Encrypted Download error: $e');
+      if (mounted) setState(() { _downloadingMsgId = null; _downloadProgress = 0.0; });
     }
     return null;
   }
@@ -1319,10 +1326,20 @@ class _ChatScreenState extends State<ChatScreen> {
       final tempDir = await getTemporaryDirectory();
       final path = '${tempDir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
       await _audioRecorder.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
-      setState(() { _isRecording = true; _voiceTempPath = path; _recordingDuration = 0; });
+      setState(() { _isRecording = true; _voiceTempPath = path; _recordingDuration = 0; _amplitudes.clear(); });
       _recordingTimer?.cancel();
       _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() => _recordingDuration++);
+      });
+      // Сэмплируем амплитуду 10 раз в секунду для волны
+      _amplitudeTimer?.cancel();
+      _amplitudeTimer = Timer.periodic(const Duration(milliseconds: 100), (_) async {
+        try {
+          final amp = await _audioRecorder.getAmplitude();
+          // amp.current: -∞..0 dBFS, нормализуем в 0..1
+          final normalized = ((amp.current + 50) / 50).clamp(0.0, 1.0);
+          if (mounted) setState(() => _amplitudes.add(normalized));
+        } catch (_) {}
       });
     } else {
       _showError('Нет доступа к микрофону');
@@ -1333,8 +1350,9 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       await _audioRecorder.stop();
       _recordingTimer?.cancel();
+      _amplitudeTimer?.cancel();
       _cleanTempVoiceFile();
-      if (mounted) setState(() { _isRecording = false; _recordingDuration = 0; });
+      if (mounted) setState(() { _isRecording = false; _recordingDuration = 0; _amplitudes.clear(); });
     } catch (e) {
       debugPrint('Error cancelling recording: $e');
     }
@@ -1344,12 +1362,18 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final path = await _audioRecorder.stop();
       _recordingTimer?.cancel();
+      _amplitudeTimer?.cancel();
+
+      // Даунсэмплим амплитуды в 28 столбиков для отображения волны
+      final waveform = _downsampleAmplitudes(_amplitudes, 28);
+      final waveformStr = waveform.map((v) => v.toStringAsFixed(2)).join(',');
+
       if (mounted) setState(() => _isRecording = false);
 
       if (path != null) {
         _voiceTempPath = path;
         final file = File(path);
-        if (_recordingDuration < 1) { _cleanTempVoiceFile(); return; }
+        if (_recordingDuration < 1) { _cleanTempVoiceFile(); _amplitudes.clear(); return; }
 
         if (mounted) setState(() { _isSendingFile = true; _uploadProgress = 0.0; });
         final fileId = await _uploadFileEncrypted(file);
@@ -1357,6 +1381,7 @@ class _ChatScreenState extends State<ChatScreen> {
           _showError('Ошибка загрузки голосового');
           _cleanTempVoiceFile();
           if (mounted) setState(() => _isSendingFile = false);
+          _amplitudes.clear();
           return;
         }
 
@@ -1368,12 +1393,20 @@ class _ChatScreenState extends State<ChatScreen> {
           mediaData: 'FILE_ID:$fileId', filePath: localPath,
           fileName: fileName, fileSize: fileSize, mimeType: 'audio/m4a',
         );
+        // Сохраняем волну в сообщение
+        final idx = _messages.lastIndexWhere((m) => m['fileName'] == fileName);
+        if (idx != -1) {
+          _messages[idx]['waveform'] = waveformStr;
+          _storage.updateMessageField(widget.targetUid, _messages[idx]['id'].toString(), 'waveform', waveformStr);
+        }
         _cleanTempVoiceFile();
+        _amplitudes.clear();
         if (mounted) setState(() => _isSendingFile = false);
       }
     } catch (e) {
       _showError('Ошибка отправки голосового: $e');
       _cancelRecording();
+      _amplitudes.clear();
       if (mounted) setState(() => _isSendingFile = false);
     }
   }
@@ -1754,10 +1787,9 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final fileId   = mediaData.substring(8);
       final fileName = msg['fileName'] as String?;
-      final newPath  = await _downloadFileEncrypted(fileId, fileName);
+      final newPath  = await _downloadFileEncrypted(fileId, fileName, msgId: msg['id']?.toString());
 
       if (newPath != null) {
-        // Обновляем в памяти
         final idx = _messages.indexWhere((m) => m['id'] == msg['id']);
         if (idx != -1 && mounted) {
           setState(() => _messages[idx]['filePath'] = newPath);
@@ -2876,6 +2908,117 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  // ── Даунсэмплирование амплитуд ─────────────────────────────────────────
+  List<double> _downsampleAmplitudes(List<double> input, int targetCount) {
+    if (input.isEmpty) return List.filled(targetCount, 0.3);
+    if (input.length <= targetCount) {
+      return [...input, ...List.filled(targetCount - input.length, 0.2)];
+    }
+    final step = input.length / targetCount;
+    return List.generate(targetCount, (i) {
+      final start = (i * step).floor();
+      final end   = ((i + 1) * step).floor().clamp(start + 1, input.length);
+      final chunk = input.sublist(start, end);
+      return chunk.reduce((a, b) => a > b ? a : b); // peak в окне
+    });
+  }
+
+  // ── Планирование сообщений ────────────────────────────────────────────────
+
+  void _showScheduleDialog() {
+    final text = _messageController.text.trim();
+    if (text.isEmpty) return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1F3C),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 10, bottom: 8),
+              width: 36, height: 4,
+              decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
+            ),
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text('Отправить позже', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+            ),
+            ...[
+              _scheduleOption(ctx, 'Через 5 минут',  const Duration(minutes: 5)),
+              _scheduleOption(ctx, 'Через 15 минут', const Duration(minutes: 15)),
+              _scheduleOption(ctx, 'Через 1 час',    const Duration(hours: 1)),
+              _scheduleOption(ctx, 'Через 3 часа',   const Duration(hours: 3)),
+            ],
+            ListTile(
+              leading: const Icon(Icons.access_time, color: Colors.cyan),
+              title: const Text('Выбрать время...', style: TextStyle(color: Colors.cyan)),
+              onTap: () async {
+                Navigator.pop(ctx);
+                final time = await showTimePicker(
+                  context: context,
+                  initialTime: TimeOfDay.fromDateTime(
+                    DateTime.now().add(const Duration(minutes: 30)),
+                  ),
+                );
+                if (time != null) {
+                  final now = DateTime.now();
+                  var scheduled = DateTime(now.year, now.month, now.day, time.hour, time.minute);
+                  if (scheduled.isBefore(now)) scheduled = scheduled.add(const Duration(days: 1));
+                  _scheduleMessage(text, scheduled.difference(now));
+                }
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  ListTile _scheduleOption(BuildContext ctx, String label, Duration delay) {
+    return ListTile(
+      leading: const Icon(Icons.schedule, color: Colors.white70),
+      title: Text(label, style: const TextStyle(color: Colors.white)),
+      onTap: () {
+        Navigator.pop(ctx);
+        _scheduleMessage(_messageController.text.trim(), delay);
+      },
+    );
+  }
+
+  void _scheduleMessage(String text, Duration delay) {
+    _messageController.clear();
+    final sendAt = DateTime.now().add(delay);
+    final timeStr = '${sendAt.hour.toString().padLeft(2, '0')}:${sendAt.minute.toString().padLeft(2, '0')}';
+
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('📅 Сообщение запланировано на $timeStr'),
+      backgroundColor: const Color(0xFF1A4A2E),
+      action: SnackBarAction(
+        label: 'ОТМЕНА',
+        textColor: Colors.cyan,
+        onPressed: () {
+          if (_scheduledTimers.isNotEmpty) {
+            _scheduledTimers.last.cancel();
+            _scheduledTimers.removeLast();
+          }
+        },
+      ),
+    ));
+
+    final timer = Timer(delay, () {
+      if (mounted) {
+        _sendMessage(text: text);
+      }
+    });
+    _scheduledTimers.add(timer);
+  }
+
   // ── Вызов ─────────────────────────────────────────────────────────────────
   void _startCall(String callType) {
     Navigator.push(
@@ -3203,7 +3346,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
 
-            if (_isSendingFile)
+            if (_isSendingFile || _downloadingMsgId != null)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8.0),
                 child: Stack(
@@ -3212,13 +3355,15 @@ class _ChatScreenState extends State<ChatScreen> {
                     SizedBox(
                       width: 24, height: 24,
                       child: CircularProgressIndicator(
-                        value: _uploadProgress,
+                        value: _downloadingMsgId != null ? _downloadProgress : _uploadProgress,
                         strokeWidth: 3,
-                        color: Colors.cyan,
+                        color: _downloadingMsgId != null ? Colors.green : Colors.cyan,
                       ),
                     ),
                     Text(
-                      '${(_uploadProgress * 100).toInt()}%',
+                      _downloadingMsgId != null
+                          ? '${(_downloadProgress * 100).toInt()}%'
+                          : '${(_uploadProgress * 100).toInt()}%',
                       style: const TextStyle(fontSize: 8, color: Colors.white),
                     ),
                   ],
@@ -3243,9 +3388,12 @@ class _ChatScreenState extends State<ChatScreen> {
               valueListenable: _messageController,
               builder: (context, value, child) {
                 if (value.text.trim().isNotEmpty) {
-                  return IconButton(
-                    icon: const Icon(Icons.send, color: Colors.cyan),
-                    onPressed: _sendMessage,
+                  return GestureDetector(
+                    onLongPress: _showScheduleDialog,
+                    child: IconButton(
+                      icon: const Icon(Icons.send, color: Colors.cyan),
+                      onPressed: _sendMessage,
+                    ),
                   );
                 } else {
                   return GestureDetector(
