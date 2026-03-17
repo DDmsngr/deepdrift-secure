@@ -94,7 +94,7 @@ class _CreateStoryScreenState extends State<CreateStoryScreen> {
       }
 
       final bg = _bgColors[_bgColorIndex];
-      final bgHex = '#${bg.red.toRadixString(16).padLeft(2, '0')}${bg.green.toRadixString(16).padLeft(2, '0')}${bg.blue.toRadixString(16).padLeft(2, '0')}';
+      final bgHex = '#${bg.r.toInt().toRadixString(16).padLeft(2, '0')}${bg.g.toInt().toRadixString(16).padLeft(2, '0')}${bg.b.toInt().toRadixString(16).padLeft(2, '0')}';
       _socket.postStory(
         storyType: _selectedImage != null ? 'image' : 'text',
         text:      text,
