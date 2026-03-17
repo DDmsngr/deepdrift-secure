@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 300" fill="none">
+  <defs>
+    <linearGradient id="cg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#00D9FF"/><stop offset="100%" stop-color="#0088CC"/></linearGradient>
+    <linearGradient id="cg2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF6B6B"/><stop offset="100%" stop-color="#CC3333"/></linearGradient>
+    <linearGradient id="cg3" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#4ECDC4"/><stop offset="100%" stop-color="#2BA89E"/></linearGradient>
+    <linearGradient id="cg4" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#F59E0B"/><stop offset="100%" stop-color="#D97706"/></linearGradient>
+    <filter id="cs"><feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.2"/></filter>
+  </defs>
+  <rect width="800" height="300" rx="16" fill="#0A0E27"/>
+  <text x="400" y="38" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="bold" fill="#00D9FF">📞 Звонки</text>
+  <!-- You -->
+  <rect x="40" y="60" width="180" height="220" rx="14" fill="#1A1F3C" stroke="#00D9FF" stroke-width="1.5" filter="url(#cs)"/>
+  <text x="130" y="90" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="white">📱 Вы</text>
+  <text x="60" y="120" font-family="Arial,sans-serif" font-size="13" fill="#4ECDC4">🎙️ Голос</text>
+  <text x="60" y="145" font-family="Arial,sans-serif" font-size="13" fill="#4ECDC4">📹 Видео</text>
+  <text x="60" y="170" font-family="Arial,sans-serif" font-size="13" fill="#888">🔇 Mute</text>
+  <text x="60" y="195" font-family="Arial,sans-serif" font-size="13" fill="#888">📸 Камера</text>
+  <text x="60" y="220" font-family="Arial,sans-serif" font-size="13" fill="#888">🔊 Динамик</text>
+  <text x="60" y="248" font-family="Arial,sans-serif" font-size="10" fill="#555">DTLS-SRTP шифрование</text>
+  <!-- Connection lines -->
+  <line x1="220" y1="120" x2="580" y2="120" stroke="#00D9FF" stroke-width="3"/>
+  <line x1="220" y1="140" x2="580" y2="140" stroke="#00D9FF" stroke-width="3" opacity="0.5"/>
+  <polygon points="575,115 585,120 575,125" fill="#00D9FF"/>
+  <polygon points="225,135 215,140 225,145" fill="#00D9FF"/>
+  <rect x="310" y="102" width="180" height="28" rx="14" fill="url(#cg1)"/>
+  <text x="400" y="121" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="white">WebRTC P2P</text>
+  <!-- TURN -->
+  <rect x="320" y="170" width="160" height="70" rx="12" fill="#2D1B69" stroke="#8B5CF6" stroke-width="1.5" filter="url(#cs)"/>
+  <text x="400" y="198" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#C4B5FD">TURN Relay</text>
+  <text x="400" y="218" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#8B5CF6">Metered.ca</text>
+  <text x="400" y="232" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" fill="#6B5CA0">мобильный NAT</text>
+  <line x1="220" y1="200" x2="320" y2="200" stroke="#8B5CF6" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <line x1="480" y1="200" x2="580" y2="200" stroke="#8B5CF6" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <polygon points="315,195 325,200 315,205" fill="#8B5CF6"/>
+  <polygon points="575,195 585,200 575,205" fill="#8B5CF6"/>
+  <!-- Them -->
+  <rect x="580" y="60" width="180" height="220" rx="14" fill="#1A1F3C" stroke="#00D9FF" stroke-width="1.5" filter="url(#cs)"/>
+  <text x="670" y="90" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="white">📱 Собеседник</text>
+  <text x="600" y="120" font-family="Arial,sans-serif" font-size="13" fill="#4ECDC4">🎙️ Голос</text>
+  <text x="600" y="145" font-family="Arial,sans-serif" font-size="13" fill="#4ECDC4">📹 Видео</text>
+  <text x="600" y="170" font-family="Arial,sans-serif" font-size="13" fill="#888">🔇 Mute</text>
+  <text x="600" y="195" font-family="Arial,sans-serif" font-size="13" fill="#888">📸 Камера</text>
+  <text x="600" y="220" font-family="Arial,sans-serif" font-size="13" fill="#888">🔊 Динамик</text>
+  <text x="600" y="248" font-family="Arial,sans-serif" font-size="10" fill="#555">DTLS-SRTP шифрование</text>
+  <!-- Bottom badges -->
+  <rect x="60" y="260" width="100" height="22" rx="11" fill="#4ECDC4" opacity="0.2"/>
+  <text x="110" y="276" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" fill="#4ECDC4">🔔 Рингтон</text>
+  <rect x="180" y="260" width="130" height="22" rx="11" fill="#F59E0B" opacity="0.2"/>
+  <text x="245" y="276" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" fill="#F59E0B">📲 Push при убитом</text>
+  <rect x="330" y="260" width="140" height="22" rx="11" fill="#8B5CF6" opacity="0.2"/>
+  <text x="400" y="276" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" fill="#8B5CF6">🔒 Шифрование E2E</text>
+</svg>

@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 580" fill="none">
+  <defs>
+    <linearGradient id="ag1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#00D9FF"/><stop offset="100%" stop-color="#0088CC"/></linearGradient>
+    <linearGradient id="ag2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#4ECDC4"/><stop offset="100%" stop-color="#2BA89E"/></linearGradient>
+    <linearGradient id="ag3" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#8B5CF6"/><stop offset="100%" stop-color="#6D28D9"/></linearGradient>
+    <linearGradient id="ag4" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#F59E0B"/><stop offset="100%" stop-color="#D97706"/></linearGradient>
+    <linearGradient id="ag5" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF6B6B"/><stop offset="100%" stop-color="#EF4444"/></linearGradient>
+    <filter id="as"><feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.2"/></filter>
+  </defs>
+  <rect width="800" height="580" rx="16" fill="#0A0E27"/>
+  <text x="400" y="38" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="bold" fill="#00D9FF">🏗️ Архитектура</text>
+  <!-- Flutter App -->
+  <rect x="120" y="55" width="560" height="120" rx="16" fill="#1A1F3C" stroke="#00D9FF" stroke-width="2" filter="url(#as)"/>
+  <text x="400" y="80" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="white">📱 Flutter App</text>
+  <!-- Service boxes -->
+  <rect x="140" y="95" width="120" height="65" rx="10" fill="#0A2A3A" stroke="#00D9FF" stroke-width="1"/>
+  <text x="200" y="115" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#00D9FF">Crypto</text>
+  <text x="200" y="130" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#666">X25519 ChaCha20</text>
+  <text x="200" y="143" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#666">Ed25519</text>
+  <rect x="275" y="95" width="120" height="65" rx="10" fill="#0A2A3A" stroke="#4ECDC4" stroke-width="1"/>
+  <text x="335" y="115" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#4ECDC4">Socket</text>
+  <text x="335" y="130" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#666">WebSocket</text>
+  <text x="335" y="143" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#666">Reconnect Queue</text>
+  <rect x="410" y="95" width="120" height="65" rx="10" fill="#0A2A3A" stroke="#F59E0B" stroke-width="1"/>
+  <text x="470" y="115" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#F59E0B">Storage</text>
+  <text x="470" y="130" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#666">Hive + Keystore</text>
+  <text x="470" y="143" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#666">Mutex</text>
+  <rect x="545" y="95" width="120" height="65" rx="10" fill="#0A2A3A" stroke="#8B5CF6" stroke-width="1"/>
+  <text x="605" y="115" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#8B5CF6">Call</text>
+  <text x="605" y="130" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#666">WebRTC ICE</text>
+  <text x="605" y="143" text-anchor="middle" font-family="Arial,sans-serif" font-size="9" fill="#666">TURN Media</text>
+  <!-- Arrows down -->
+  <line x1="270" y1="175" x2="270" y2="220" stroke="#00D9FF" stroke-width="2"/><polygon points="265,215 270,225 275,215" fill="#00D9FF"/>
+  <line x1="400" y1="175" x2="400" y2="220" stroke="#4ECDC4" stroke-width="2"/><polygon points="395,215 400,225 405,215" fill="#4ECDC4"/>
+  <!-- Server -->
+  <rect x="140" y="225" width="300" height="100" rx="14" fill="#1A1F3C" stroke="#4ECDC4" stroke-width="1.5" filter="url(#as)"/>
+  <text x="290" y="252" text-anchor="middle" font-family="Arial,sans-serif" font-size="15" font-weight="bold" fill="white">🖥️ FastAPI Server</text>
+  <text x="165" y="275" font-family="Arial,sans-serif" font-size="11" fill="#4ECDC4">WebSocket</text><text x="165" y="290" font-family="Arial,sans-serif" font-size="10" fill="#666">/ws</text>
+  <text x="260" y="275" font-family="Arial,sans-serif" font-size="11" fill="#4ECDC4">Upload</text><text x="260" y="290" font-family="Arial,sans-serif" font-size="10" fill="#666">/upload</text>
+  <text x="345" y="275" font-family="Arial,sans-serif" font-size="11" fill="#4ECDC4">Download</text><text x="345" y="290" font-family="Arial,sans-serif" font-size="10" fill="#666">/download</text>
+  <text x="250" y="315" font-family="Arial,sans-serif" font-size="10" fill="#888">/turn-credentials</text>
+  <!-- TURN -->
+  <rect x="520" y="225" width="200" height="70" rx="14" fill="#2D1B69" stroke="#8B5CF6" stroke-width="1.5" filter="url(#as)"/>
+  <text x="620" y="255" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#C4B5FD">TURN Server</text>
+  <text x="620" y="275" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#8B5CF6">Metered.ca</text>
+  <line x1="605" y1="175" x2="620" y2="225" stroke="#8B5CF6" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <!-- Down arrows from server -->
+  <line x1="220" y1="325" x2="220" y2="370" stroke="#4ECDC4" stroke-width="2"/><polygon points="215,365 220,375 225,365" fill="#4ECDC4"/>
+  <line x1="370" y1="325" x2="370" y2="370" stroke="#F59E0B" stroke-width="2"/><polygon points="365,365 370,375 375,365" fill="#F59E0B"/>
+  <!-- Redis -->
+  <rect x="120" y="375" width="180" height="90" rx="14" fill="#1A1F3C" stroke="#FF6B6B" stroke-width="1.5" filter="url(#as)"/>
+  <text x="210" y="402" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#FF6B6B">Redis</text>
+  <text x="210" y="420" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#888">Upstash</text>
+  <text x="145" y="440" font-family="Arial,sans-serif" font-size="10" fill="#666">Сессии • Ключи</text>
+  <text x="145" y="455" font-family="Arial,sans-serif" font-size="10" fill="#666">Сторис • Статусы</text>
+  <!-- R2 -->
+  <rect x="320" y="375" width="180" height="90" rx="14" fill="#1A1F3C" stroke="#F59E0B" stroke-width="1.5" filter="url(#as)"/>
+  <text x="410" y="402" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#F59E0B">Cloudflare R2</text>
+  <text x="410" y="420" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#888">Object Storage</text>
+  <text x="345" y="440" font-family="Arial,sans-serif" font-size="10" fill="#666">Зашифрованные файлы</text>
+  <text x="345" y="455" font-family="Arial,sans-serif" font-size="10" fill="#666">TTL: 7 дней</text>
+  <!-- Firebase -->
+  <rect x="520" y="375" width="200" height="70" rx="14" fill="#1A1F3C" stroke="#F59E0B" stroke-width="1.5" filter="url(#as)"/>
+  <text x="620" y="402" text-anchor="middle" font-family="Arial,sans-serif" font-size="14" font-weight="bold" fill="#F59E0B">Firebase FCM</text>
+  <text x="620" y="425" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#888">Push-уведомления</text>
+  <line x1="290" y1="325" x2="540" y2="390" stroke="#F59E0B" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <!-- Arrow from FCM to device -->
+  <line x1="620" y1="445" x2="620" y2="500" stroke="#F59E0B" stroke-width="2"/><polygon points="615,495 620,505 625,495" fill="#F59E0B"/>
+  <rect x="560" y="505" width="120" height="40" rx="10" fill="url(#ag1)" filter="url(#as)"/>
+  <text x="620" y="530" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="white">📱 Устройство</text>
+  <!-- Legend -->
+  <text x="60" y="540" font-family="Arial,sans-serif" font-size="10" fill="#00D9FF">━━</text><text x="80" y="540" font-family="Arial,sans-serif" font-size="10" fill="#666">Прямое соединение</text>
+  <text x="230" y="540" font-family="Arial,sans-serif" font-size="10" fill="#8B5CF6">╌╌</text><text x="250" y="540" font-family="Arial,sans-serif" font-size="10" fill="#666">Опциональное (TURN/FCM)</text>
+</svg>

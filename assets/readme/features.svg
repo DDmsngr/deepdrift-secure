@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 340" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0A0E27"/><stop offset="100%" stop-color="#121836"/></linearGradient>
+    <filter id="s"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.2"/></filter>
+  </defs>
+  <rect width="800" height="340" rx="16" fill="url(#bg)"/>
+  <text x="400" y="38" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="bold" fill="#00D9FF">💬 Сообщения</text>
+  <!-- Row 1 -->
+  <rect x="30" y="60" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="45" y="85" font-family="Arial,sans-serif" font-size="20">📝</text><text x="72" y="86" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Текст</text>
+  <text x="45" y="105" font-family="Arial,sans-serif" font-size="10" fill="#888">E2EE шифрование</text>
+  <rect x="215" y="60" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="230" y="85" font-family="Arial,sans-serif" font-size="20">📷</text><text x="257" y="86" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Фото</text>
+  <text x="230" y="105" font-family="Arial,sans-serif" font-size="10" fill="#888">Камера + галерея</text>
+  <rect x="400" y="60" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="415" y="85" font-family="Arial,sans-serif" font-size="20">🎤</text><text x="442" y="86" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Голосовые</text>
+  <text x="415" y="105" font-family="Arial,sans-serif" font-size="10" fill="#888">Волна + ползунок</text>
+  <rect x="585" y="60" width="185" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="600" y="85" font-family="Arial,sans-serif" font-size="20">📹</text><text x="627" y="86" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Видео + кружки</text>
+  <text x="600" y="105" font-family="Arial,sans-serif" font-size="10" fill="#888">Галерея + камера</text>
+  <!-- Row 2 -->
+  <rect x="30" y="130" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="45" y="155" font-family="Arial,sans-serif" font-size="20">😀</text><text x="72" y="156" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Стикеры</text>
+  <text x="45" y="175" font-family="Arial,sans-serif" font-size="10" fill="#888">Картинки + эмоджи</text>
+  <rect x="215" y="130" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="230" y="155" font-family="Arial,sans-serif" font-size="20">🔗</text><text x="257" y="156" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Превью ссылок</text>
+  <text x="230" y="175" font-family="Arial,sans-serif" font-size="10" fill="#888">Favicon + домен</text>
+  <rect x="400" y="130" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="415" y="155" font-family="Arial,sans-serif" font-size="20">↩️</text><text x="442" y="156" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Реплай</text>
+  <text x="415" y="175" font-family="Arial,sans-serif" font-size="10" fill="#888">Свайп + имя автора</text>
+  <rect x="585" y="130" width="185" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="600" y="155" font-family="Arial,sans-serif" font-size="20">↗️</text><text x="627" y="156" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Пересылка</text>
+  <text x="600" y="175" font-family="Arial,sans-serif" font-size="10" fill="#888">Мульти-выбор</text>
+  <!-- Row 3 -->
+  <rect x="30" y="200" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="45" y="225" font-family="Arial,sans-serif" font-size="20">⏱️</text><text x="72" y="226" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Исчезающие</text>
+  <text x="45" y="245" font-family="Arial,sans-serif" font-size="10" fill="#888">30с — 7 дней TTL</text>
+  <rect x="215" y="200" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="230" y="225" font-family="Arial,sans-serif" font-size="20">📅</text><text x="257" y="226" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Планирование</text>
+  <text x="230" y="245" font-family="Arial,sans-serif" font-size="10" fill="#888">Отложенная отправка</text>
+  <rect x="400" y="200" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="415" y="225" font-family="Arial,sans-serif" font-size="20">👍</text><text x="442" y="226" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Реакции</text>
+  <text x="415" y="245" font-family="Arial,sans-serif" font-size="10" fill="#888">Быстрые эмоджи</text>
+  <rect x="585" y="200" width="185" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="600" y="225" font-family="Arial,sans-serif" font-size="20">📎</text><text x="627" y="226" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Файлы</text>
+  <text x="600" y="245" font-family="Arial,sans-serif" font-size="10" fill="#888">Любой формат</text>
+  <!-- Row 4 -->
+  <rect x="30" y="270" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="45" y="295" font-family="Arial,sans-serif" font-size="20">✏️</text><text x="72" y="296" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Редактирование</text>
+  <text x="45" y="315" font-family="Arial,sans-serif" font-size="10" fill="#888">После отправки</text>
+  <rect x="215" y="270" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="230" y="295" font-family="Arial,sans-serif" font-size="20">🗑️</text><text x="257" y="296" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Удаление</text>
+  <text x="230" y="315" font-family="Arial,sans-serif" font-size="10" fill="#888">Для всех</text>
+  <rect x="400" y="270" width="170" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="415" y="295" font-family="Arial,sans-serif" font-size="20">🔍</text><text x="442" y="296" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Поиск</text>
+  <text x="415" y="315" font-family="Arial,sans-serif" font-size="10" fill="#888">По всем чатам</text>
+  <rect x="585" y="270" width="185" height="56" rx="12" fill="#1A1F3C" stroke="#2A2F4C" stroke-width="1" filter="url(#s)"/>
+  <text x="600" y="295" font-family="Arial,sans-serif" font-size="20">🖼️</text><text x="627" y="296" font-family="Arial,sans-serif" font-size="13" fill="white" font-weight="bold">Медиагалерея</text>
+  <text x="600" y="315" font-family="Arial,sans-serif" font-size="10" fill="#888">Сетка фото/видео</text>
+</svg>

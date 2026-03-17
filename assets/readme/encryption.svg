@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520" fill="none">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#00D9FF"/><stop offset="100%" stop-color="#0088CC"/></linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF6B6B"/><stop offset="100%" stop-color="#CC3333"/></linearGradient>
+    <linearGradient id="g3" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#4ECDC4"/><stop offset="100%" stop-color="#2BA89E"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.15"/></filter>
+  </defs>
+  <rect width="800" height="520" rx="16" fill="#0A0E27"/>
+  <text x="400" y="40" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="bold" fill="#00D9FF">🔐 Как работает шифрование</text>
+  <!-- Alice -->
+  <rect x="40" y="70" width="140" height="420" rx="12" fill="#1A1F3C" stroke="#00D9FF" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="75" y="85" width="70" height="120" rx="10" fill="#0A0E27" stroke="#00D9FF" stroke-width="1"/>
+  <circle cx="110" cy="115" r="8" fill="#00D9FF" opacity="0.3"/><circle cx="110" cy="115" r="4" fill="#00D9FF"/>
+  <rect x="85" y="135" width="50" height="60" rx="4" fill="#1A1F3C"/>
+  <text x="110" y="225" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="white">Алиса</text>
+  <!-- Bob -->
+  <rect x="620" y="70" width="140" height="420" rx="12" fill="#1A1F3C" stroke="#00D9FF" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="655" y="85" width="70" height="120" rx="10" fill="#0A0E27" stroke="#00D9FF" stroke-width="1"/>
+  <circle cx="690" cy="115" r="8" fill="#00D9FF" opacity="0.3"/><circle cx="690" cy="115" r="4" fill="#00D9FF"/>
+  <rect x="665" y="135" width="50" height="60" rx="4" fill="#1A1F3C"/>
+  <text x="690" y="225" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" font-weight="bold" fill="white">Боб</text>
+  <!-- Step 1 -->
+  <line x1="180" y1="270" x2="620" y2="270" stroke="#00D9FF" stroke-width="2" stroke-dasharray="8,4"/>
+  <polygon points="615,265 625,270 615,275" fill="#00D9FF"/>
+  <polygon points="185,265 175,270 185,275" fill="#00D9FF"/>
+  <rect x="270" y="252" width="260" height="36" rx="18" fill="url(#g1)" filter="url(#shadow)"/>
+  <text x="400" y="276" text-anchor="middle" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="white">① X25519 обмен ключами</text>
+  <!-- Step 2 -->
+  <rect x="200" y="310" width="240" height="36" rx="18" fill="url(#g3)" filter="url(#shadow)"/>
+  <text x="320" y="334" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="white">② Шифрование ChaCha20</text>
+  <line x1="180" y1="328" x2="200" y2="328" stroke="#4ECDC4" stroke-width="2"/>
+  <!-- Step 3 -->
+  <rect x="340" y="360" width="120" height="50" rx="10" fill="#2D1B69" stroke="#8B5CF6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="400" y="380" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#C4B5FD">🖥️ Сервер</text>
+  <text x="400" y="398" text-anchor="middle" font-family="Arial,sans-serif" font-size="10" fill="#8B5CF6">видит только 🔒</text>
+  <line x1="180" y1="375" x2="340" y2="375" stroke="#FF6B6B" stroke-width="2"/>
+  <polygon points="335,370 345,375 335,380" fill="#FF6B6B"/>
+  <text x="260" y="368" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#FF6B6B">③ 🔒 блоб</text>
+  <!-- Step 4 -->
+  <line x1="460" y1="395" x2="620" y2="395" stroke="#4ECDC4" stroke-width="2"/>
+  <polygon points="615,390 625,395 615,400" fill="#4ECDC4"/>
+  <text x="540" y="388" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#4ECDC4">④ Пересылка</text>
+  <!-- Step 5 -->
+  <rect x="560" y="430" width="220" height="36" rx="18" fill="url(#g1)" filter="url(#shadow)"/>
+  <text x="670" y="454" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" font-weight="bold" fill="white">⑤ Расшифровка ключом Боба</text>
+  <!-- Bottom note -->
+  <rect x="150" y="480" width="500" height="30" rx="15" fill="#FF6B6B" opacity="0.15"/>
+  <text x="400" y="500" text-anchor="middle" font-family="Arial,sans-serif" font-size="12" fill="#FF6B6B">Сервер НИКОГДА не видит текст сообщений — только зашифрованные байты</text>
+</svg>
