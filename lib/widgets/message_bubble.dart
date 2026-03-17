@@ -239,6 +239,9 @@ class MessageBubble extends StatelessWidget {
           style: const TextStyle(color: Colors.white, fontSize: 15));
     }
 
+    // Собираем HTTP(S) ссылки для превью
+    final httpUrls = <String>[];
+
     final spans = <InlineSpan>[];
     int lastEnd = 0;
 
@@ -252,6 +255,7 @@ class MessageBubble extends StatelessWidget {
 
       final url = m.group(0)!;
       final isDeepLink = url.startsWith('deepdrift://');
+      if (!isDeepLink) httpUrls.add(url);
 
       spans.add(WidgetSpan(
         alignment: PlaceholderAlignment.baseline,
@@ -291,7 +295,81 @@ class MessageBubble extends StatelessWidget {
       ));
     }
 
+    // Показываем превью для первой HTTP(S) ссылки
+    if (httpUrls.isNotEmpty) {
+      final previewUrl = httpUrls.first;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text.rich(TextSpan(children: spans)),
+          const SizedBox(height: 6),
+          _buildLinkPreview(previewUrl),
+        ],
+      );
+    }
+
     return Text.rich(TextSpan(children: spans));
+  }
+
+  Widget _buildLinkPreview(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return const SizedBox.shrink();
+    final domain = uri.host.replaceFirst('www.', '');
+    final path = uri.path.length > 1 ? uri.path : '';
+    // Очищаем path от лишних символов в конце (пунктуация)
+    final cleanPath = path.length > 40 ? '${path.substring(0, 40)}...' : path;
+
+    return GestureDetector(
+      onTap: () async {
+        if (await canLaunchUrl(uri)) await launchUrl(uri, mode: LaunchMode.externalApplication);
+      },
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.2),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Favicon через Google API
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: Image.network(
+                'https://www.google.com/s2/favicons?domain=$domain&sz=32',
+                width: 24, height: 24,
+                errorBuilder: (_, __, ___) => Container(
+                  width: 24, height: 24,
+                  decoration: BoxDecoration(
+                    color: Colors.cyan.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Icon(Icons.language, size: 16, color: Colors.cyan),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(domain,
+                      style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                  if (cleanPath.isNotEmpty)
+                    Text(cleanPath,
+                        style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 11),
+                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                ],
+              ),
+            ),
+            const SizedBox(width: 4),
+            Icon(Icons.open_in_new, size: 14, color: Colors.white.withValues(alpha: 0.3)),
+          ],
+        ),
+      ),
+    );
   }
 
   // ── Изображение ───────────────────────────────────────────────────────────
@@ -359,11 +437,20 @@ class MessageBubble extends StatelessWidget {
         ? '${(durationSec ~/ 60).toString().padLeft(1, '0')}:${(durationSec % 60).toString().padLeft(2, '0')}'
         : null;
 
-    final seed = (msg['id']?.toString() ?? '0').hashCode;
-    final bars = List.generate(28, (i) {
-      final h = 0.25 + 0.75 * ((seed * (i + 1) * 2654435761) & 0xFF) / 255.0;
-      return h;
-    });
+    // Реальная волна из записи, или псевдорандом для старых сообщений
+    final waveformStr = msg['waveform'] as String?;
+    List<double> bars;
+    if (waveformStr != null && waveformStr.isNotEmpty) {
+      bars = waveformStr.split(',').map((s) => double.tryParse(s) ?? 0.3).toList();
+      if (bars.length < 28) bars.addAll(List.filled(28 - bars.length, 0.2));
+      if (bars.length > 28) bars = bars.sublist(0, 28);
+    } else {
+      final seed = (msg['id']?.toString() ?? '0').hashCode;
+      bars = List.generate(28, (i) {
+        final h = 0.25 + 0.75 * ((seed * (i + 1) * 2654435761) & 0xFF) / 255.0;
+        return h;
+      });
+    }
 
     return GestureDetector(
       onTap: () => onPlayVoice(msg),
