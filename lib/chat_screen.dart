@@ -115,6 +115,13 @@ class _ChatScreenState extends State<ChatScreen> {
   Map<String, Set<String>>   _reactions = {};
   String?                    _playingMessageId;
 
+  // ── Voice playback progress ───────────────────────────────────────────────
+  Duration _voicePosition = Duration.zero;
+  Duration _voiceDuration = Duration.zero;
+  StreamSubscription? _positionSub;
+  StreamSubscription? _durationSub;
+  StreamSubscription? _completeSub;
+
   bool   _isSendingFile  = false;
   double _uploadProgress = 0.0;
 
@@ -210,6 +217,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollController.dispose();
     _audioRecorder.dispose();
     _audioPlayer.dispose();
+    _positionSub?.cancel();
+    _durationSub?.cancel();
+    _completeSub?.cancel();
     _cameraController?.dispose();
     if (_isTyping) _socket.sendTypingIndicator(widget.targetUid, false);
     _cleanTempVoiceFile();
@@ -1474,23 +1484,43 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       if (_playingMessageId == msgId) {
         await _audioPlayer.stop();
-        setState(() => _playingMessageId = null);
+        setState(() { _playingMessageId = null; _voicePosition = Duration.zero; });
         return;
       }
       final localPath = msg['filePath'] as String?;
-      if (localPath != null && File(localPath).existsSync()) {
-        await _audioPlayer.play(DeviceFileSource(localPath));
-      } else {
+      if (localPath == null || !File(localPath).existsSync()) {
         _showError('Голосовое сообщение недоступно на этом устройстве');
         return;
       }
-      setState(() => _playingMessageId = msgId);
-      _audioPlayer.onPlayerComplete.first.then((_) {
-        if (mounted) setState(() => _playingMessageId = null);
+
+      await _audioPlayer.play(DeviceFileSource(localPath));
+      setState(() {
+        _playingMessageId = msgId;
+        _voicePosition = Duration.zero;
+        _voiceDuration = Duration.zero;
+      });
+
+      _positionSub?.cancel();
+      _positionSub = _audioPlayer.onPositionChanged.listen((pos) {
+        if (mounted) setState(() => _voicePosition = pos);
+      });
+
+      _durationSub?.cancel();
+      _durationSub = _audioPlayer.onDurationChanged.listen((dur) {
+        if (mounted) setState(() => _voiceDuration = dur);
+      });
+
+      _completeSub?.cancel();
+      _completeSub = _audioPlayer.onPlayerComplete.listen((_) {
+        if (mounted) setState(() { _playingMessageId = null; _voicePosition = Duration.zero; });
       });
     } catch (e) {
       _showError('Ошибка воспроизведения: $e');
     }
+  }
+
+  Future<void> _seekVoice(Duration position) async {
+    await _audioPlayer.seek(position);
   }
 
   void _startEditingMessage(Map<String, dynamic> message) {
@@ -2645,10 +2675,13 @@ class _ChatScreenState extends State<ChatScreen> {
         msg:             msg,
         myUid:           widget.myUid,
         playingMessageId: _playingMessageId,
+        voicePosition:   _voicePosition,
+        voiceDuration:   _voiceDuration,
         reactions:       _reactions,
         onLongPress:     _showMessageActions,
         onRetryDownload: _retryDownloadMedia,
         onPlayVoice:     _playVoiceMessage,
+        onSeekVoice:     _seekVoice,
         onOpenImage:     _showFullImageFromFile,
         onOpenFile:      (path, name) => _openFile(path, name),
         onRemoveReaction: _removeReaction,
