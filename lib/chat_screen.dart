@@ -22,6 +22,8 @@ import 'models/chat_models.dart';
 import 'widgets/message_bubble.dart';
 import 'screens/call_screen.dart';
 import 'screens/media_gallery_screen.dart';
+import 'screens/group_settings_screen.dart';
+import 'widgets/sticker_picker.dart';
 import 'config/app_config.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
@@ -3019,6 +3021,43 @@ class _ChatScreenState extends State<ChatScreen> {
     _scheduledTimers.add(timer);
   }
 
+  // ── Настройки группы ────────────────────────────────────────────────────
+
+  void _openGroupSettings() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GroupSettingsScreen(
+          myUid:   widget.myUid,
+          groupId: widget.targetUid,
+        ),
+      ),
+    );
+  }
+
+  // ── Стикеры ───────────────────────────────────────────────────────────────
+
+  void _showStickerPicker() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF0A0E27),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => StickerPicker(
+        onStickerSelected: (sticker, packName) {
+          Navigator.pop(context);
+          _sendSticker(sticker);
+        },
+      ),
+    );
+  }
+
+  Future<void> _sendSticker(String sticker) async {
+    await _sendMessage(text: sticker, messageType: 'sticker');
+  }
+
   // ── Вызов ─────────────────────────────────────────────────────────────────
   void _startCall(String callType) {
     Navigator.push(
@@ -3142,6 +3181,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 case 'members':   _showGroupMembersDialog(displayName, groupMembers); break;
                 case 'rename':    _showRenameGroupDialog(); break;
                 case 'leave':     _showLeaveGroupDialog(); break;
+                case 'group_settings': _openGroupSettings(); break;
               }
             },
             itemBuilder: (_) {
@@ -3161,6 +3201,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 if (isGroup) ...[
                   const PopupMenuDivider(),
+                  _popupItem('group_settings', Icons.admin_panel_settings, 'Настройки группы'),
                   _popupItem('members', Icons.group, 'Участники группы'),
                   _popupItem('rename', Icons.edit, 'Переименовать'),
                   const PopupMenuDivider(),
@@ -3344,6 +3385,13 @@ class _ChatScreenState extends State<ChatScreen> {
                 // ── Файлы ─────────────────────────────────────────────────────
                 _popupItem('file',          Icons.insert_drive_file, 'Файл / Документ'),
               ],
+            ),
+
+            // Кнопка стикеров
+            IconButton(
+              icon: const Icon(Icons.emoji_emotions_outlined, color: Colors.white54, size: 22),
+              tooltip: 'Стикеры',
+              onPressed: _showStickerPicker,
             ),
 
             if (_isSendingFile || _downloadingMsgId != null)
