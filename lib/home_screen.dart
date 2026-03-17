@@ -31,6 +31,9 @@ import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'models/chat_models.dart';
 import 'lock_screen.dart';
+import 'screens/story_viewer_screen.dart';
+import 'screens/create_story_screen.dart';
+import 'widgets/stories_bar.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tab indices
@@ -79,6 +82,9 @@ class _HomeScreenState extends State<HomeScreen>
 
   late TabController _tabController;
   Timer? _statusCheckTimer;
+
+  // ── Stories / Статусы ─────────────────────────────────────────────────────
+  List<Map<String, dynamic>> _stories = [];
 
   // ─────────────────────────────────────────────────────────────────────────
   // Lifecycle
@@ -264,6 +270,38 @@ class _HomeScreenState extends State<HomeScreen>
     });
   }
 
+  // ── Stories / Статусы ─────────────────────────────────────────────────────
+
+  void _fetchStories() {
+    if (_myUid == null) return;
+    final contacts = _storage.getContacts();
+    _socket.getStories(contacts);
+  }
+
+  void _openCreateStory() {
+    if (_myUid == null) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => CreateStoryScreen(myUid: _myUid!)),
+    ).then((posted) {
+      if (posted == true) _fetchStories();
+    });
+  }
+
+  void _openStoryViewer(String uid, List<Map<String, dynamic>> userStories) {
+    if (_myUid == null) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StoryViewerScreen(
+          myUid:    _myUid!,
+          ownerUid: uid,
+          stories:  userStories,
+        ),
+      ),
+    ).then((_) => _fetchStories()); // Обновим просмотры
+  }
+
   /// Обработка входящего звонка — открывает CallScreen.
   void _handleIncomingCall(String fromUid, String callType) {
     if (!mounted || _myUid == null) return;
@@ -401,6 +439,21 @@ class _HomeScreenState extends State<HomeScreen>
           CallService().onIncomingCall = (callId, fromUid, callType) {
             _handleIncomingCall(fromUid, callType);
           };
+
+          // ── Загрузка историй ──────────────────────────────────────────
+          _fetchStories();
+        }
+        if (type == 'stories_response') {
+          final raw = data['stories'] as List?;
+          if (raw != null && mounted) {
+            setState(() {
+              _stories = raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+            });
+          }
+        }
+        if (type == 'story_available' || type == 'story_posted') {
+          // Новая история у кого-то — обновляем список
+          _fetchStories();
         }
         if (type == 'connection_status') {
           setState(() {
@@ -1912,61 +1965,94 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  Widget _buildChatListWithStories(List<String> chats) {
+    if (!_isReady) return const Center(child: CircularProgressIndicator(color: Colors.cyan));
+
+    return Column(
+      children: [
+        // ── Полоска историй ──────────────────────────────────────────
+        if (_myUid != null)
+          StoriesBar(
+            myUid: _myUid!,
+            stories: _stories,
+            onCreateStory: _openCreateStory,
+            onViewStories: _openStoryViewer,
+          ),
+        if (_stories.isNotEmpty || _myUid != null)
+          const Divider(color: Colors.white12, height: 1),
+        // ── Список чатов ─────────────────────────────────────────────
+        Expanded(
+          child: chats.isEmpty
+              ? Center(child: Text('Пусто', style: GoogleFonts.orbitron(color: Colors.white38)))
+              : _buildChatListView(chats),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildChatListView(List<String> chats) {
+    return ListView.builder(
+      itemCount: chats.length,
+      itemBuilder: (c, i) => _buildChatTile(chats[i]),
+    );
+  }
+
+  Widget _buildChatTile(String uid) {
+    final isGroup   = _storage.isGroup(uid);
+    final isChannel = _storage.isChannel(uid);
+    final name      = isGroup ? _storage.getGroupName(uid) : _storage.getContactDisplayName(uid);
+    final meta      = _storage.getChatMetadata(uid);
+    final unread    = meta['unreadCount'] as int? ?? 0;
+    final isOnline  = _storage.isContactOnline(uid);
+    final isPinned  = _storage.isContactPinned(uid);
+    final isMuted   = _storage.isContactMuted(uid);
+    final totalMsgs = meta['totalMessages'] as int? ?? 0;
+    final lastText  = meta['lastMessageText'] as String? ?? 'Нет сообщений';
+    final nearLimit = totalMsgs >= 900;
+
+    return ListTile(
+      leading: Stack(children: [
+        _buildSquircleAvatar(uid),
+        if (!isGroup && !isChannel && isOnline)
+          Positioned(right: 0, bottom: 0, child: Container(
+              width: 12, height: 12,
+              decoration: BoxDecoration(color: Colors.greenAccent, shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFF0A0E27), width: 2)))),
+        if (unread > 0)
+          Positioned(right: 0, top: 0, child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: const BoxDecoration(color: Colors.cyan, shape: BoxShape.circle),
+              child: Text('$unread', style: const TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold)))),
+      ]),
+      title: Row(children: [
+        if (isPinned) const Padding(padding: EdgeInsets.only(right: 4), child: Icon(Icons.push_pin, size: 12, color: Colors.amber)),
+        if (isMuted)  const Padding(padding: EdgeInsets.only(right: 4), child: Icon(Icons.volume_off, size: 12, color: Colors.white38)),
+        Expanded(child: Text(name, overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: Colors.white, fontWeight: unread > 0 ? FontWeight.bold : FontWeight.normal))),
+      ]),
+      subtitle: Text(
+        nearLimit ? '⚠️ Лимит ($totalMsgs/1000) — $lastText' : lastText,
+        style: TextStyle(
+            color: nearLimit ? Colors.orange.withValues(alpha: 0.8) : (unread > 0 ? Colors.white54 : Colors.white24),
+            fontSize: 12),
+        maxLines: 1, overflow: TextOverflow.ellipsis,
+      ),
+      onTap: () {
+        Navigator.push(context, MaterialPageRoute(
+            builder: (_) => ChatScreen(myUid: _myUid!, targetUid: uid, cipher: _cipher)))
+            .then((_) { if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity()); });
+      },
+      onLongPress: () => _showContactOptions(uid),
+    );
+  }
+
   Widget _buildChatList(List<String> chats) {
     if (!_isReady) return const Center(child: CircularProgressIndicator(color: Colors.cyan));
     if (chats.isEmpty) return Center(child: Text('Пусто', style: GoogleFonts.orbitron(color: Colors.white38)));
 
     return ListView.builder(
       itemCount: chats.length,
-      itemBuilder: (c, i) {
-        final uid       = chats[i];
-        final isGroup   = _storage.isGroup(uid);
-        final isChannel = _storage.isChannel(uid);
-        final name      = isGroup ? _storage.getGroupName(uid) : _storage.getContactDisplayName(uid);
-        final meta      = _storage.getChatMetadata(uid);
-        final unread    = meta['unreadCount'] as int? ?? 0;
-        final isOnline  = _storage.isContactOnline(uid);
-        final isPinned  = _storage.isContactPinned(uid);
-        final isMuted   = _storage.isContactMuted(uid);
-        final totalMsgs = meta['totalMessages'] as int? ?? 0;
-        final lastText  = meta['lastMessageText'] as String? ?? 'Нет сообщений';
-        final nearLimit = totalMsgs >= 900;
-
-        return ListTile(
-          leading: Stack(children: [
-            _buildSquircleAvatar(uid),
-            if (!isGroup && !isChannel && isOnline)
-              Positioned(right: 0, bottom: 0, child: Container(
-                  width: 12, height: 12,
-                  decoration: BoxDecoration(color: Colors.greenAccent, shape: BoxShape.circle,
-                      border: Border.all(color: const Color(0xFF0A0E27), width: 2)))),
-            if (unread > 0)
-              Positioned(right: 0, top: 0, child: Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: const BoxDecoration(color: Colors.cyan, shape: BoxShape.circle),
-                  child: Text('$unread', style: const TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold)))),
-          ]),
-          title: Row(children: [
-            if (isPinned) const Padding(padding: EdgeInsets.only(right: 4), child: Icon(Icons.push_pin, size: 12, color: Colors.amber)),
-            if (isMuted)  const Padding(padding: EdgeInsets.only(right: 4), child: Icon(Icons.volume_off, size: 12, color: Colors.white38)),
-            Expanded(child: Text(name, overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: Colors.white, fontWeight: unread > 0 ? FontWeight.bold : FontWeight.normal))),
-          ]),
-          subtitle: Text(
-            nearLimit ? '⚠️ Лимит ($totalMsgs/1000) — $lastText' : lastText,
-            style: TextStyle(
-                color: nearLimit ? Colors.orange.withValues(alpha: 0.8) : (unread > 0 ? Colors.white54 : Colors.white24),
-                fontSize: 12),
-            maxLines: 1, overflow: TextOverflow.ellipsis,
-          ),
-          onTap: () {
-            Navigator.push(context, MaterialPageRoute(
-                builder: (_) => ChatScreen(myUid: _myUid!, targetUid: uid, cipher: _cipher)))
-                .then((_) { if (mounted) setState(() => _chats = _storage.getContactsSortedByActivity()); });
-          },
-          onLongPress: () => _showContactOptions(uid),
-        );
-      },
+      itemBuilder: (c, i) => _buildChatTile(chats[i]),
     );
   }
 
@@ -2106,8 +2192,8 @@ class _HomeScreenState extends State<HomeScreen>
             : TabBarView(
                 controller: _tabController,
                 children: [
-                  _buildChatList(_filteredChats(_Tab.favorites)),
-                  _buildChatList(_filteredChats(_Tab.contacts)),
+                  _buildChatListWithStories(_filteredChats(_Tab.favorites)),
+                  _buildChatListWithStories(_filteredChats(_Tab.contacts)),
                   _buildChatList(_filteredChats(_Tab.groups)),
                   _buildChatList(_filteredChats(_Tab.channels)),
                 ],
