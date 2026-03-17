@@ -90,10 +90,11 @@ class CallService {
   StreamSubscription? _socketSub;
 
   // ── STUN/TURN серверы ─────────────────────────────────────────────────────
-  // Credentials загружаются динамически с сервера перед каждым звонком.
-  // Сервер генерирует временные HMAC-credentials для coturn
-  // или возвращает статические для Metered.ca/Twilio.
+  // Credentials кэшируются на 1 час — не грузим при каждом звонке.
   static const String _serverUrl = 'https://deepdrift-backend.onrender.com';
+
+  static Map<String, dynamic>? _cachedIceConfig;
+  static DateTime? _cacheExpiry;
 
   // Fallback если сервер недоступен
   static const Map<String, dynamic> _fallbackIceConfig = {
@@ -103,21 +104,37 @@ class CallService {
     ],
   };
 
-  /// Запрашивает актуальные TURN-credentials с backend.
+  /// Возвращает ICE-config из кэша или загружает с сервера.
   Future<Map<String, dynamic>> _fetchIceConfig() async {
+    // Используем кэш если не просрочен
+    if (_cachedIceConfig != null && _cacheExpiry != null &&
+        DateTime.now().isBefore(_cacheExpiry!)) {
+      debugPrint('📞 ICE config from cache');
+      return _cachedIceConfig!;
+    }
+
     try {
       final response = await http.get(
         Uri.parse('$_serverUrl/turn-credentials'),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
-        debugPrint('📞 ICE config fetched: ${data['iceServers']?.length ?? 0} servers');
+        _cachedIceConfig = data;
+        _cacheExpiry = DateTime.now().add(const Duration(hours: 1));
+        debugPrint('📞 ICE config fetched & cached: ${data['iceServers']?.length ?? 0} servers');
         return data;
       }
     } catch (e) {
       debugPrint('⚠️ Failed to fetch TURN credentials: $e');
     }
+
+    // Если есть старый кэш — используем его даже если просрочен
+    if (_cachedIceConfig != null) {
+      debugPrint('📞 Using expired cache (better than STUN-only)');
+      return _cachedIceConfig!;
+    }
+
     debugPrint('📞 Using fallback STUN-only config');
     return _fallbackIceConfig;
   }
@@ -179,6 +196,8 @@ class CallService {
   void init(String myUid) {
     _socketSub?.cancel();
     _socketSub = _socket.messages.listen(_handleSocketMessage);
+    // Предзагрузка TURN-credentials — первый звонок не будет ждать HTTP
+    _fetchIceConfig();
   }
 
   /// Завершение — вызвать при dispose.
