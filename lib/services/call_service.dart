@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
 import '../socket_service.dart';
 
@@ -88,29 +90,37 @@ class CallService {
   StreamSubscription? _socketSub;
 
   // ── STUN/TURN серверы ─────────────────────────────────────────────────────
-  // Для продакшена: раскомментируй TURN-блок и подставь свои credentials.
-  // Без TURN звонки за симметричным NAT (корп. Wi-Fi, некоторые операторы) не пройдут.
-  //
-  // Рекомендуемые сервисы:
-  //   • Cloudflare TURN  — бесплатный тир
-  //   • Twilio TURN      — $0.0004/мин
-  //   • Свой coturn       — бесплатно, нужен VPS
-  static const Map<String, dynamic> _iceConfig = {
+  // Credentials загружаются динамически с сервера перед каждым звонком.
+  // Сервер генерирует временные HMAC-credentials для coturn
+  // или возвращает статические для Metered.ca/Twilio.
+  static const String _serverUrl = 'https://deepdrift-backend.onrender.com';
+
+  // Fallback если сервер недоступен
+  static const Map<String, dynamic> _fallbackIceConfig = {
     'iceServers': [
       {'urls': 'stun:stun.l.google.com:19302'},
       {'urls': 'stun:stun1.l.google.com:19302'},
-      // ── TURN (раскомментируй для продакшена) ──────────────────────────
-      // {
-      //   'urls': [
-      //     'turn:your-turn-server.com:3478?transport=udp',
-      //     'turn:your-turn-server.com:3478?transport=tcp',
-      //     'turns:your-turn-server.com:5349?transport=tcp',
-      //   ],
-      //   'username':   'your-username',
-      //   'credential': 'your-credential',
-      // },
     ],
   };
+
+  /// Запрашивает актуальные TURN-credentials с backend.
+  Future<Map<String, dynamic>> _fetchIceConfig() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_serverUrl/turn-credentials'),
+      ).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        debugPrint('📞 ICE config fetched: ${data['iceServers']?.length ?? 0} servers');
+        return data;
+      }
+    } catch (e) {
+      debugPrint('⚠️ Failed to fetch TURN credentials: $e');
+    }
+    debugPrint('📞 Using fallback STUN-only config');
+    return _fallbackIceConfig;
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Разрешения
@@ -450,7 +460,8 @@ class CallService {
   // ═══════════════════════════════════════════════════════════════════════════
 
   Future<void> _createPeerConnection() async {
-    final config = Map<String, dynamic>.from(_iceConfig);
+    final iceConfig = await _fetchIceConfig();
+    final config = Map<String, dynamic>.from(iceConfig);
     config['sdpSemantics'] = 'unified-plan';
 
     _peerConnection = await createPeerConnection(config);
