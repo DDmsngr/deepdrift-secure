@@ -93,12 +93,10 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
   }
 
   void _onLongPressStart(LongPressStartDetails _) {
-    _isPaused = true;
     _progressController.stop();
   }
 
   void _onLongPressEnd(LongPressEndDetails _) {
-    _isPaused = false;
     _progressController.forward();
   }
 
