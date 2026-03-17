@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../socket_service.dart';
@@ -31,7 +30,6 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
 
   int _currentIndex = 0;
   late AnimationController _progressController;
-  bool _isPaused = false;
 
   static const _storyDuration = Duration(seconds: 5);
 
