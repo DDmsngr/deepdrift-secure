@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" fill="none">
+  <defs>
+    <filter id="ss"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.2"/></filter>
+  </defs>
+  <rect width="800" height="200" rx="16" fill="#0A0E27"/>
+  <text x="400" y="35" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="bold" fill="#FF6B6B">🛡️ Безопасность</text>
+  <!-- Row 1 -->
+  <rect x="30" y="55" width="175" height="60" rx="12" fill="#1A1F3C" stroke="#FF6B6B" stroke-width="1" filter="url(#ss)"/>
+  <text x="45" y="80" font-family="Arial,sans-serif" font-size="18">🔒</text><text x="70" y="81" font-family="Arial,sans-serif" font-size="12" fill="white" font-weight="bold">PIN + биометрия</text>
+  <text x="45" y="100" font-family="Arial,sans-serif" font-size="10" fill="#888">4-12 цифр</text>
+  <rect x="220" y="55" width="175" height="60" rx="12" fill="#1A1F3C" stroke="#FF6B6B" stroke-width="1" filter="url(#ss)"/>
+  <text x="235" y="80" font-family="Arial,sans-serif" font-size="18">📵</text><text x="260" y="81" font-family="Arial,sans-serif" font-size="12" fill="white" font-weight="bold">Скриншоты</text>
+  <text x="235" y="100" font-family="Arial,sans-serif" font-size="10" fill="#888">FLAG_SECURE</text>
+  <rect x="410" y="55" width="175" height="60" rx="12" fill="#1A1F3C" stroke="#FF6B6B" stroke-width="1" filter="url(#ss)"/>
+  <text x="425" y="80" font-family="Arial,sans-serif" font-size="18">🚫</text><text x="450" y="81" font-family="Arial,sans-serif" font-size="12" fill="white" font-weight="bold">Блокировка</text>
+  <text x="425" y="100" font-family="Arial,sans-serif" font-size="10" fill="#888">Серверная фильтрация</text>
+  <rect x="600" y="55" width="175" height="60" rx="12" fill="#1A1F3C" stroke="#FF6B6B" stroke-width="1" filter="url(#ss)"/>
+  <text x="615" y="80" font-family="Arial,sans-serif" font-size="18">🆔</text><text x="640" y="81" font-family="Arial,sans-serif" font-size="12" fill="white" font-weight="bold">Отпечаток</text>
+  <text x="615" y="100" font-family="Arial,sans-serif" font-size="10" fill="#888">SHA-256 ключей</text>
+  <!-- Row 2 -->
+  <rect x="30" y="130" width="175" height="60" rx="12" fill="#1A1F3C" stroke="#FF6B6B" stroke-width="1" filter="url(#ss)"/>
+  <text x="45" y="155" font-family="Arial,sans-serif" font-size="18">⏱️</text><text x="70" y="156" font-family="Arial,sans-serif" font-size="12" fill="white" font-weight="bold">Исчезающие</text>
+  <text x="45" y="175" font-family="Arial,sans-serif" font-size="10" fill="#888">30с — 7 дней TTL</text>
+  <rect x="220" y="130" width="175" height="60" rx="12" fill="#1A1F3C" stroke="#FF6B6B" stroke-width="1" filter="url(#ss)"/>
+  <text x="235" y="155" font-family="Arial,sans-serif" font-size="18">🔑</text><text x="260" y="156" font-family="Arial,sans-serif" font-size="12" fill="white" font-weight="bold">Keystore</text>
+  <text x="235" y="175" font-family="Arial,sans-serif" font-size="10" fill="#888">Аппаратное хранение</text>
+  <rect x="410" y="130" width="175" height="60" rx="12" fill="#1A1F3C" stroke="#FF6B6B" stroke-width="1" filter="url(#ss)"/>
+  <text x="425" y="155" font-family="Arial,sans-serif" font-size="18">✍️</text><text x="450" y="156" font-family="Arial,sans-serif" font-size="12" fill="white" font-weight="bold">Ed25519</text>
+  <text x="425" y="175" font-family="Arial,sans-serif" font-size="10" fill="#888">Подпись сообщений</text>
+  <rect x="600" y="130" width="175" height="60" rx="12" fill="#1A1F3C" stroke="#FF6B6B" stroke-width="1" filter="url(#ss)"/>
+  <text x="615" y="155" font-family="Arial,sans-serif" font-size="18">🔐</text><text x="640" y="156" font-family="Arial,sans-serif" font-size="12" fill="white" font-weight="bold">Zero-knowledge</text>
+  <text x="615" y="175" font-family="Arial,sans-serif" font-size="10" fill="#888">Сервер не видит текст</text>
+</svg>
