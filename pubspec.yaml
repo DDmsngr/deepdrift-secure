@@ -92,4 +92,3 @@ flutter:
   uses-material-design: true
   assets:
     - assets/
-    - assets/stickers/ghost/
