@@ -242,6 +242,30 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
                 ),
               ),
 
+            // ── Реакции на чужие истории ─────────────────────────────
+            if (widget.ownerUid != widget.myUid)
+              Positioned(
+                bottom: MediaQuery.of(context).padding.bottom + 12,
+                left: 16, right: 16,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: ['❤️', '🔥', '😂', '😮', '😢', '👍'].map((emoji) {
+                    return GestureDetector(
+                      onTap: () => _sendReaction(emoji),
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(horizontal: 6),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.5),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Text(emoji, style: const TextStyle(fontSize: 24)),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+
             // Текст поверх картинки
             if (storyType == 'image' && text.isNotEmpty)
               Positioned(
@@ -261,6 +285,24 @@ class _StoryViewerScreenState extends State<StoryViewerScreen>
         ),
       ),
     );
+  }
+
+  void _sendReaction(String emoji) {
+    final story = widget.stories[_currentIndex];
+    final storyId = story['story_id'] as String?;
+    if (storyId == null) return;
+    _socket.send({
+      'type':     'react_story',
+      'story_id': storyId,
+      'emoji':    emoji,
+    });
+    // Показываем подтверждение
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('$emoji отправлено'),
+      backgroundColor: Colors.black54,
+      duration: const Duration(seconds: 1),
+      behavior: SnackBarBehavior.floating,
+    ));
   }
 
   Color _parseColor(String hex) {
