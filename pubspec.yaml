@@ -1,7 +1,7 @@
 name: DDchat
 description: DDChat - Secure End-to-End Encrypted Messenger (Enhanced)
 publish_to: 'none'
-version: 3.0.0+1
+version: 3.1.0+2
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
