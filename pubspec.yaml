@@ -1,7 +1,7 @@
 name: DDchat
 description: DDChat - Secure End-to-End Encrypted Messenger (Enhanced)
 publish_to: 'none'
-version: 3.2.0+3
+version: 3.3.0+4
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -92,3 +92,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/
+    - assets/stickers/ghost/
