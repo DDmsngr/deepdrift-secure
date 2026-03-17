@@ -222,6 +222,12 @@ class MessageBubble extends StatelessWidget {
             ? VideoGalleryPlayer(filePath: msg['filePath'] as String)
             : _retryButton(Icons.video_file_rounded, 'Видео из галереи');
       default:
+        // Стикеры — большой эмодзи без пузыря
+        final rawType = msg['type'] as String? ?? 'text';
+        if (rawType == 'sticker') {
+          return Text(msg['text'] as String? ?? '',
+              style: const TextStyle(fontSize: 64));
+        }
         return _buildTextWithLinks(msg['text'] as String? ?? '');
     }
   }
