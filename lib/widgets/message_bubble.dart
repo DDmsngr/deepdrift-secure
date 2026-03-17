@@ -47,6 +47,7 @@ class MessageBubble extends StatelessWidget {
     final msgType      = (msg['type'] as String? ?? 'text').toMsgType();
     final msgId        = msg['id']?.toString() ?? '';
     final msgReactions = reactions[msgId] ?? {};
+    final isSticker    = (msg['type'] as String? ?? '') == 'sticker';
 
     return GestureDetector(
       onLongPress: () => onLongPress(msg),
@@ -59,13 +60,14 @@ class MessageBubble extends StatelessWidget {
             crossAxisAlignment:
                 isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
             children: [
-              // ── Пузырь ─────────────────────────────────────────────
+              // ── Пузырь (прозрачный для стикеров) ────────────────────
               Container(
                 constraints: BoxConstraints(
                   maxWidth: MediaQuery.of(context).size.width * 0.75),
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
+                padding: isSticker
+                    ? const EdgeInsets.symmetric(vertical: 4)
+                    : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: isSticker ? null : BoxDecoration(
                   gradient: isMe
                       ? const LinearGradient(
                           colors: [Color(0xFF00D4FF), Color(0xFF0099CC)])
@@ -222,11 +224,21 @@ class MessageBubble extends StatelessWidget {
             ? VideoGalleryPlayer(filePath: msg['filePath'] as String)
             : _retryButton(Icons.video_file_rounded, 'Видео из галереи');
       default:
-        // Стикеры — большой эмодзи без пузыря
         final rawType = msg['type'] as String? ?? 'text';
         if (rawType == 'sticker') {
-          return Text(msg['text'] as String? ?? '',
-              style: const TextStyle(fontSize: 64));
+          final text = msg['text'] as String? ?? '';
+          // Картиночный стикер: "sticker:ghost/ghost_cool"
+          if (text.startsWith('sticker:')) {
+            final path = text.substring(8); // "ghost/ghost_cool"
+            return Image.asset(
+              'assets/stickers/$path.webp',
+              width: 128, height: 128,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => Text(text, style: const TextStyle(fontSize: 32)),
+            );
+          }
+          // Эмоджи стикер
+          return Text(text, style: const TextStyle(fontSize: 64));
         }
         return _buildTextWithLinks(msg['text'] as String? ?? '');
     }
