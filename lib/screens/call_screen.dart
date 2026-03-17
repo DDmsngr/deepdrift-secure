@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:audioplayers/audioplayers.dart';
 
 import '../services/call_service.dart';
 import '../storage_service.dart';
@@ -40,6 +41,7 @@ class _CallScreenState extends State<CallScreen> {
 
   final _localRenderer  = RTCVideoRenderer();
   final _remoteRenderer = RTCVideoRenderer();
+  final _tonePlayer     = AudioPlayer();
 
   Timer?   _durationTimer;
   Duration _callDuration = Duration.zero;
@@ -54,10 +56,27 @@ class _CallScreenState extends State<CallScreen> {
 
     if (widget.isIncoming) {
       _statusText = 'Входящий звонок...';
+      _playTone('ringtone.wav');
     } else {
       _statusText = 'Вызов...';
+      _playTone('ringback.wav');
       _initiateCall();
     }
+  }
+
+  Future<void> _playTone(String asset) async {
+    try {
+      await _tonePlayer.setReleaseMode(ReleaseMode.loop);
+      await _tonePlayer.play(AssetSource(asset), volume: 0.8);
+    } catch (e) {
+      debugPrint('🔊 Tone play error: $e');
+    }
+  }
+
+  Future<void> _stopTone() async {
+    try {
+      await _tonePlayer.stop();
+    } catch (_) {}
   }
 
   Future<void> _initRenderers() async {
@@ -89,13 +108,16 @@ class _CallScreenState extends State<CallScreen> {
             break;
           case CallState.connecting:
             _statusText = 'Соединение...';
+            _stopTone();
             break;
           case CallState.active:
             _statusText = '';
+            _stopTone();
             _startDurationTimer();
             break;
           case CallState.ended:
             _statusText = 'Вызов завершён';
+            _stopTone();
             _durationTimer?.cancel();
             Future.delayed(const Duration(seconds: 1), () {
               if (mounted) Navigator.of(context).pop();
@@ -149,6 +171,8 @@ class _CallScreenState extends State<CallScreen> {
   @override
   void dispose() {
     _durationTimer?.cancel();
+    _stopTone();
+    _tonePlayer.dispose();
     _callService.onStateChanged    = null;
     _callService.onLocalStream     = null;
     _callService.onRemoteStream    = null;
@@ -159,19 +183,21 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Future<void> _onAccept() async {
+    _stopTone();
     final success = await _callService.acceptCall();
     if (!success && mounted) {
-      // Разрешения не получены — вызов автоматически отклонён
       Navigator.of(context).pop();
     }
   }
 
   void _onReject() {
+    _stopTone();
     _callService.rejectCall();
     if (mounted) Navigator.of(context).pop();
   }
 
   void _onHangUp() {
+    _stopTone();
     _callService.hangUp();
   }
 
