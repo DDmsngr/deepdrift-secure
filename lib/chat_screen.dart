@@ -81,6 +81,11 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String? _replyToText;
   String? _replyToId;
+  String? _replyToSender;
+
+  // ── @Mentions ─────────────────────────────────────────────────────────────
+  bool _showMentionList = false;
+  String _mentionQuery  = '';
 
   // 🔴-5 FIX: Токен upload/download, получаем из uid_assigned события
   // Не зависим от socket_service.downloadHeaders — храним локально.
@@ -785,12 +790,22 @@ class _ChatScreenState extends State<ChatScreen> {
       // Резолвим replyToId в текст ответа из локальных сообщений
       String? replyText = data['replyTo'] as String?;
       final replyId = data['replyToId'] as String?;
-      if (replyText == null && replyId != null) {
+      String? replyToSender;
+      if (replyId != null) {
         final original = _messages.cast<Map<String, dynamic>?>().firstWhere(
           (m) => m?['id']?.toString() == replyId,
           orElse: () => null,
         );
-        replyText = original?['text'] as String? ?? '[сообщение]';
+        if (replyText == null) {
+          replyText = original?['text'] as String? ?? '[сообщение]';
+        }
+        // Определяем имя автора оригинального сообщения
+        final origFrom = original?['from'] as String?;
+        if (origFrom != null) {
+          replyToSender = origFrom == widget.myUid
+              ? 'Вы'
+              : _storage.getContactDisplayName(origFrom);
+        }
       }
 
       final msg = {
@@ -803,6 +818,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'status':          'delivered',
         'replyTo':         replyText,
         'replyToId':       replyId,
+        'replyToSender':   replyToSender,
         'type':            data['messageType'] ?? 'text',
         'filePath':        localPath,
         'mediaData':       data['mediaData'],
@@ -984,6 +1000,25 @@ class _ChatScreenState extends State<ChatScreen> {
         _socket.sendTypingIndicator(widget.targetUid, false);
       }
     });
+
+    // @mention detection (только в группах)
+    if (_storage.isGroup(widget.targetUid)) {
+      final text = _messageController.text;
+      final cursor = _messageController.selection.baseOffset;
+      if (cursor > 0 && cursor <= text.length) {
+        // Ищем последний @ перед курсором
+        final before = text.substring(0, cursor);
+        final atIdx = before.lastIndexOf('@');
+        if (atIdx >= 0 && (atIdx == 0 || before[atIdx - 1] == ' ')) {
+          final query = before.substring(atIdx + 1).toLowerCase();
+          if (!query.contains(' ')) {
+            setState(() { _showMentionList = true; _mentionQuery = query; });
+            return;
+          }
+        }
+      }
+      if (_showMentionList) setState(() => _showMentionList = false);
+    }
   }
 
   void _onScroll() {
@@ -1036,10 +1071,11 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
 
-    final msgId     = _uuid.v4();
-    final now       = DateTime.now().millisecondsSinceEpoch;
-    final replyId   = _replyToId;
-    final replyText = _replyToText;
+    final msgId      = _uuid.v4();
+    final now        = DateTime.now().millisecondsSinceEpoch;
+    final replyId    = _replyToId;
+    final replyText  = _replyToText;
+    final replySender = _replyToSender;
 
     try {
       final encrypted = await widget.cipher.encryptText(messageText, targetUid: widget.targetUid);
@@ -1057,6 +1093,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'status':          'pending',
         'replyTo':         replyText,
         'replyToId':       replyId,
+        'replyToSender':   replySender,
         'type':            messageType,
         'filePath':        filePath,
         'fileName':        fileName,
@@ -1074,8 +1111,9 @@ class _ChatScreenState extends State<ChatScreen> {
           _messages.add(myMsg);
           _messageIds.add(msgId);
           _messageController.clear();
-          _replyToText = null;
-          _replyToId   = null;
+          _replyToText   = null;
+          _replyToId     = null;
+          _replyToSender = null;
         });
         _scrollToBottom();
         SystemSound.play(SystemSoundType.click);
@@ -1143,10 +1181,11 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
 
-    final msgId     = _uuid.v4();
-    final now       = DateTime.now().millisecondsSinceEpoch;
-    final replyId   = _replyToId;
-    final replyText = _replyToText;
+    final msgId      = _uuid.v4();
+    final now        = DateTime.now().millisecondsSinceEpoch;
+    final replyId    = _replyToId;
+    final replyText  = _replyToText;
+    final replySender = _replyToSender;
 
     try {
       // Шифруем ОДИН РАЗ групповым ключом
@@ -1164,6 +1203,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'status':          'pending',
         'replyTo':         replyText,
         'replyToId':       replyId,
+        'replyToSender':   replySender,
         'type':            messageType,
         'filePath':        filePath,
         'fileName':        fileName,
@@ -1180,8 +1220,9 @@ class _ChatScreenState extends State<ChatScreen> {
           _messages.add(myMsg);
           _messageIds.add(msgId);
           _messageController.clear();
-          _replyToText = null;
-          _replyToId   = null;
+          _replyToText   = null;
+          _replyToId     = null;
+          _replyToSender = null;
         });
         _scrollToBottom();
         // Звук отправленного группового сообщения
@@ -1593,50 +1634,91 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
+    final selected = <String>{};
+
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1F3C),
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              'Переслать...',
-              style: GoogleFonts.orbitron(color: Colors.white, fontSize: 14),
-            ),
-          ),
-          const Divider(color: Colors.white12),
-          Flexible(
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: contacts.length,
-              itemBuilder: (_, i) {
-                final uid  = contacts[i];
-                final name = _storage.getContactDisplayName(uid);
-                return ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: const Color(0xFF0A0E27),
-                    child: Text(
-                      name.isNotEmpty ? name[0].toUpperCase() : '?',
-                      style: const TextStyle(color: Colors.cyan),
-                    ),
-                  ),
-                  title: Text(name, style: const TextStyle(color: Colors.white)),
-                  subtitle: Text(uid, style: const TextStyle(color: Colors.white38, fontSize: 11)),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    await _sendForwardedMessage(message, toUid: uid);
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => SizedBox(
+          height: MediaQuery.of(context).size.height * 0.6,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Expanded(child: Text(
+                      'Переслать${selected.isEmpty ? '' : ' (${selected.length})'}',
+                      style: GoogleFonts.orbitron(color: Colors.white, fontSize: 14),
+                    )),
+                    if (selected.isNotEmpty)
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF00D9FF),
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                        ),
+                        onPressed: () async {
+                          Navigator.pop(ctx);
+                          int ok = 0;
+                          for (final uid in selected) {
+                            try {
+                              await _sendForwardedMessage(message, toUid: uid);
+                              ok++;
+                            } catch (_) {}
+                          }
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                              content: Text('Переслано $ok/${selected.length}'),
+                              backgroundColor: const Color(0xFF1A4A2E),
+                            ));
+                          }
+                        },
+                        child: const Text('ОТПРАВИТЬ', style: TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                  ],
+                ),
+              ),
+              const Divider(color: Colors.white12),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: contacts.length,
+                  itemBuilder: (_, i) {
+                    final uid  = contacts[i];
+                    final name = _storage.getContactDisplayName(uid);
+                    final isSelected = selected.contains(uid);
+                    return ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: isSelected ? const Color(0xFF00D9FF) : const Color(0xFF0A0E27),
+                        child: isSelected
+                            ? const Icon(Icons.check, color: Colors.black, size: 20)
+                            : Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+                                style: const TextStyle(color: Colors.cyan)),
+                      ),
+                      title: Text(name, style: TextStyle(
+                          color: isSelected ? const Color(0xFF00D9FF) : Colors.white)),
+                      subtitle: Text(uid, style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                      onTap: () {
+                        setS(() {
+                          if (isSelected) {
+                            selected.remove(uid);
+                          } else {
+                            selected.add(uid);
+                          }
+                        });
+                      },
+                    );
                   },
-                );
-              },
-            ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-        ],
+        ),
       ),
     );
   }
@@ -1774,13 +1856,21 @@ class _ChatScreenState extends State<ChatScreen> {
 
 
   void _setReplyTo(Map<String, dynamic> message) {
+    final fromUid = message['from'] as String?;
+    String? senderName;
+    if (fromUid != null && fromUid != widget.myUid) {
+      senderName = _storage.getContactDisplayName(fromUid);
+    } else if (fromUid == widget.myUid) {
+      senderName = 'Вы';
+    }
     setState(() {
-      _replyToText = message['text'] as String?;
-      _replyToId   = message['id']?.toString();
+      _replyToText   = message['text'] as String?;
+      _replyToId     = message['id']?.toString();
+      _replyToSender = senderName;
     });
   }
 
-  void _cancelReply() => setState(() { _replyToText = null; _replyToId = null; });
+  void _cancelReply() => setState(() { _replyToText = null; _replyToId = null; _replyToSender = null; });
 
   void _toggleSearch() {
     setState(() {
@@ -3269,11 +3359,22 @@ class _ChatScreenState extends State<ChatScreen> {
         const Icon(Icons.reply, color: Colors.cyan, size: 20),
         const SizedBox(width: 8),
         Expanded(
-          child: Text(
-            _replyToText!,
-            style: const TextStyle(color: Colors.white70),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_replyToSender != null)
+                Text(
+                  _replyToSender!,
+                  style: const TextStyle(color: Colors.cyan, fontSize: 11, fontWeight: FontWeight.w600),
+                ),
+              Text(
+                _replyToText!,
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
           ),
         ),
         IconButton(
