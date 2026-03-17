@@ -734,6 +734,38 @@ class SocketService {
   void getBlockedList()              => send({'type': 'get_blocked_list'});
 
   // ──────────────────────────────────────────────────────────────────────────
+  // Stories / Статусы
+  // ──────────────────────────────────────────────────────────────────────────
+
+  void postStory({
+    required String storyType,
+    String text = '',
+    String mediaId = '',
+    String bgColor = '#1A1F3C',
+  }) => send({
+    'type':       'post_story',
+    'story_type': storyType,
+    'text':       text,
+    'media_id':   mediaId,
+    'bg_color':   bgColor,
+  });
+
+  void getStories(List<String> contactUids) => send({
+    'type':     'get_stories',
+    'contacts': contactUids,
+  });
+
+  void viewStory(String storyId) => send({
+    'type':     'view_story',
+    'story_id': storyId,
+  });
+
+  void deleteStory(String storyId) => send({
+    'type':     'delete_story',
+    'story_id': storyId,
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
   // Dispose (вызывать при завершении работы приложения)
   // ──────────────────────────────────────────────────────────────────────────
 
