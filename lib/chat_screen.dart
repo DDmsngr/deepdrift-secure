@@ -85,10 +85,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ── @Mentions ─────────────────────────────────────────────────────────────
   bool _showMentionList = false;
-  String _mentionQuery  = '';
 
-  // 🔴-5 FIX: Токен upload/download, получаем из uid_assigned события
-  // Не зависим от socket_service.downloadHeaders — храним локально.
+  // 🔴-5 FIX: Токен upload/download
   String? _uploadToken;
 
   bool   _keysExchanged = false;
@@ -1012,7 +1010,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (atIdx >= 0 && (atIdx == 0 || before[atIdx - 1] == ' ')) {
           final query = before.substring(atIdx + 1).toLowerCase();
           if (!query.contains(' ')) {
-            setState(() { _showMentionList = true; _mentionQuery = query; });
+            setState(() { _showMentionList = true; });
             return;
           }
         }
