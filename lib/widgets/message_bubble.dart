@@ -137,13 +137,27 @@ class MessageBubble extends StatelessWidget {
                               left: BorderSide(
                                   color: Colors.cyanAccent, width: 3)),
                         ),
-                        child: Text(
-                          msg['replyTo'] as String,
-                          style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.65),
-                              fontSize: 12,
-                              fontStyle: FontStyle.italic),
-                          maxLines: 2, overflow: TextOverflow.ellipsis,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (msg['replyToSender'] != null)
+                              Text(
+                                msg['replyToSender'] as String,
+                                style: const TextStyle(
+                                  color: Colors.cyanAccent,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            Text(
+                              msg['replyTo'] as String,
+                              style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.65),
+                                  fontSize: 12,
+                                  fontStyle: FontStyle.italic),
+                              maxLines: 2, overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
                         ),
                       ),
                     ],
