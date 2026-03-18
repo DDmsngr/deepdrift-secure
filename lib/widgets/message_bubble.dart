@@ -201,7 +201,7 @@ class MessageBubble extends StatelessWidget {
                     spacing: 4,
                     children: msgReactions.map((emoji) =>
                       GestureDetector(
-                        onTap: () => onRemoveReaction(msgId, emoji),
+                        onTap: isMe ? () => onRemoveReaction(msgId, emoji) : null,
                         child: Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 6, vertical: 2),
