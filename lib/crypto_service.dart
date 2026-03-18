@@ -488,7 +488,6 @@ class SecureCipher {
     // final version = env['v'] as int? ?? 1;
 
     // ── Anti-replay check ──────────────────────────────────────────────
-    final lastSeen = _recvCounters[fromUid] ?? 0;
 
     // Новая сессия собеседника — сбрасываем счётчик
     // (это нормально: собеседник перезапустил приложение)
@@ -568,7 +567,6 @@ class SecureCipher {
     _prevRecvHash.remove(uid);
     _seenCounters.remove(uid);
     _recvSessions.remove(uid);
-  }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
