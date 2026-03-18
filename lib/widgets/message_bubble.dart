@@ -186,6 +186,7 @@ class MessageBubble extends StatelessWidget {
                       ],
                       if (!isMe) ...[
                         const SizedBox(width: 4),
+                        _buildEnvelopeIcon(),
                         _buildSignatureIcon(context),
                       ],
                     ]),
@@ -698,6 +699,28 @@ class MessageBubble extends StatelessWidget {
   }
 
   // ── Ed25519 иконка верификации ────────────────────────────────────────────
+
+  /// Иконка статуса anti-replay envelope.
+  /// 0=verified, 1=reordered, 4=legacy (без envelope, старый клиент)
+  Widget _buildEnvelopeIcon() {
+    final envStatus = msg['envelopeStatus'] as int?;
+    if (envStatus == null || envStatus == 4 /* legacy */) {
+      return const SizedBox.shrink(); // Нет envelope — не показываем
+    }
+    if (envStatus == 0 /* verified */) {
+      return const Padding(
+        padding: EdgeInsets.only(right: 2),
+        child: Icon(Icons.verified_user, size: 11, color: Colors.greenAccent),
+      );
+    }
+    if (envStatus == 1 /* reordered */) {
+      return const Padding(
+        padding: EdgeInsets.only(right: 2),
+        child: Icon(Icons.swap_vert, size: 11, color: Colors.amber),
+      );
+    }
+    return const SizedBox.shrink();
+  }
 
   Widget _buildSignatureIcon(BuildContext context) {
     final statusIndex = msg['signatureStatus'] as int?;
