@@ -457,7 +457,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _infoTile(
             icon:  Icons.info_outline,
             title: 'Версия',
-            value: 'DDChat 3.4.0',
+            value: 'DDChat 3.5.0',
           ),
 
           ListTile(
