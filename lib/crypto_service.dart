@@ -32,7 +32,51 @@ class SecureCipher {
   final Map<String, SimplePublicKey> _contactPublicKeys  = {};
   final Map<String, SimplePublicKey> _contactSignKeys    = {};
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ANTI-REPLAY: Message envelope counters & session tracking
+  //
+  // Каждое сообщение шифруется вместе с envelope:
+  //   {"v":1, "t":"текст", "c":42, "s":"session_id", "ph":"prev_hash_hex"}
+  //
+  // v  = версия формата envelope
+  // t  = plaintext сообщения
+  // c  = монотонный счётчик (per-chat, per-direction)
+  // s  = session_id отправителя (меняется при перезапуске)
+  // ph = SHA-256 первых 16 hex символов предыдущего зашифрованного сообщения
+  //
+  // При дешифровке:
+  //   - counter должен быть > last_seen для этого отправителя
+  //   - если counter <= last_seen → replay attack → отклоняем
+  //   - prev_hash должен совпадать → обнаруживаем reorder/drop
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static const int _envelopeVersion = 1;
+
+  // Session ID — уникален для каждого запуска приложения
+  late final String _sessionId;
+
+  // Per-chat send counter: targetUid → counter (мой исходящий)
+  final Map<String, int> _sendCounters = {};
+  // Per-chat receive counter: fromUid → last seen counter (входящий)
+  final Map<String, int> _recvCounters = {};
+
+  // Hash предыдущего отправленного шифротекста (per-chat)
+  final Map<String, String> _prevSendHash = {};
+  // Hash предыдущего полученного шифротекста (per-chat)
+  final Map<String, String> _prevRecvHash = {};
+
+  // Набор уже виденных (message_id + counter) для жёсткой дедупликации
+  final Map<String, Set<int>> _seenCounters = {};
+  // Последний известный session_id от каждого собеседника
+  final Map<String, String> _recvSessions = {};
+
   bool _isInitialized = false;
+
+  SecureCipher() {
+    // Уникальный session ID для этого запуска приложения
+    final rng = Random.secure();
+    _sessionId = List.generate(16, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+  }
 
   // ── Константы формата ──────────────────────────────────────────────────────
   /// Длина Argon2 KDF-нонса, который сохраняется перед шифртекстом.
@@ -351,9 +395,11 @@ class SecureCipher {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // ШИФРОВАНИЕ ТЕКСТА
+  // ШИФРОВАНИЕ ТЕКСТА (с anti-replay envelope)
   // ═══════════════════════════════════════════════════════════════════════════
 
+  /// Шифрует текст в envelope: {"v":1,"t":"text","c":N,"s":"session","ph":"hash"}
+  /// Envelope шифруется ВНУТРЬ — сервер не видит и не может подделать counter.
   Future<String> encryptText(String text, {required String targetUid}) async {
     if (!_isInitialized) throw StateError('Cipher not initialized');
     if (!_sharedSecrets.containsKey(targetUid)) {
@@ -361,23 +407,46 @@ class SecureCipher {
     }
 
     try {
-      final plainBytes = utf8.encode(text);
+      // Инкрементируем send counter для этого чата
+      _sendCounters[targetUid] = (_sendCounters[targetUid] ?? 0) + 1;
+      final counter = _sendCounters[targetUid]!;
+
+      // Собираем envelope
+      final envelope = jsonEncode({
+        'v':  _envelopeVersion,
+        't':  text,
+        'c':  counter,
+        's':  _sessionId,
+        'ph': _prevSendHash[targetUid] ?? '',
+      });
+
+      final plainBytes = utf8.encode(envelope);
       final secretBox  = await _algo.encrypt(
         plainBytes,
         secretKey: _sharedSecrets[targetUid]!,
       );
-      return base64Encode(secretBox.concatenation());
+      final b64 = base64Encode(secretBox.concatenation());
+
+      // Сохраняем hash шифротекста для chain (первые 16 hex символов SHA-256)
+      _prevSendHash[targetUid] = _shortHash(b64);
+
+      return b64;
     } catch (e) {
       debugLog('❌ [Crypto] Encryption failed: $e');
       throw CryptoException('Encryption failed: $e');
     }
   }
 
-  Future<String> decryptText(String b64, {required String fromUid}) async {
+  /// Дешифрует текст, проверяет envelope: counter > last_seen, reject replay.
+  ///
+  /// Возвращает `DecryptResult` с текстом и статусом проверки.
+  /// Backward-compatible: если payload не содержит envelope (старые сообщения),
+  /// возвращает текст как есть с status=legacy.
+  Future<DecryptResult> decryptTextSecure(String b64, {required String fromUid}) async {
     if (!_isInitialized) throw StateError('Cipher not initialized');
-    if (b64.isEmpty) return '[⚠️ Empty payload]';
+    if (b64.isEmpty) return DecryptResult('[⚠️ Empty payload]', EnvelopeStatus.error);
     if (!_sharedSecrets.containsKey(fromUid)) {
-      return '[⚠️ No encryption key for $fromUid]';
+      return DecryptResult('[⚠️ No encryption key for $fromUid]', EnvelopeStatus.error);
     }
 
     try {
@@ -388,14 +457,118 @@ class SecureCipher {
         macLength:   _algo.macAlgorithm.macLength,
       );
       final clearBytes = await _algo.decrypt(box, secretKey: _sharedSecrets[fromUid]!);
-      return utf8.decode(clearBytes);
+      final clearText  = utf8.decode(clearBytes);
+
+      // Пытаемся распарсить envelope
+      try {
+        final env = jsonDecode(clearText) as Map<String, dynamic>;
+        if (env.containsKey('v') && env.containsKey('t') && env.containsKey('c')) {
+          return _processEnvelope(env, fromUid, b64);
+        }
+      } catch (_) {
+        // Не JSON или нет envelope-полей → legacy сообщение (до апдейта)
+      }
+
+      // Legacy: текст без envelope — пропускаем (backward compat)
+      return DecryptResult(clearText, EnvelopeStatus.legacy);
     } on SecretBoxAuthenticationError {
-      // MAC проверка провалилась — сообщение повреждено или подделано
-      return '[⚠️ Authentication failed]';
+      return DecryptResult('[⚠️ Authentication failed]', EnvelopeStatus.tampered);
     } catch (e) {
       debugLog('❌ [Crypto] Decryption error: $e');
-      return '[❌ Decryption error]';
+      return DecryptResult('[❌ Decryption error]', EnvelopeStatus.error);
     }
+  }
+
+  /// Обработка envelope: проверка counter, chain hash, дедупликация.
+  DecryptResult _processEnvelope(Map<String, dynamic> env, String fromUid, String cipherB64) {
+    final text     = env['t'] as String? ?? '';
+    final counter  = env['c'] as int? ?? 0;
+    final session  = env['s'] as String? ?? '';
+    final prevHash = env['ph'] as String? ?? '';
+    // final version = env['v'] as int? ?? 1;
+
+    // ── Anti-replay check ──────────────────────────────────────────────
+    final lastSeen = _recvCounters[fromUid] ?? 0;
+
+    // Новая сессия собеседника — сбрасываем счётчик
+    // (это нормально: собеседник перезапустил приложение)
+    final knownSession = _recvSessions[fromUid];
+    if (knownSession != null && knownSession != session) {
+      debugLog('🔄 [Crypto] New session from $fromUid — resetting counter');
+      _recvCounters[fromUid] = 0;
+      _prevRecvHash[fromUid] = '';
+    }
+    _recvSessions[fromUid] = session;
+
+    final lastSeenAfterReset = _recvCounters[fromUid] ?? 0;
+
+    if (counter <= lastSeenAfterReset) {
+      // REPLAY DETECTED: counter не увеличился
+      debugLog('🚨 [Crypto] REPLAY DETECTED from $fromUid: counter=$counter <= lastSeen=$lastSeenAfterReset');
+      return DecryptResult(text, EnvelopeStatus.replay);
+    }
+
+    // Дедупликация: проверяем не видели ли мы этот counter раньше
+    _seenCounters.putIfAbsent(fromUid, () => {});
+    if (_seenCounters[fromUid]!.contains(counter)) {
+      debugLog('🚨 [Crypto] DUPLICATE counter from $fromUid: $counter');
+      return DecryptResult(text, EnvelopeStatus.replay);
+    }
+    _seenCounters[fromUid]!.add(counter);
+    // Очистка: держим только последние 500 counter'ов в памяти
+    if (_seenCounters[fromUid]!.length > 500) {
+      final sorted = _seenCounters[fromUid]!.toList()..sort();
+      _seenCounters[fromUid] = sorted.skip(sorted.length - 500).toSet();
+    }
+
+    // ── Chain hash check (обнаружение reorder/drop) ────────────────────
+    EnvelopeStatus status = EnvelopeStatus.verified;
+    final expectedPrevHash = _prevRecvHash[fromUid] ?? '';
+    if (prevHash.isNotEmpty && expectedPrevHash.isNotEmpty && prevHash != expectedPrevHash) {
+      debugLog('⚠️ [Crypto] Chain hash mismatch from $fromUid: expected=$expectedPrevHash got=$prevHash');
+      // Не отклоняем — сообщения могли прийти не по порядку из-за сети
+      // Но помечаем как reordered
+      status = EnvelopeStatus.reordered;
+    }
+
+    // Обновляем state
+    _recvCounters[fromUid] = counter;
+    _prevRecvHash[fromUid] = _shortHash(cipherB64);
+
+    return DecryptResult(text, status);
+  }
+
+  /// Backward-compatible обёртка: возвращает только текст (для существующего кода).
+  Future<String> decryptText(String b64, {required String fromUid}) async {
+    final result = await decryptTextSecure(b64, fromUid: fromUid);
+    if (result.status == EnvelopeStatus.replay) {
+      debugLog('🚨 [Crypto] Rejected replay from $fromUid');
+      return '[⚠️ Replay detected — message rejected]';
+    }
+    return result.text;
+  }
+
+  /// SHA-256 первые 16 hex символов от строки.
+  String _shortHash(String input) {
+    final digest = sha256.convert(utf8.encode(input));
+    return digest.toString().substring(0, 16);
+  }
+
+  /// Геттер для текущего session ID (для передачи в metadata если нужно).
+  String get sessionId => _sessionId;
+
+  /// Получить текущий send counter для чата (для отладки/UI).
+  int getSendCounter(String targetUid) => _sendCounters[targetUid] ?? 0;
+
+  /// Сбросить counter'ы для чата (при re-key exchange).
+  void resetCounters(String uid) {
+    _sendCounters.remove(uid);
+    _recvCounters.remove(uid);
+    _prevSendHash.remove(uid);
+    _prevRecvHash.remove(uid);
+    _seenCounters.remove(uid);
+    _recvSessions.remove(uid);
+  }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -612,10 +785,49 @@ class SecureCipher {
     _sharedSecrets.clear();
     _contactPublicKeys.clear();
     _contactSignKeys.clear();
+    _sendCounters.clear();
+    _recvCounters.clear();
+    _prevSendHash.clear();
+    _prevRecvHash.clear();
+    _seenCounters.clear();
+    _recvSessions.clear();
     _myX25519KeyPair  = null;
     _myEd25519KeyPair = null;
     _isInitialized    = false;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Anti-replay types
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Статус проверки envelope.
+enum EnvelopeStatus {
+  /// Envelope v1 проверен: counter валиден, chain hash совпал.
+  verified,
+  /// Envelope v1 проверен, но chain hash не совпал (сообщения переупорядочены).
+  reordered,
+  /// Replay detected: counter <= last seen. Сообщение ОТКЛОНЕНО.
+  replay,
+  /// MAC проверка провалилась — сообщение подделано.
+  tampered,
+  /// Legacy сообщение без envelope (от старой версии клиента).
+  legacy,
+  /// Ошибка дешифровки.
+  error,
+}
+
+/// Результат дешифровки с информацией о проверке envelope.
+class DecryptResult {
+  final String text;
+  final EnvelopeStatus status;
+
+  const DecryptResult(this.text, this.status);
+
+  bool get isSecure => status == EnvelopeStatus.verified;
+  bool get isReplay => status == EnvelopeStatus.replay;
+  bool get isLegacy => status == EnvelopeStatus.legacy;
+  bool get isTampered => status == EnvelopeStatus.tampered;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
