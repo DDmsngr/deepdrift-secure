@@ -705,6 +705,24 @@ class SocketService {
     });
   }
 
+  void getChannelInfo(String channelId) => send({
+    'type': 'get_channel_info', 'channel_id': channelId,
+  });
+
+  void editChannel(String channelId, {String? name, String? description, String? photoId}) {
+    final data = <String, dynamic>{'type': 'edit_channel', 'channel_id': channelId};
+    if (name != null) data['channel_name'] = name;
+    if (description != null) data['description'] = description;
+    if (photoId != null) data['photo_id'] = photoId;
+    send(data);
+  }
+
+  void deleteChannel(String channelId) => send({
+    'type': 'delete_channel', 'channel_id': channelId,
+  });
+
+  void getMyChannels() => send({'type': 'get_my_channels'});
+
   // ──────────────────────────────────────────────────────────────────────────
   // Публичные геттеры
   // ──────────────────────────────────────────────────────────────────────────
