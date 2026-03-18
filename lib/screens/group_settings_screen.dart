@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:dio/dio.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../socket_service.dart';
 import '../storage_service.dart';
 
@@ -24,15 +28,21 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
   final _socket  = SocketService();
   final _storage = StorageService();
 
+  static const String _serverUrl = 'https://deepdrift-backend.onrender.com';
+
   StreamSubscription? _sub;
+  final _dio = Dio();
+  final _imagePicker = ImagePicker();
 
   String _groupName    = '';
   String _description  = '';
+  String _photoId      = '';
   List<String> _members = [];
   List<String> _admins  = [];
   bool _onlyAdminsPost   = false;
   bool _onlyAdminsInvite = false;
   bool _isLoading = true;
+  bool _isUploadingPhoto = false;
 
   bool get _isAdmin => _admins.contains(widget.myUid);
 
@@ -48,6 +58,7 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
         setState(() {
           _groupName  = data['group_name'] as String? ?? _groupName;
           _description = data['description'] as String? ?? '';
+          _photoId    = data['photo_id'] as String? ?? '';
           _members    = (data['members'] as List?)?.cast<String>() ?? _members;
           _admins     = (data['admins'] as List?)?.cast<String>() ?? [];
           final settings = data['settings'] as Map<String, dynamic>? ?? {};
@@ -80,13 +91,14 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
     });
   }
 
-  void _updateGroupInfo({String? name, String? description}) {
+  void _updateGroupInfo({String? name, String? description, String? photoId}) {
     final data = <String, dynamic>{
       'type': 'update_group_info',
       'group_id': widget.groupId,
     };
     if (name != null) data['group_name'] = name;
     if (description != null) data['description'] = description;
+    if (photoId != null) data['photo_id'] = photoId;
     _socket.send(data);
   }
 
@@ -138,16 +150,48 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
       padding: const EdgeInsets.all(20),
       child: Column(
         children: [
-          CircleAvatar(
-            radius: 40,
-            backgroundColor: const Color(0xFF0A2A3A),
-            child: Text(
-              _groupName.isNotEmpty ? _groupName[0].toUpperCase() : 'G',
-              style: GoogleFonts.orbitron(fontSize: 28, color: const Color(0xFF00D9FF)),
+          // Аватар с возможностью смены (для админов)
+          GestureDetector(
+            onTap: _isAdmin ? _pickGroupPhoto : null,
+            child: Stack(
+              children: [
+                _photoId.isNotEmpty
+                    ? CircleAvatar(
+                        radius: 40,
+                        backgroundImage: CachedNetworkImageProvider(
+                          '$_serverUrl/download/$_photoId',
+                        ),
+                      )
+                    : CircleAvatar(
+                        radius: 40,
+                        backgroundColor: const Color(0xFF0A2A3A),
+                        child: Text(
+                          _groupName.isNotEmpty ? _groupName[0].toUpperCase() : 'G',
+                          style: GoogleFonts.orbitron(fontSize: 28, color: const Color(0xFF00D9FF)),
+                        ),
+                      ),
+                if (_isAdmin)
+                  Positioned(
+                    right: 0, bottom: 0,
+                    child: Container(
+                      width: 28, height: 28,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00D9FF),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: const Color(0xFF0A0E27), width: 2),
+                      ),
+                      child: _isUploadingPhoto
+                          ? const Padding(
+                              padding: EdgeInsets.all(6),
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
+                            )
+                          : const Icon(Icons.camera_alt, size: 14, color: Colors.black),
+                    ),
+                  ),
+              ],
             ),
           ),
           const SizedBox(height: 12),
-          // Имя группы (тап для редактирования)
           GestureDetector(
             onTap: _isAdmin ? _editGroupName : null,
             child: Row(
@@ -162,7 +206,6 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
             ),
           ),
           const SizedBox(height: 8),
-          // Описание
           GestureDetector(
             onTap: _isAdmin ? _editDescription : null,
             child: Text(
@@ -180,6 +223,45 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _pickGroupPhoto() async {
+    final picked = await _imagePicker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 512,
+      imageQuality: 80,
+    );
+    if (picked == null) return;
+
+    setState(() => _isUploadingPhoto = true);
+    try {
+      final token = StorageService.uploadToken;
+      final formData = FormData.fromMap({
+        'file': await MultipartFile.fromFile(picked.path),
+      });
+      final response = await _dio.post(
+        '$_serverUrl/upload',
+        data: formData,
+        options: Options(headers: {
+          if (token != null) 'X-Upload-Token': token,
+        }),
+      );
+      if (response.statusCode == 200) {
+        final fileId = response.data['file_id'] as String? ?? '';
+        if (fileId.isNotEmpty) {
+          _updateGroupInfo(photoId: fileId);
+          setState(() => _photoId = fileId);
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка загрузки: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isUploadingPhoto = false);
+    }
   }
 
   Widget _sectionTitle(String title) {
