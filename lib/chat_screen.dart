@@ -726,7 +726,15 @@ class _ChatScreenState extends State<ChatScreen> {
     // For groups: decrypt with group key (stored under groupId).
     // For personal: decrypt with sender's shared secret.
     final useUid = (groupId != null && groupId.isNotEmpty) ? groupId : decryptFromUid;
-    widget.cipher.decryptText(encrypted, fromUid: useUid).then((decrypted) async {
+    widget.cipher.decryptTextSecure(encrypted, fromUid: useUid).then((result) async {
+      final decrypted = result.text;
+
+      // ── Anti-replay: отклоняем replay-сообщения ──────────────────────────
+      if (result.isReplay) {
+        debugPrint('🚨 [Security] REPLAY DETECTED msg $msgId from $senderUid — dropped');
+        return; // Не показываем, не сохраняем
+      }
+
       // ── Обнаружение несоответствия ключей ─────────────────────────────────
       if (decrypted.contains('Authentication failed') || decrypted.contains('Wrong key')) {
         widget.cipher.clearSharedSecret(decryptFromUid);
@@ -827,6 +835,7 @@ class _ChatScreenState extends State<ChatScreen> {
         'editedAt':        data['editedAt'],
         'forwardedFrom':   data['forwarded_from'],
         'signatureStatus': sigStatus.index,
+        'envelopeStatus':  result.status.index,
         'message_ttl':     data['message_ttl'] as int?,
         'expire_at':       _calcExpireAt(data['message_ttl'] as int?),
       };
