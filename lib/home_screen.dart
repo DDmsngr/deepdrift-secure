@@ -455,6 +455,18 @@ class _HomeScreenState extends State<HomeScreen>
           // Новая история у кого-то — обновляем список
           _fetchStories();
         }
+        if (type == 'story_reaction') {
+          final fromUid = data['from_uid'] as String? ?? '';
+          final emoji   = data['emoji'] as String? ?? '';
+          final name    = _storage.getContactDisplayName(fromUid);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('$name отреагировал на вашу историю: $emoji'),
+              backgroundColor: const Color(0xFF1A4A2E),
+              duration: const Duration(seconds: 3),
+            ));
+          }
+        }
         if (type == 'connection_status') {
           setState(() {
             _isConnected      = data['connected'] as bool? ?? false;
