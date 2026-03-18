@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 
 import '../socket_service.dart';
 import '../storage_service.dart';
+import 'channel_info_screen.dart';
 
 /// Экран чата канала.
 /// Владелец может публиковать сообщения; подписчики только читают.
@@ -72,9 +73,19 @@ class _ChannelChatScreenState extends State<ChannelChatScreen> {
         });
         _storage.saveMessage(widget.channelId, msg);
         _scrollToBottom();
-
-        // Play received sound
         SystemSound.play(SystemSoundType.alert);
+      }
+      if (data['type'] == 'channel_updated' && data['channel_id'] == widget.channelId) {
+        if (mounted) setState(() {}); // Обновляем имя из storage
+      }
+      if (data['type'] == 'channel_deleted' && data['channel_id'] == widget.channelId) {
+        _storage.removeContact(widget.channelId);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Канал удалён'), backgroundColor: Colors.red),
+          );
+          Navigator.of(context).pop();
+        }
       }
     });
 
@@ -128,6 +139,52 @@ class _ChannelChatScreenState extends State<ChannelChatScreen> {
     _scrollToBottom();
   }
 
+  void _openChannelInfo() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => ChannelInfoScreen(myUid: widget.myUid, channelId: widget.channelId)),
+    ).then((_) { if (mounted) setState(() {}); });
+  }
+
+  void _shareChannel() {
+    final link = 'deepdrift://channel/${widget.channelId}';
+    Clipboard.setData(ClipboardData(text: link));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('Ссылка скопирована: $link'),
+      backgroundColor: const Color(0xFF1A4A2E),
+    ));
+  }
+
+  void _leaveChannel() {
+    _socket.send({'type': 'leave_channel', 'channel_id': widget.channelId});
+    _storage.removeContact(widget.channelId);
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  void _deleteChannel() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1F3C),
+        title: const Text('Удалить канал?', style: TextStyle(color: Colors.red)),
+        content: const Text('Канал будет удалён навсегда.', style: TextStyle(color: Colors.white54)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _socket.deleteChannel(widget.channelId);
+              _storage.removeContact(widget.channelId);
+              Navigator.of(context).pop();
+            },
+            child: const Text('УДАЛИТЬ'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final channelName = _storage.getContactDisplayName(widget.channelId);
@@ -137,39 +194,64 @@ class _ChannelChatScreenState extends State<ChannelChatScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1A1F3C),
         titleSpacing: 0,
-        title: Row(
-          children: [
-            CircleAvatar(
-              radius: 18,
-              backgroundColor: const Color(0xFF1A0A3A),
-              child: Text(
-                channelName.isNotEmpty ? channelName[0].toUpperCase() : '#',
-                style: const TextStyle(
-                    color: Color(0xFFB39DDB), fontWeight: FontWeight.bold),
+        title: GestureDetector(
+          onTap: () => _openChannelInfo(),
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 18,
+                backgroundColor: const Color(0xFF1A0A3A),
+                child: Text(
+                  channelName.isNotEmpty ? channelName[0].toUpperCase() : '#',
+                  style: const TextStyle(
+                      color: Color(0xFFB39DDB), fontWeight: FontWeight.bold),
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    channelName.isNotEmpty ? channelName : widget.channelId,
-                    style: GoogleFonts.orbitron(fontSize: 13),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  Text(
-                    _isOwner ? 'Вы — владелец' : 'Только чтение',
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: _isOwner ? Colors.green : Colors.white38,
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      channelName.isNotEmpty ? channelName : widget.channelId,
+                      style: GoogleFonts.orbitron(fontSize: 13),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                  ),
-                ],
+                    Text(
+                      _isOwner ? 'Вы — владелец' : 'Только чтение',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: _isOwner ? Colors.green : Colors.white38,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
+        actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: Colors.white54),
+            color: const Color(0xFF1A1F3C),
+            onSelected: (v) {
+              switch (v) {
+                case 'info':   _openChannelInfo(); break;
+                case 'share':  _shareChannel(); break;
+                case 'leave':  _leaveChannel(); break;
+                case 'delete': _deleteChannel(); break;
+              }
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'info', child: Text('Информация', style: TextStyle(color: Colors.white))),
+              const PopupMenuItem(value: 'share', child: Text('Поделиться', style: TextStyle(color: Colors.white))),
+              if (!_isOwner)
+                const PopupMenuItem(value: 'leave', child: Text('Отписаться', style: TextStyle(color: Colors.orange))),
+              if (_isOwner)
+                const PopupMenuItem(value: 'delete', child: Text('Удалить канал', style: TextStyle(color: Colors.red))),
+            ],
+          ),
+        ],
       ),
       body: Column(
         children: [
