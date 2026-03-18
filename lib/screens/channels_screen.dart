@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 import '../socket_service.dart';
 import '../storage_service.dart';
 import 'channel_chat_screen.dart';
+import 'channel_info_screen.dart';
 
 /// Экран управления каналами.
 /// Показывает список подписанных каналов, позволяет искать и создавать новые.
@@ -47,13 +48,35 @@ class _ChannelsScreenState extends State<ChannelsScreen> {
         setState(() => _searchResults = results);
       }
       if (type == 'channel_created' || type == 'channel_joined') {
-        // Сохраняем имя канала из ответа сервера
         final channelId   = data['channel_id'] as String?;
         final channelName = data['channel_name'] as String?;
         if (channelId != null && channelName != null && channelName.isNotEmpty) {
           _storage.setContactDisplayName(channelId, channelName);
         }
         if (mounted) setState(() {});
+      }
+      if (type == 'channel_updated') {
+        final channelId = data['channel_id'] as String?;
+        if (channelId != null) {
+          final newName = data['name'] as String?;
+          if (newName != null && newName.isNotEmpty) {
+            _storage.setContactDisplayName(channelId, newName);
+          }
+        }
+        if (mounted) setState(() {});
+      }
+      if (type == 'channel_deleted') {
+        final channelId = data['channel_id'] as String?;
+        if (channelId != null) {
+          _storage.removeContact(channelId);
+          if (mounted) {
+            setState(() {});
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('Канал $channelId удалён'),
+              backgroundColor: Colors.red,
+            ));
+          }
+        }
       }
     });
   }
@@ -364,6 +387,89 @@ class _ChannelsScreenState extends State<ChannelsScreen> {
           builder: (_) => ChannelChatScreen(
               myUid: widget.myUid, channelId: channelId),
         ),
+      ).then((_) { if (mounted) setState(() {}); }),
+      onLongPress: () => _showChannelOptions(channelId, isOwner),
+    );
+  }
+
+  void _showChannelOptions(String channelId, bool isOwner) {
+    final name = _storage.getContactDisplayName(channelId);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1F3C),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(margin: const EdgeInsets.only(top: 10, bottom: 8), width: 36, height: 4,
+              decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
+          Padding(padding: const EdgeInsets.all(12),
+            child: Text(name.isNotEmpty ? name : channelId,
+                style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 13))),
+          ListTile(
+            leading: const Icon(Icons.info_outline, color: Colors.white54),
+            title: const Text('Информация', style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(ctx);
+              Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => ChannelInfoScreen(myUid: widget.myUid, channelId: channelId)));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.share, color: Colors.white54),
+            title: const Text('Поделиться ссылкой', style: TextStyle(color: Colors.white)),
+            onTap: () {
+              Navigator.pop(ctx);
+              final link = 'deepdrift://channel/$channelId';
+              Clipboard.setData(ClipboardData(text: link));
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text('Ссылка скопирована: $link'),
+                backgroundColor: const Color(0xFF1A4A2E),
+              ));
+            },
+          ),
+          if (!isOwner)
+            ListTile(
+              leading: const Icon(Icons.exit_to_app, color: Colors.orange),
+              title: const Text('Отписаться', style: TextStyle(color: Colors.orange)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _socket.send({'type': 'leave_channel', 'channel_id': channelId});
+                _storage.removeContact(channelId);
+                if (mounted) setState(() {});
+              },
+            ),
+          if (isOwner)
+            ListTile(
+              leading: const Icon(Icons.delete_forever, color: Colors.red),
+              title: const Text('Удалить канал', style: TextStyle(color: Colors.red)),
+              onTap: () {
+                Navigator.pop(ctx);
+                showDialog(
+                  context: context,
+                  builder: (dlg) => AlertDialog(
+                    backgroundColor: const Color(0xFF1A1F3C),
+                    title: const Text('Удалить канал?', style: TextStyle(color: Colors.red)),
+                    content: const Text('Будет удалён для всех.', style: TextStyle(color: Colors.white54)),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(dlg),
+                          child: const Text('ОТМЕНА', style: TextStyle(color: Colors.white38))),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+                        onPressed: () {
+                          Navigator.pop(dlg);
+                          _socket.deleteChannel(channelId);
+                          _storage.removeContact(channelId);
+                          if (mounted) setState(() {});
+                        },
+                        child: const Text('УДАЛИТЬ'),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          const SizedBox(height: 8),
+        ]),
       ),
     );
   }
