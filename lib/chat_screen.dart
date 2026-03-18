@@ -23,6 +23,7 @@ import 'widgets/message_bubble.dart';
 import 'screens/call_screen.dart';
 import 'screens/media_gallery_screen.dart';
 import 'screens/group_settings_screen.dart';
+import 'screens/channels_screen.dart';
 import 'widgets/sticker_picker.dart';
 import 'config/app_config.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -2782,6 +2783,7 @@ class _ChatScreenState extends State<ChatScreen> {
         onOpenImage:     _showFullImageFromFile,
         onOpenFile:      (path, name) => _openFile(path, name),
         onRemoveReaction: _removeReaction,
+        onDeepLink:      _handleDeepLink,
         senderName:      senderName,
       ),
     );
@@ -3193,6 +3195,31 @@ class _ChatScreenState extends State<ChatScreen> {
       _messageController.text = savedText;
       _messageController.selection = TextSelection.fromPosition(
         TextPosition(offset: savedText.length),
+      );
+    }
+  }
+
+  // ── Deep links ─────────────────────────────────────────────────────────────
+  void _handleDeepLink(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.scheme != 'deepdrift') return;
+
+    if (uri.host == 'channel') {
+      final channelId = uri.pathSegments.isNotEmpty ? uri.pathSegments.first : null;
+      if (channelId == null || !channelId.startsWith('ch_')) return;
+
+      // Подписываемся на канал если не подписаны
+      if (!_storage.getContacts().contains(channelId)) {
+        _storage.addContact(channelId, displayName: channelId);
+        _socket.send({'type': 'join_channel', 'channel_id': channelId});
+      }
+
+      // Открываем канал
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChannelsScreen(myUid: widget.myUid, initialChannelId: channelId),
+        ),
       );
     }
   }
