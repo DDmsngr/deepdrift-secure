@@ -3176,7 +3176,16 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sendSticker(String sticker) async {
+    // Сохраняем текст из поля ввода — стикер не должен его стирать
+    final savedText = _messageController.text;
     await _sendMessage(text: sticker, messageType: 'sticker');
+    // Восстанавливаем текст после отправки стикера
+    if (savedText.isNotEmpty && mounted) {
+      _messageController.text = savedText;
+      _messageController.selection = TextSelection.fromPosition(
+        TextPosition(offset: savedText.length),
+      );
+    }
   }
 
   // ── Вызов ─────────────────────────────────────────────────────────────────
