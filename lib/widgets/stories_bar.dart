@@ -43,7 +43,7 @@ class StoriesBar extends StatelessWidget {
     if (myStories.isEmpty && otherUids.isEmpty) {
       // Показываем только кнопку "Моя история"
       return SizedBox(
-        height: 90,
+        height: 58,
         child: ListView(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -53,7 +53,7 @@ class StoriesBar extends StatelessWidget {
     }
 
     return SizedBox(
-      height: 90,
+      height: 58,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -81,14 +81,14 @@ class StoriesBar extends StatelessWidget {
           : onCreateStory,
       onLongPress: onCreateStory,
       child: Container(
-        width: 64,
+        width: 48,
         margin: const EdgeInsets.only(right: 12),
         child: Column(
           children: [
             Stack(
               children: [
                 Container(
-                  width: 56, height: 56,
+                  width: 38, height: 38,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     border: Border.all(
@@ -97,13 +97,13 @@ class StoriesBar extends StatelessWidget {
                     ),
                   ),
                   child: CircleAvatar(
-                    radius: 24,
+                    radius: 16,
                     backgroundColor: const Color(0xFF1A1F3C),
                     child: Text(
                       'Я',
                       style: TextStyle(
                         color: hasMyStories ? const Color(0xFF00D9FF) : Colors.white54,
-                        fontSize: 16, fontWeight: FontWeight.w600,
+                        fontSize: 12, fontWeight: FontWeight.w600,
                       ),
                     ),
                   ),
@@ -112,7 +112,7 @@ class StoriesBar extends StatelessWidget {
                   Positioned(
                     right: 0, bottom: 0,
                     child: Container(
-                      width: 20, height: 20,
+                      width: 16, height: 16,
                       decoration: BoxDecoration(
                         color: const Color(0xFF00D9FF),
                         shape: BoxShape.circle,
@@ -126,7 +126,7 @@ class StoriesBar extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               hasMyStories ? 'Моя история' : 'Добавить',
-              style: const TextStyle(color: Colors.white54, fontSize: 10),
+              style: const TextStyle(color: Colors.white54, fontSize: 9),
               overflow: TextOverflow.ellipsis,
             ),
           ],
@@ -145,12 +145,12 @@ class StoriesBar extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 64,
+        width: 48,
         margin: const EdgeInsets.only(right: 12),
         child: Column(
           children: [
             Container(
-              width: 56, height: 56,
+              width: 38, height: 38,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: hasUnseen
@@ -163,11 +163,11 @@ class StoriesBar extends StatelessWidget {
               ),
               padding: const EdgeInsets.all(2.5),
               child: CircleAvatar(
-                radius: 24,
+                radius: 16,
                 backgroundColor: const Color(0xFF1A1F3C),
                 child: Text(
                   name.isNotEmpty ? name[0].toUpperCase() : '?',
-                  style: const TextStyle(color: Color(0xFF00D9FF), fontSize: 18),
+                  style: const TextStyle(color: Color(0xFF00D9FF), fontSize: 13),
                 ),
               ),
             ),
@@ -176,7 +176,7 @@ class StoriesBar extends StatelessWidget {
               name.length > 8 ? '${name.substring(0, 7)}...' : name,
               style: TextStyle(
                 color: hasUnseen ? Colors.white : Colors.white54,
-                fontSize: 10,
+                fontSize: 9,
                 fontWeight: hasUnseen ? FontWeight.w600 : FontWeight.normal,
               ),
               overflow: TextOverflow.ellipsis,
