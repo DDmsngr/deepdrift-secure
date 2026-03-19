@@ -620,6 +620,15 @@ class _HomeScreenState extends State<HomeScreen>
     if (senderUid == null || msgId == null) return;
 
     final storageKey = (groupId != null && groupId.isNotEmpty) ? groupId : senderUid;
+
+    // ── FIX: если чат с этим контактом сейчас открыт — не обрабатываем здесь.
+    // ChatScreen сам расшифрует и отобразит сообщение. Двойная расшифровка
+    // одного и того же зашифрованного блоба добавляет счётчик в _seenCounters
+    // дважды: второй вызов (в ChatScreen) детектируется как replay-атака и
+    // сообщение тихо выбрасывается — пользователь видит его только при
+    // перезаходе в чат (из Hive). Поэтому HomeScreen уступает ChatScreen'у.
+    if (NotificationService.activeChatUid == storageKey) return;
+
     if (_storage.hasMessage(storageKey, msgId)) return;
 
     // Если сообщение из группы — убеждаемся что группа с именем сохранена
