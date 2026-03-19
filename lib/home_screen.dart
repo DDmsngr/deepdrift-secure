@@ -1183,47 +1183,140 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-    Future<String?> _showStep1ChooseUid() async {
+  Future<String?> _showStep1ChooseUid() async {
     final uidCtrl = TextEditingController();
     String? result;
     bool tosAccepted = false;
+    bool isChecking  = false;
+    String? errorText;
+
     await showDialog(
       context: context, barrierDismissible: false,
       builder: (c) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          backgroundColor: const Color(0xFF1A1F3C),
-          title: Text('ДОБРО ПОЖАЛОВАТЬ', style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 15)),
-          content: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Text('Придумай свой ID из 6 цифр.\nПо нему тебя будут находить в DDChat.',
-                  style: TextStyle(color: Colors.white70, fontSize: 13), textAlign: TextAlign.center),
-              const SizedBox(height: 20),
-              TextField(
-                controller: uidCtrl, keyboardType: TextInputType.number, maxLength: 6,
-                style: const TextStyle(color: Colors.white, fontSize: 28, letterSpacing: 8, fontWeight: FontWeight.bold),
-                textAlign: TextAlign.center,
-                decoration: const InputDecoration(
-                  hintText: '000000', hintStyle: TextStyle(color: Colors.white24),
-                  filled: true, fillColor: Color(0xFF0A0E27), counterStyle: TextStyle(color: Colors.white38),
-                  border: OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF00D9FF))),
+        builder: (ctx, setS) {
+          Future<void> onNext() async {
+            final uid = uidCtrl.text.trim();
+            if (uid.length != 6 || int.tryParse(uid) == null) {
+              setS(() => errorText = 'ID должен состоять ровно из 6 цифр');
+              return;
+            }
+            setS(() { isChecking = true; errorText = null; });
+
+            // ── Проверяем доступность UID на сервере ──────────────────────
+            bool available = true;
+            try {
+              final response = await http.get(
+                Uri.parse('https://deepdrift-backend.onrender.com/check-uid/$uid'),
+              ).timeout(const Duration(seconds: 8));
+              if (response.statusCode == 200) {
+                final body = jsonDecode(response.body) as Map<String, dynamic>;
+                available = body['available'] as bool? ?? true;
+              }
+            } catch (_) {
+              // Нет сети или сервер недоступен — пропускаем проверку,
+              // uid_taken всё равно поймаем при подключении.
+              available = true;
+            }
+
+            setS(() => isChecking = false);
+
+            if (available) {
+              result = uid;
+              Navigator.pop(ctx);
+            } else {
+              // ── UID занят — предлагаем выбор ─────────────────────────────
+              final choice = await showDialog<String>(
+                context: ctx,
+                barrierDismissible: false,
+                builder: (alertCtx) => AlertDialog(
+                  backgroundColor: const Color(0xFF1A1F3C),
+                  title: Row(children: [
+                    const Icon(Icons.lock_outline, color: Colors.orange, size: 20),
+                    const SizedBox(width: 8),
+                    Text('ID $uid занят', style: GoogleFonts.orbitron(color: Colors.orange, fontSize: 13)),
+                  ]),
+                  content: const Text(
+                    'Этот ID уже зарегистрирован.\n\n'
+                    '• Если он твой — загрузи файл восстановления.\n'
+                    '• Если хочешь другой — введи новый номер.',
+                    style: TextStyle(color: Colors.white70, height: 1.5),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(alertCtx, 'change'),
+                      child: const Text('ДРУГОЙ НОМЕР', style: TextStyle(color: Colors.white54)),
+                    ),
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.restore, size: 16),
+                      label: const Text('ВОССТАНОВИТЬ'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF00D9FF),
+                        foregroundColor: Colors.black,
+                      ),
+                      onPressed: () => Navigator.pop(alertCtx, 'restore'),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 16),
-              _buildTosCheckbox(ctx, tosAccepted, (v) => setS(() => tosAccepted = v ?? false)),
-            ]),
-          ),
-          actions: [
-            ElevatedButton(
-              onPressed: !tosAccepted ? null : () {
-                if (uidCtrl.text.length == 6) { result = uidCtrl.text; Navigator.pop(ctx); }
-                else { _showError('ID должен состоять ровно из 6 цифр'); }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: tosAccepted ? const Color(0xFF00D9FF) : Colors.white12, foregroundColor: Colors.black),
-              child: const Text('ДАЛЕЕ →', style: TextStyle(fontWeight: FontWeight.bold)),
+              );
+
+              if (choice == 'restore') {
+                Navigator.pop(ctx); // закрываем Step1
+                await _showImportKeysDialog();
+              } else {
+                // Очищаем поле — пусть вводит другой номер
+                setS(() { uidCtrl.clear(); errorText = 'Введи другой ID'; });
+              }
+            }
+          }
+
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1A1F3C),
+            title: Text('ДОБРО ПОЖАЛОВАТЬ', style: GoogleFonts.orbitron(color: const Color(0xFF00D9FF), fontSize: 15)),
+            content: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const Text('Придумай свой ID из 6 цифр.\nПо нему тебя будут находить в DDChat.',
+                    style: TextStyle(color: Colors.white70, fontSize: 13), textAlign: TextAlign.center),
+                const SizedBox(height: 20),
+                TextField(
+                  controller: uidCtrl, keyboardType: TextInputType.number, maxLength: 6,
+                  enabled: !isChecking,
+                  onChanged: (_) { if (errorText != null) setS(() => errorText = null); },
+                  style: const TextStyle(color: Colors.white, fontSize: 28, letterSpacing: 8, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                  decoration: const InputDecoration(
+                    hintText: '000000', hintStyle: TextStyle(color: Colors.white24),
+                    filled: true, fillColor: Color(0xFF0A0E27), counterStyle: TextStyle(color: Colors.white38),
+                    border: OutlineInputBorder(borderSide: BorderSide(color: Color(0xFF00D9FF))),
+                  ),
+                ),
+                if (errorText != null) ...[
+                  const SizedBox(height: 8),
+                  Text(errorText!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                ],
+                if (isChecking) ...[
+                  const SizedBox(height: 12),
+                  const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00D9FF))),
+                    SizedBox(width: 10),
+                    Text('Проверяем доступность...', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                  ]),
+                ],
+                const SizedBox(height: 16),
+                _buildTosCheckbox(ctx, tosAccepted, isChecking ? null : (v) => setS(() => tosAccepted = v ?? false)),
+              ]),
             ),
-          ],
-        ),
+            actions: [
+              ElevatedButton(
+                onPressed: (!tosAccepted || isChecking) ? null : onNext,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: (tosAccepted && !isChecking) ? const Color(0xFF00D9FF) : Colors.white12,
+                  foregroundColor: Colors.black,
+                ),
+                child: const Text('ДАЛЕЕ →', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          );
+        },
       ),
     );
     return result;
