@@ -293,6 +293,14 @@ class _ChatScreenState extends State<ChatScreen> {
                   m['status'] != 'pending_decrypt') {
                 m['status'] = 'pending_decrypt';
               }
+              // ── FIX: пустой пузырь без encrypted_text — расшифровать невозможно,
+              //    показываем плейсхолдер вместо пустого контейнера
+              if ((m['text'] == null || (m['text'] as String).isEmpty) &&
+                  m['encrypted_text'] == null &&
+                  m['status'] == 'pending_decrypt') {
+                m['text']   = '🔒 Сообщение недоступно';
+                m['status'] = 'error';
+              }
               // ── FIX: фото исчезают — если filePath не существует на диске,
               //    сбрасываем его чтобы UI показал кнопку "загрузить"
               final fp = m['filePath'] as String?;
