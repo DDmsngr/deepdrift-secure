@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:provider/provider.dart';
@@ -150,7 +149,7 @@ Future<void> main() async {
               appBarTheme: const AppBarTheme(backgroundColor: Color(0xFF1A1F3C)),
               cardColor: const Color(0xFF1A1F3C),
               dividerColor: Colors.white12,
-              dialogBackgroundColor: const Color(0xFF1A1F3C),
+              dialogTheme: const DialogThemeData(backgroundColor: Color(0xFF1A1F3C)),
             ),
             // ── Светлая тема ────────────────────────────────────────────
             theme: ThemeData.light().copyWith(
@@ -162,7 +161,7 @@ Future<void> main() async {
               ),
               cardColor: Colors.white,
               dividerColor: Colors.black12,
-              dialogBackgroundColor: Colors.white,
+              dialogTheme: const DialogThemeData(backgroundColor: Colors.white),
             ),
             home: const SplashScreen(),
           );

@@ -2081,7 +2081,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     style: TextStyle(color: Colors.white, fontSize: 14)),
                 subtitle:      const Text('Запретить участникам отправлять сообщения',
                     style: TextStyle(color: Colors.white38, fontSize: 11)),
-                activeColor:   const Color(0xFF00D9FF),
+                activeThumbColor: const Color(0xFF00D9FF),
                 value:         _onlyAdminsCanPost,
                 onChanged: (val) async {
                   setSheet(() {});

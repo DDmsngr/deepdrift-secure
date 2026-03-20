@@ -277,7 +277,7 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
       subtitle: Text(subtitle, style: const TextStyle(color: Colors.white38, fontSize: 11)),
       value: value,
       onChanged: onChanged,
-      activeColor: const Color(0xFF00D9FF),
+      activeThumbColor: const Color(0xFF00D9FF),
     );
   }
 
