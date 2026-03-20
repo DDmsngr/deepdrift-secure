@@ -1,0 +1,24 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Android signing secrets (never commit)
+android/key.properties
+android/app/key.properties
+android/app/*.jks
+android/app/*.keystore
+
+# Local env / secrets
+.env
+.env.*
+*.pem
+*.p12
+*.mobileprovision

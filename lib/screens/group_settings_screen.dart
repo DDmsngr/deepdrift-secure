@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../socket_service.dart';
 import '../storage_service.dart';
+import '../config/app_config.dart';
 
 /// Экран настроек группы в стиле Telegram.
 /// Доступен из AppBar чата → ⋮ → Настройки группы (только для админов).
@@ -27,7 +28,7 @@ class _GroupSettingsScreenState extends State<GroupSettingsScreen> {
   final _socket  = SocketService();
   final _storage = StorageService();
 
-  static const String _serverUrl = 'https://deepdrift-backend.onrender.com';
+  static const String _serverUrl = AppConfig.httpBaseUrl;
 
   StreamSubscription? _sub;
   final _dio = Dio();

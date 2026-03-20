@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:provider/provider.dart';
@@ -112,12 +113,16 @@ Future<void> main() async {
     final settingsBox = await Hive.openBox('settings');
     final savedTheme = settingsBox.get('app_theme_mode') as String? ?? 'dark';
     appThemeMode.value = savedTheme == 'light' ? ThemeMode.light : ThemeMode.dark;
-  } catch (_) {}
+  } catch (e, st) {
+    debugPrint('Theme init error: $e\n$st');
+  }
 
   try {
     await Firebase.initializeApp();
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-  } catch (_) {}
+  } catch (e, st) {
+    debugPrint('Firebase init error: $e\n$st');
+  }
 
   await NotificationService().init();
 

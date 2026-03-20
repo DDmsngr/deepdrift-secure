@@ -33,6 +33,7 @@ import 'models/chat_models.dart';
 import 'lock_screen.dart';
 import 'screens/story_viewer_screen.dart';
 import 'screens/create_story_screen.dart';
+import 'config/app_config.dart';
 import 'widgets/stories_bar.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ class _HomeScreenState extends State<HomeScreen>
   final _imagePicker = ImagePicker();
 
   final _serverController = TextEditingController(
-    text: 'wss://deepdrift-backend.onrender.com/ws',
+    text: AppConfig.wsUrl,
   );
 
   bool   _isSearching = false;
@@ -942,7 +943,7 @@ class _HomeScreenState extends State<HomeScreen>
       for (int attempt = 0; attempt < 4; attempt++) {
         final token = StorageService.uploadToken ?? _uploadToken;
         final response = await http.get(
-          Uri.parse('https://deepdrift-backend.onrender.com/download/$fileId'),
+          Uri.parse(AppConfig.downloadUrl(fileId)),
           headers: {if (token != null) 'X-Upload-Token': token},
         );
         if (response.statusCode == 200) return response;
@@ -951,7 +952,7 @@ class _HomeScreenState extends State<HomeScreen>
       }
       final token = StorageService.uploadToken ?? _uploadToken;
       return http.get(
-        Uri.parse('https://deepdrift-backend.onrender.com/download/$fileId'),
+        Uri.parse(AppConfig.downloadUrl(fileId)),
         headers: {if (token != null) 'X-Upload-Token': token},
       );
     }();
@@ -987,7 +988,7 @@ class _HomeScreenState extends State<HomeScreen>
         'file': await dio_pkg.MultipartFile.fromFile(file.path, filename: fileName),
       });
       final resp = await dio.post(
-        'https://deepdrift-backend.onrender.com/upload',
+        AppConfig.uploadUrl,
         data: formData,
         options: dio_pkg.Options(
           headers: {if (StorageService.uploadToken != null) 'X-Upload-Token': StorageService.uploadToken!},
@@ -1206,7 +1207,7 @@ class _HomeScreenState extends State<HomeScreen>
             bool available = true;
             try {
               final response = await http.get(
-                Uri.parse('https://deepdrift-backend.onrender.com/check-uid/$uid'),
+                Uri.parse('${AppConfig.httpBaseUrl}/check-uid/$uid'),
               ).timeout(const Duration(seconds: 8));
               if (response.statusCode == 200) {
                 final body = jsonDecode(response.body) as Map<String, dynamic>;

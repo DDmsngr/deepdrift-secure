@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/Платформа-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" />
   <img src="https://img.shields.io/badge/Flutter-3.22+-02569B?style=for-the-badge&logo=flutter&logoColor=white" />
   <img src="https://img.shields.io/badge/Шифрование-E2EE-FF6B6B?style=for-the-badge&logo=letsencrypt&logoColor=white" />
-  <img src="https://img.shields.io/badge/Версия-3.4.0-00D9FF?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Версия-3.5.0-00D9FF?style=for-the-badge" />
 </p>
 
 <p align="center">
@@ -147,6 +147,20 @@ deepdrift-backend-main/
 └── server.py                          # FastAPI сервер
 ```
 
+> ⚠️ `key.properties` и `.jks` указаны выше только как **локальные** release-артефакты.
+> Их нельзя хранить в Git. Добавьте свои локальные файлы и используйте CI secrets.
+
+---
+
+## 🔒 Политика секретов и signing
+
+- Не коммитить: `android/key.properties`, `android/app/key.properties`, `*.jks`, `*.keystore`.
+- Все ключи/пароли хранить в CI/CD secrets (GitHub Actions/Render и т.д.).
+- Для локальной сборки создавать `key.properties` только на вашей машине.
+- Перед релизом проверять историю коммитов на случайные секреты (`git log`, secret scanning).
+
+---
+
 ---
 
 ## 🚀 Установка
@@ -206,6 +220,17 @@ flutter build apk --release
 | Звонки | WebRTC + TURN (Metered.ca) |
 | Шифрование | X25519 + ChaCha20 + Ed25519 |
 | Хранение | Hive + Android Keystore |
+
+---
+
+## ✅ CI / Quality Gates
+
+- GitHub Actions workflow: `.github/workflows/ci.yml`
+- Автоматические проверки на PR:
+  - `flutter analyze`
+  - `flutter test`
+  - синхронность версии `pubspec.yaml` и README-бейджа (`scripts/check_readme_version.py`)
+  - отчёт `flutter pub outdated` как артефакт
 
 ---
 

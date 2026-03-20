@@ -185,7 +185,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ? null
                   : () async {
                       // ── Валидация ──────────────────────────────────────
-                      final savedPwd = widget.storage.getSetting('user_password') as String?;
+                      final savedPwd = await widget.storage.getCachedPassword();
                       if (oldCtrl.text != savedPwd) {
                         _showError('Неверный текущий пароль');
                         return;
@@ -209,6 +209,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         // SECURITY FIX: пароль не сохраняется — только зашифрованные ключи
                         await widget.storage.saveSetting('encrypted_x25519_key', newKeys['x25519']!);
                         await widget.storage.saveSetting('encrypted_ed25519_key', newKeys['ed25519']!);
+                        await widget.storage.cachePassword(newCtrl.text);
 
                         if (mounted) Navigator.pop(dialogContext);
                         _showSuccess('Пароль успешно изменён');
@@ -859,7 +860,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onPressed: (confirmed && !isLoading)
                   ? () async {
                       // Проверяем пароль
-                      final savedPwd = widget.storage.getSetting('user_password') as String?;
+                      final savedPwd = await widget.storage.getCachedPassword();
                       if (pwdCtrl.text != savedPwd) {
                         setS(() {});
                         ScaffoldMessenger.of(context).showSnackBar(

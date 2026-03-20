@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:dio/dio.dart';
 import '../socket_service.dart';
 import '../storage_service.dart';
+import '../config/app_config.dart';
 
 /// Экран создания истории — текст с цветным фоном или фото с подписью.
 class CreateStoryScreen extends StatefulWidget {
@@ -17,7 +18,7 @@ class CreateStoryScreen extends StatefulWidget {
 }
 
 class _CreateStoryScreenState extends State<CreateStoryScreen> {
-  static const String SERVER_HTTP_URL = 'https://deepdrift-backend.onrender.com';
+  static const String SERVER_HTTP_URL = AppConfig.httpBaseUrl;
 
   final _socket  = SocketService();
   final _textCtrl = TextEditingController();

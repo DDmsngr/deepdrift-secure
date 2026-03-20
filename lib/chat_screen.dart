@@ -49,10 +49,13 @@ class ChatScreen extends StatefulWidget {
 }
 
 class _ChatScreenState extends State<ChatScreen> {
-  static const String SERVER_HTTP_URL = 'https://deepdrift-backend.onrender.com';
+  static const String SERVER_HTTP_URL = AppConfig.httpBaseUrl;
   /// true  → FLAG_SECURE выключен (можно скриншотить для отладки).
   /// false → FLAG_SECURE включён в боевой версии.
-  static const bool _debugMode = true;
+  static const bool _debugMode = bool.fromEnvironment(
+    'DDCHAT_ALLOW_SCREENSHOTS',
+    defaultValue: false,
+  );
 
   final List<Map<String, dynamic>> _messages = [];
   final Set<String> _messageIds = {};
