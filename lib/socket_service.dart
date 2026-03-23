@@ -60,6 +60,8 @@ class SocketService {
 
   // Очередь запросов офлайн-сообщений, накопившихся до uid_assigned.
   final _pendingOfflineRequests = <String>{};
+  final List<Map<String, dynamic>> _outboxQueue = [];
+  static const int _maxOutboxQueue = 200;
 
   // Callbacks для аутентификации — устанавливаются из HomeScreen
   void Function(String reason)? onAuthFailed;   // auth_failed / uid_taken
@@ -243,6 +245,7 @@ class SocketService {
           }
           _pendingOfflineRequests.clear();
         }
+        _flushOutboxQueue();
         return;
       }
 
@@ -444,8 +447,34 @@ class SocketService {
   }
 
   void send(Map<String, dynamic> data) {
-    if (!_isConnected) return;
+    if (!_isConnected) {
+      _enqueueOutbox(data);
+      return;
+    }
     _sendRaw(data);
+  }
+
+  void _enqueueOutbox(Map<String, dynamic> data) {
+    final type = data['type']?.toString() ?? '';
+    // Не копим служебный шум в outbox
+    const skipTypes = {'ping', 'typing_indicator', 'check_statuses'};
+    if (skipTypes.contains(type)) return;
+
+    if (_outboxQueue.length >= _maxOutboxQueue) {
+      _outboxQueue.removeAt(0);
+    }
+    _outboxQueue.add(Map<String, dynamic>.from(data));
+    debugPrint('📦 Queued outbound message while offline: $type (${_outboxQueue.length})');
+  }
+
+  void _flushOutboxQueue() {
+    if (!_isConnected || _outboxQueue.isEmpty) return;
+    debugPrint('📤 Flushing ${_outboxQueue.length} queued outbound messages');
+    final items = List<Map<String, dynamic>>.from(_outboxQueue);
+    _outboxQueue.clear();
+    for (final payload in items) {
+      _sendRaw(payload);
+    }
   }
 
   // ──────────────────────────────────────────────────────────────────────────
