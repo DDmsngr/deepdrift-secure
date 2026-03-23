@@ -7,6 +7,7 @@ import 'package:dio/dio.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../socket_service.dart';
 import '../storage_service.dart';
+import '../config/app_config.dart';
 
 /// Экран информации о канале: имя, описание, фото, подписчики, действия.
 class ChannelInfoScreen extends StatefulWidget {
@@ -20,7 +21,7 @@ class ChannelInfoScreen extends StatefulWidget {
 }
 
 class _ChannelInfoScreenState extends State<ChannelInfoScreen> {
-  static const String _serverUrl = 'https://deepdrift-backend.onrender.com';
+  static const String _serverUrl = AppConfig.httpBaseUrl;
 
   final _socket  = SocketService();
   final _storage = StorageService();

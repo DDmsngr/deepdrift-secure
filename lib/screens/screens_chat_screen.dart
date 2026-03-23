@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/io.dart';
 import 'dart:convert';
-import '../services/crypto_service.dart';
+import '../config/app_config.dart';
 
 class ChatScreen extends StatefulWidget {
   final String targetUID;
@@ -14,26 +14,19 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   late IOWebSocketChannel channel;
-  final crypto = CryptoService();
   final TextEditingController _msgC = TextEditingController();
   List<Map<String, dynamic>> messages = [];
-  dynamic chatKey;
 
   @override
   void initState() {
     super.initState();
-    // В MVP пароль чата фиксирован, в идеале вводится при открытии
-    crypto.deriveKey("shared_secret_password").then((key) => chatKey = key);
-    
-    // Подключаемся к Render или локалке
-    channel = IOWebSocketChannel.connect("wss://deepdrift-backend.onrender.com/ws/${widget.myUID}");
+    channel = IOWebSocketChannel.connect("${AppConfig.wsUrl}/${widget.myUID}");
     
     channel.stream.listen((event) async {
       var data = jsonDecode(event);
       if (data['payload'] != null) {
-        String decrypted = await crypto.decrypt(data['payload'], chatKey);
         setState(() {
-          messages.add({"text": decrypted, "isMe": false, "sig": data['fhrg_sig']});
+          messages.add({"text": data['payload'].toString(), "isMe": false, "sig": data['fhrg_sig']});
         });
       }
     });
@@ -41,13 +34,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   _send() async {
     if (_msgC.text.isEmpty) return;
-    String encrypted = await crypto.encrypt(_msgC.text, chatKey);
-    String sig = crypto.generateFHRGSignature(_msgC.text);
-
     channel.sink.add(jsonEncode({
       "target_uid": widget.targetUID,
-      "payload": encrypted,
-      "fhrg_sig": sig
+      "payload": _msgC.text,
+      "fhrg_sig": "legacy_stub"
     }));
 
     setState(() {

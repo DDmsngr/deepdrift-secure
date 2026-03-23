@@ -33,6 +33,7 @@ import 'models/chat_models.dart';
 import 'lock_screen.dart';
 import 'screens/story_viewer_screen.dart';
 import 'screens/create_story_screen.dart';
+import 'config/app_config.dart';
 import 'widgets/stories_bar.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -58,6 +59,7 @@ class _HomeScreenState extends State<HomeScreen>
   String?      _uploadToken;         // X-Upload-Token для загрузки/скачивания аватаров
   final Map<String, Uint8List> _avatarCache = {}; // кэш байтов аватаров
   final Map<String, Future<http.Response>> _avatarFutureCache = {}; // кэш Future — не стартуем новый при каждом rebuild
+  final Map<String, DateTime> _missingFileCooldown = {}; // fileId -> until (anti-404 spam)
   List<String> _chats = [];
   final Map<String, Map<String, bool>> _groupTypingUsers = {};
   bool         _isConnected      = false;
@@ -73,7 +75,7 @@ class _HomeScreenState extends State<HomeScreen>
   final _imagePicker = ImagePicker();
 
   final _serverController = TextEditingController(
-    text: 'wss://deepdrift-backend.onrender.com/ws',
+    text: AppConfig.wsUrl,
   );
 
   bool   _isSearching = false;
@@ -138,12 +140,14 @@ class _HomeScreenState extends State<HomeScreen>
 
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused) {
+      _socket.onAppPaused();
       // Запоминаем что приложение ушло в фон — при возврате проверим пин
       final pinEnabled = _storage.getSetting('app_lock_enabled') as bool? ?? false;
       final pin = _storage.getSetting('app_lock_pin') as String? ?? '';
       if (pinEnabled && pin.isNotEmpty) _isLocked = true;
     }
     if (state == AppLifecycleState.resumed) {
+      _socket.onAppResumed();
       if (!_socket.isConnected) _socket.forceReconnect();
       _socket.checkStatuses(_chats);
       // Показываем экран блокировки если нужен PIN
@@ -651,6 +655,19 @@ class _HomeScreenState extends State<HomeScreen>
     // SECURITY FIX: незнакомцы идут в очередь запросов, а не сразу в контакты
     final contacts = _storage.getContacts();
     if (!contacts.contains(senderUid) && groupId == null) {
+      // Не теряем первое сообщение от нового пользователя:
+      // сохраняем зашифрованный payload как pending_decrypt/request.
+      final pendingMsg = {
+        'id': msgId, 'text': '', 'isMe': false,
+        'time': data['time'] ?? DateTime.now().millisecondsSinceEpoch,
+        'from': senderUid, 'to': _myUid, 'status': 'pending_decrypt',
+        'type': data['messageType'] ?? 'text',
+        'encrypted_text': data['encrypted_text'],
+        'signature': data['signature'], 'mediaData': data['mediaData'],
+        'fileName': data['fileName'], 'fileSize': data['fileSize'],
+        'signatureStatus': SignatureStatus.unknown.index,
+      };
+      await _storage.saveMessage(senderUid, pendingMsg);
       await _storage.addIncomingRequest(senderUid);
       _socket.getProfile(senderUid);
       await NotificationService().showMessageNotification(
@@ -939,19 +956,26 @@ class _HomeScreenState extends State<HomeScreen>
     }
     // Кэшируем Future — иначе FutureBuilder перезапускает запрос при каждом rebuild (DDoS)
     _avatarFutureCache[fileId] ??= () async {
+      final blockedUntil = _missingFileCooldown[fileId];
+      if (blockedUntil != null && DateTime.now().isBefore(blockedUntil)) {
+        return http.Response('', 404);
+      }
       for (int attempt = 0; attempt < 4; attempt++) {
         final token = StorageService.uploadToken ?? _uploadToken;
         final response = await http.get(
-          Uri.parse('https://deepdrift-backend.onrender.com/download/$fileId'),
+          Uri.parse(AppConfig.downloadUrl(fileId)),
           headers: {if (token != null) 'X-Upload-Token': token},
         );
         if (response.statusCode == 200) return response;
-        if (response.statusCode == 404) return response;
+        if (response.statusCode == 404) {
+          _missingFileCooldown[fileId] = DateTime.now().add(const Duration(minutes: 10));
+          return response;
+        }
         await Future.delayed(Duration(seconds: attempt + 1));
       }
       final token = StorageService.uploadToken ?? _uploadToken;
       return http.get(
-        Uri.parse('https://deepdrift-backend.onrender.com/download/$fileId'),
+        Uri.parse(AppConfig.downloadUrl(fileId)),
         headers: {if (token != null) 'X-Upload-Token': token},
       );
     }();
@@ -987,7 +1011,7 @@ class _HomeScreenState extends State<HomeScreen>
         'file': await dio_pkg.MultipartFile.fromFile(file.path, filename: fileName),
       });
       final resp = await dio.post(
-        'https://deepdrift-backend.onrender.com/upload',
+        AppConfig.uploadUrl,
         data: formData,
         options: dio_pkg.Options(
           headers: {if (StorageService.uploadToken != null) 'X-Upload-Token': StorageService.uploadToken!},
@@ -1206,7 +1230,7 @@ class _HomeScreenState extends State<HomeScreen>
             bool available = true;
             try {
               final response = await http.get(
-                Uri.parse('https://deepdrift-backend.onrender.com/check-uid/$uid'),
+                Uri.parse('${AppConfig.httpBaseUrl}/check-uid/$uid'),
               ).timeout(const Duration(seconds: 8));
               if (response.statusCode == 200) {
                 final body = jsonDecode(response.body) as Map<String, dynamic>;

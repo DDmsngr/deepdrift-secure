@@ -112,12 +112,16 @@ Future<void> main() async {
     final settingsBox = await Hive.openBox('settings');
     final savedTheme = settingsBox.get('app_theme_mode') as String? ?? 'dark';
     appThemeMode.value = savedTheme == 'light' ? ThemeMode.light : ThemeMode.dark;
-  } catch (_) {}
+  } catch (e, st) {
+    debugPrint('Theme init error: $e\n$st');
+  }
 
   try {
     await Firebase.initializeApp();
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-  } catch (_) {}
+  } catch (e, st) {
+    debugPrint('Firebase init error: $e\n$st');
+  }
 
   await NotificationService().init();
 
@@ -145,7 +149,7 @@ Future<void> main() async {
               appBarTheme: const AppBarTheme(backgroundColor: Color(0xFF1A1F3C)),
               cardColor: const Color(0xFF1A1F3C),
               dividerColor: Colors.white12,
-              dialogBackgroundColor: const Color(0xFF1A1F3C),
+              dialogTheme: const DialogThemeData(backgroundColor: Color(0xFF1A1F3C)),
             ),
             // ── Светлая тема ────────────────────────────────────────────
             theme: ThemeData.light().copyWith(
@@ -157,7 +161,7 @@ Future<void> main() async {
               ),
               cardColor: Colors.white,
               dividerColor: Colors.black12,
-              dialogBackgroundColor: Colors.white,
+              dialogTheme: const DialogThemeData(backgroundColor: Colors.white),
             ),
             home: const SplashScreen(),
           );
