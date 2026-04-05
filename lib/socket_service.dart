@@ -7,6 +7,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:dio/dio.dart';
 import 'storage_service.dart';
 import 'crypto_service.dart';
+import 'config/app_config.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 
 class SocketService {
@@ -23,7 +24,7 @@ class SocketService {
   // освобождаем Completer, чтобы не было утечки памяти (🟡-6 FIX).
   static const Duration PENDING_MSG_TIMEOUT    = Duration(seconds: 30);
 
-  static const String HTTP_UPLOAD_URL = 'https://deepdrift-backend.onrender.com/upload';
+  static const String HTTP_UPLOAD_URL = AppConfig.uploadUrl;
 
   WebSocketChannel? _channel;
   final _messageStream           = StreamController<Map<String, dynamic>>.broadcast();

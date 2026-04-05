@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../socket_service.dart';
 import '../storage_service.dart';
+import '../config/app_config.dart';
 
 /// Полноэкранный просмотр историй в стиле Instagram/WhatsApp.
 /// Принимает список историй одного пользователя.
@@ -16,7 +17,7 @@ class StoryViewerScreen extends StatefulWidget {
     required this.myUid,
     required this.ownerUid,
     required this.stories,
-    this.serverUrl = 'https://deepdrift-backend.onrender.com',
+    this.serverUrl = AppConfig.httpBaseUrl,
   });
 
   @override

@@ -5,6 +5,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
 import '../socket_service.dart';
+import '../config/app_config.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CallService — управление WebRTC peer connection для голосовых/видео вызовов.
@@ -91,7 +92,7 @@ class CallService {
 
   // ── STUN/TURN серверы ─────────────────────────────────────────────────────
   // Credentials кэшируются на 1 час — не грузим при каждом звонке.
-  static const String _serverUrl = 'https://deepdrift-backend.onrender.com';
+  static const String _serverUrl = AppConfig.httpBaseUrl;
 
   static Map<String, dynamic>? _cachedIceConfig;
   static DateTime? _cacheExpiry;
